@@ -15,28 +15,19 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competitor_id INTEGER,
     publisher_name TEXT NOT NULL,
     normalized_name TEXT NOT NULL,
     country TEXT,
     status TEXT DEFAULT 'active',
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-    last_seen TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-
-    CREATE TABLE IF NOT EXISTS competitor_accounts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    competitor_id INTEGER NOT NULL,
-    account_id INTEGER NOT NULL,
-
-    FOREIGN KEY (competitor_id) REFERENCES competitors(id),
-    FOREIGN KEY (account_id) REFERENCES accounts(id),
-
-    UNIQUE(competitor_id, account_id)
+    last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (competitor_id) REFERENCES competitors(id) ON DELETE SET NULL
   );
 
   CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    package_name TEXT UNIQUE,
+    package_name TEXT UNIQUE NOT NULL,
     title TEXT NOT NULL,
     rating REAL,
     ratings_count INTEGER,
@@ -51,10 +42,8 @@ db.exec(`
     game_id INTEGER NOT NULL,
     first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
     last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (account_id) REFERENCES accounts(id),
-    FOREIGN KEY (game_id) REFERENCES games(id),
-
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
     UNIQUE(account_id, game_id)
   );
 
@@ -67,9 +56,20 @@ db.exec(`
     downloads INTEGER,
     icon_url TEXT,
     short_description TEXT,
-
-    FOREIGN KEY (game_id) REFERENCES games(id)
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS scans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    games_scanned INTEGER,
+    new_games INTEGER,
+    updated_games INTEGER,
+    new_accounts INTEGER,
+    updated_accounts INTEGER,
+    failed INTEGER
+  );
+
 `);
 
 module.exports = db;
