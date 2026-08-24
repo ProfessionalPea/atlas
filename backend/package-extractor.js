@@ -54,10 +54,15 @@ const fs = require('fs');
     }
   }
 
-  console.log(`\n🎉 Extractor complete! Found ${foundPackages.size} unique packages from ${testBatch.length} ads.`);
+console.log(`\n🎉 Extractor complete! Found ${foundPackages.size} unique packages from ${testBatch.length} ads.`);
   foundPackages.forEach(pkg => console.log(`  📦 ${pkg}`));
+
+  // --- NEW CODE: Save the extracted packages to a file ---
+  const packagesArray = Array.from(foundPackages);
+  fs.writeFileSync('extracted_packages.json', JSON.stringify(packagesArray, null, 2));
+  console.log("💾 Saved packages to C:\\Atlas\\backend\\extracted_packages.json");
+  // -------------------------------------------------------
 
   console.log("\n🛑 Closing browser...");
   await browser.close();
 })();
-

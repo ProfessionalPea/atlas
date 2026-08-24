@@ -1,8 +1,9 @@
 const express = require("express");
 const cors = require("cors");
+const fs = require("fs"); 
 const db = require("./database");
-
 const gplayRaw = require('google-play-scraper');
+const { scanCompetitor } = require("./GoogleAdsScanner"); // <-- ADD THIS LINE!
 const gplay = gplayRaw.default || gplayRaw;
 
 const app = express();
@@ -28,36 +29,72 @@ app.get("/api/stats", (req, res) => {
   res.json({ competitors, accounts, games });
 });
 
-// Trigger a Scan (Populates/Updates Competitor Data)
+// --- NEW: The Nuke Button Route ---
+app.post("/api/reset", (req, res) => {
+  try {
+    console.log("🧹 NUKE INITIATED: Wiping all database tables...");
+    
+    // Delete data from all tables
+    db.prepare("DELETE FROM account_games").run();
+    db.prepare("DELETE FROM games").run();
+    db.prepare("DELETE FROM accounts").run();
+    db.prepare("DELETE FROM competitors").run();
+    
+    console.log("✨ Database is now completely empty.");
+    res.json({ status: "success", message: "Database reset complete" });
+  } catch (err) {
+    console.error("Failed to reset database:", err);
+    res.status(500).json({ error: "Failed to reset database" });
+  }
+});
+
 app.post("/api/scan", async (req, res) => {
   try {
-    // The 3 real packages your Deep Scanner found earlier
-    const packagesFound = [
-      "com.gh.gangster.crime.city",
-      "com.gttec.Speed.Keyboard.Parkour.Escape",
-      "com.gtnw.dash.speed.hero.game"
-    ];
+    // 1. Dynamically pull the exact search terms your user typed into the React dashboard!
+    const { searchQuery, targetCountry, limit } = req.body;
+
+    if (!searchQuery || !targetCountry) {
+      return res.status(400).json({ error: "Missing search parameters" });
+    }
+
+    console.log(`\n⚙️ API SCAN TRIGGERED: Launching Master Scanner for ${searchQuery} in ${targetCountry}...`);
+    
+    // 2. Fire the Master Scanner with the dynamic inputs!
+    const packagesFound = await scanCompetitor(searchQuery, targetCountry, limit || 10);
+
+    if (!packagesFound || packagesFound.length === 0) {
+      console.log("❌ No packages returned from Master Scanner.");
+      return res.status(404).json({ error: "No packages found during scan." });
+    }
 
     let newGamesCount = 0;
     let newAccountsCount = 0;
 
-    // 1. Get or Create Playmax
-    let comp = db.prepare("SELECT id FROM competitors WHERE name = ?").get("Playmax");
+    // 3. Database Prep
+    let comp = db.prepare("SELECT id FROM competitors WHERE name = ?").get(searchQuery);
     if (!comp) {
-      const compInsert = db.prepare("INSERT INTO competitors (name, ads_id) VALUES (?, ?)").run("Playmax", "Playmax");
+      const compInsert = db.prepare("INSERT INTO competitors (name, ads_id) VALUES (?, ?)").run(searchQuery, "Pending");
       comp = { id: compInsert.lastInsertRowid };
     }
 
-    // 2. Loop through the extracted packages
+    const fetchAppWithTimeout = (pkgId, timeoutMs = 10000) => {
+      return Promise.race([
+        gplay.app({ appId: pkgId }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Google Play connection timed out")), timeoutMs))
+      ]);
+    };
+
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // 4. Process the Packages with Google Play Scraper
     for (const pkg of packagesFound) {
       try {
-        console.log(`Fetching live data for: ${pkg}`);
-        const appData = await gplay.app({ appId: pkg });
+        console.log(`\n⏳ Fetching live Google Play data for: ${pkg}`);
+        const appData = await fetchAppWithTimeout(pkg, 10000);
         
         const publisherName = appData.developer;
         const normalizedPub = publisherName.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-        // 3. Insert or find the Account dynamically
         let acc = db.prepare("SELECT id FROM accounts WHERE normalized_name = ?").get(normalizedPub);
         if (!acc) {
           const accInsert = db.prepare(
@@ -67,7 +104,6 @@ app.post("/api/scan", async (req, res) => {
           newAccountsCount++;
         }
 
-        // 4. Insert or update the Game
         let game = db.prepare("SELECT id FROM games WHERE package_name = ?").get(pkg);
         if (!game) {
           const gameInsert = db.prepare(
@@ -80,13 +116,19 @@ app.post("/api/scan", async (req, res) => {
             .run(appData.score || 0, appData.reviews || 0, game.id);
         }
 
-        // 5. Link Account & Game
         db.prepare("INSERT OR IGNORE INTO account_games (account_id, game_id) VALUES (?, ?)").run(acc.id, game.id);
+        
+        console.log(`  ✅ Database Saved: ${appData.title} (Publisher: ${appData.developer})`);
+        
+        // Speed limit for Google Play API
+        await delay(1000);
 
       } catch (err) {
-        console.log(`❌ Failed to fetch ${pkg}: ${err.message}`);
+        console.log(`  ❌ Failed to fetch ${pkg} from Google Play: ${err.message}`);
       }
     }
+
+    console.log(`\n🎉 SCAN COMPLETE! Added ${newAccountsCount} accounts and ${newGamesCount} games.`);
 
     res.json({
       status: "success",
@@ -99,10 +141,6 @@ app.post("/api/scan", async (req, res) => {
     res.status(500).json({ error: "Failed to complete scan" });
   }
 });
-
-// ----------------------------------------------------
-// MANUAL CRUD ROUTES (The ones I accidentally deleted!)
-// ----------------------------------------------------
 
 // 1. Create a Competitor
 app.post("/api/competitors", (req, res) => {
