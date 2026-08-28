@@ -18,10 +18,10 @@ async function pushScanToSheets(db, targetName, packagesArray) {
     const dateStr = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
     let values = [];
     
-    // 3. Enrich the raw package names with full SQLite data
+  // 3. Enrich the raw package names with full SQLite data
     for (const pkg of packagesArray) {
       const game = db.prepare(`
-        SELECT g.title, g.category, g.rating, a.publisher_name 
+        SELECT g.title, g.category, g.rating, g.installs, g.min_installs, g.released, g.updated, a.publisher_name 
         FROM games g
         LEFT JOIN account_games ag ON g.id = ag.game_id
         LEFT JOIN accounts a ON ag.account_id = a.id
@@ -29,6 +29,9 @@ async function pushScanToSheets(db, targetName, packagesArray) {
       `).get(pkg);
 
       if (game) {
+        // Convert the UNIX timestamp for "updated" to a readable date
+        const updatedDate = game.updated ? new Date(game.updated).toLocaleDateString() : "Unknown";
+
         values.push([
           dateStr, 
           targetName, 
@@ -36,12 +39,14 @@ async function pushScanToSheets(db, targetName, packagesArray) {
           game.title || pkg, 
           pkg, 
           game.category || "N/A", 
-          game.rating || "N/A"
+          game.rating || "N/A",
+          game.installs || "0+",        // NEW: "10,000,000+"
+          game.min_installs || 0,       // NEW: 10000000 (Perfect for Sheets sorting!)
+          game.released || "Unknown",   // NEW: "Aug 21, 2023"
+          updatedDate                   // NEW: Last update date
         ]);
       }
     }
-
-    if (values.length === 0) return;
 
     // 4. Push the batch to Google Sheets (Appending to the bottom)
     await sheets.spreadsheets.values.append({

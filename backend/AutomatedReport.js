@@ -5,29 +5,40 @@ const path = require('path');
 const db = require('./database'); // Pulls data directly from your database
 
 // Your exact Google Sheet URL for the manager to click
-const SHEET_URL = "https://docs.google.com/spreadsheets/d/1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs/edit";
+const SHEET_URL = "https://docs.google.com/spreadsheets/d/1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs/edit?gid=705066303#gid=705066303";
 
-async function generateAndSendReport(managerEmail) {
+async function generateAndSendReport(managerEmail, specificScanData = null) {
   console.log("📄 [REPORT ENGINE] Building custom data report...");
   let browser;
 
   try {
-    // 1. Fetch raw data to inject into the PDF
+    // 1. Fetch overall database stats
     const stats = {
       competitors: db.prepare("SELECT COUNT(*) AS count FROM competitors").get().count,
       games: db.prepare("SELECT COUNT(*) AS count FROM games").get().count,
     };
 
-    // Grab the 10 most recent games added to the DB
-    const trending = db.prepare(`
-      SELECT g.title, a.publisher_name, g.category, g.rating 
-      FROM games g
-      LEFT JOIN account_games ag ON g.id = ag.game_id
-      LEFT JOIN accounts a ON ag.account_id = a.id
-      ORDER BY g.id DESC LIMIT 10
-    `).all();
+    let tableData = [];
+    let reportSubtitle = "";
 
-    // 2. Build a native HTML template (No React required!)
+    // 2. ISOLATION LOGIC
+    if (specificScanData !== null) {
+      // This is an on-demand manual scan
+      tableData = specificScanData;
+      reportSubtitle = `On-Demand Scan Summary • ${new Date().toLocaleDateString()}`;
+    } else {
+      // This is the 6 AM cron job - grab the top 10 from DB sorted by installs
+      tableData = db.prepare(`
+        SELECT g.title, a.publisher_name, g.category, g.rating, g.installs 
+        FROM games g
+        LEFT JOIN account_games ag ON g.id = ag.game_id
+        LEFT JOIN accounts a ON ag.account_id = a.id
+        ORDER BY g.min_installs DESC LIMIT 10
+      `).all();
+      reportSubtitle = `Daily Automated Summary • ${new Date().toLocaleDateString()}`;
+    }
+
+    // 3. Build a native HTML template with the corrected tableData loop
     const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -51,7 +62,7 @@ async function generateAndSendReport(managerEmail) {
     <body>
       <div class="header">
         <h1 class="title">Atlas Intelligence Node</h1>
-        <div class="subtitle">Daily Scan Summary • ${new Date().toLocaleDateString()}</div>
+        <div class="subtitle">${reportSubtitle}</div>
       </div>
       
       <div class="grid">
@@ -69,22 +80,22 @@ async function generateAndSendReport(managerEmail) {
         </div>
       </div>
 
-      <h3 style="color: #adc6ff; margin-bottom: 15px;">Latest Target Acquisitions</h3>
+      <h3 style="color: #adc6ff; margin-bottom: 15px;">Target Acquisitions</h3>
       <table>
         <thead>
           <tr>
             <th>Game Title</th>
             <th>Publisher</th>
-            <th>Category</th>
+            <th>Installs</th>
             <th>Rating</th>
           </tr>
         </thead>
         <tbody>
-          ${trending.map(game => `
+          ${tableData.map(game => `
             <tr>
               <td class="highlight">${game.title}</td>
               <td>${game.publisher_name || 'N/A'}</td>
-              <td>${game.category || 'N/A'}</td>
+              <td style="color: #10b981; font-weight: bold;">${game.installs || 'N/A'}</td>
               <td>⭐ ${game.rating || 'N/A'}</td>
             </tr>
           `).join('')}
@@ -94,7 +105,7 @@ async function generateAndSendReport(managerEmail) {
     </html>
     `;
 
-    // 3. Render PDF natively via Playwright
+    // 4. Render PDF natively via Playwright
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     await page.setContent(htmlContent, { waitUntil: 'networkidle' });
@@ -103,12 +114,12 @@ async function generateAndSendReport(managerEmail) {
     await page.pdf({
       path: pdfPath,
       format: 'A4',
-      printBackground: true // Keeps the sleek dark mode colors
+      printBackground: true 
     });
 
     console.log(`📄 [REPORT ENGINE] Custom PDF generated: ${pdfPath}`);
 
-    // 4. Configure Email (MAKE SURE TO PUT YOUR ACTUAL GMAIL AND APP PASSWORD HERE)
+    // 5. Configure Email (REMEMBER TO RE-PASTE YOUR APP PASSWORD HERE)
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
@@ -117,15 +128,15 @@ async function generateAndSendReport(managerEmail) {
       }
     });
 
-    // 5. Send the beautifully formatted HTML Email
+    // 6. Send the Email
     const mailOptions = {
       from: '"Atlas Intelligence" <danish1042awan@gmail.com>', 
       to: managerEmail,
-      subject: `📊 Atlas Daily ASO Report - ${new Date().toLocaleDateString()}`,
+      subject: `📊 Atlas ASO Report - ${new Date().toLocaleDateString()}`,
       html: `
         <div style="font-family: sans-serif; color: #333;">
           <h2>Good morning,</h2>
-          <p>The overnight automated scans have completed successfully. Attached is the summary PDF for today.</p>
+          <p>Attached is the isolated summary PDF from your recent scan.</p>
           <p>For deep-dive velocity charts and full historical tracking, please view the live Google Sheet dashboard here:</p>
           <a href="${SHEET_URL}" style="background: #3b82f6; color: white; padding: 12px 18px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; margin-top: 10px;">Open Live Charts Dashboard</a>
           <br><br>
@@ -138,7 +149,7 @@ async function generateAndSendReport(managerEmail) {
     await transporter.sendMail(mailOptions);
     console.log("✅ [REPORT ENGINE] Email sent successfully!");
 
-    fs.unlinkSync(pdfPath); // Clean up the file
+    fs.unlinkSync(pdfPath); 
 
   } catch (error) {
     console.error("❌ [REPORT ENGINE ERROR]:", error);

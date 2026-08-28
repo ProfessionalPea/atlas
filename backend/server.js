@@ -8,6 +8,16 @@ const cors = require("cors");
 const fs = require("fs"); 
 const db = require("./database");
 
+// Auto-upgrade DB to hold AsoSpy Metrics
+try {
+  db.prepare("ALTER TABLE games ADD COLUMN installs TEXT").run();
+  db.prepare("ALTER TABLE games ADD COLUMN min_installs INTEGER").run();
+  db.prepare("ALTER TABLE games ADD COLUMN released TEXT").run();
+  db.prepare("ALTER TABLE games ADD COLUMN updated INTEGER").run();
+} catch (e) {
+  // Columns already exist, safely ignore
+}
+
 // Auto-upgrade DB to hold Icons and Screenshots
 try {
   db.prepare("ALTER TABLE games ADD COLUMN icon TEXT").run();
@@ -75,26 +85,21 @@ app.post("/api/reset", (req, res) => {
   }
 });
 
+// --- UPGRADED: TOP CHARTS ROUTE ---
 app.get("/api/trending", (req, res) => {
   try {
-    const trendingGames = db.prepare(`
-      SELECT 
-        g.id, g.title, g.package_name, g.category, 
-        g.icon, g.screenshots, g.description, 
-        a.publisher_name, 
-        c.name as competitor_name
+    // Sorts by actual install volume instead of just "recently added"
+    const trending = db.prepare(`
+      SELECT g.id, g.title, g.icon, g.package_name, g.installs, g.min_installs, g.category, a.publisher_name 
       FROM games g
-      JOIN account_games ag ON g.id = ag.game_id
-      JOIN accounts a ON ag.account_id = a.id
-      JOIN competitors c ON a.competitor_id = c.id
-      ORDER BY g.id DESC
+      LEFT JOIN account_games ag ON g.id = ag.game_id
+      LEFT JOIN accounts a ON ag.account_id = a.id
+      ORDER BY g.min_installs DESC
       LIMIT 10
     `).all();
-    
-    res.json(trendingGames);
+    res.json(trending);
   } catch (err) {
-    console.error("Failed to load trending:", err);
-    res.status(500).json({ error: "Failed to load trending targets" });
+    res.status(500).json({ error: "Failed to fetch trending" });
   }
 });
 
@@ -207,16 +212,14 @@ app.get("/api/scan-stream", (req, res) => {
   });
 });
 
-// --- UPDATED: Scan Route ---
-// --- FULLY ASSEMBLED SCAN ROUTE ---
-// --- UPGRADED: BATCH SCAN ROUTE ---
-// --- UPGRADED: SMART BATCH SCAN ROUTE ---
+// --- THE ULTIMATE BATCH SCAN ROUTE ---
 app.post("/api/scan", async (req, res) => {
-  // scanType will be 'manual', 'list', or 'competitor'
-  const { searchQuery, scanType, targetId, targetCountry, limit } = req.body;
+  
+  // 1. Grab the 'sendReport' boolean from the frontend toggle
+  const { searchQuery, scanType, targetId, targetCountry, limit, sendReport } = req.body;
   
   try {
-    let targets = []; // Array of { query: string, name: string }
+    let targets = []; 
     
     if (scanType === "list") {
       const list = db.prepare("SELECT targets FROM target_lists WHERE id = ?").get(targetId);
@@ -232,8 +235,10 @@ app.post("/api/scan", async (req, res) => {
 
     const fixUrl = (url) => url && url.startsWith('//') ? 'https:' + url : url;
     let allResults = [];
+    
+    // 2. THIS HOLDS ISOLATED DATA FOR THE ON-DEMAND PDF
+    let isolatedScanData = []; 
 
-    // --- THE BATCH LOOP ---
     for (let tIndex = 0; tIndex < targets.length; tIndex++) {
       const targetQuery = targets[tIndex].query;
       const targetDisplayName = targets[tIndex].name;
@@ -254,13 +259,11 @@ app.post("/api/scan", async (req, res) => {
         competitorId = resComp.lastInsertRowid;
       } else {
         competitorId = compQuery.id;
-        // Auto-update ads_id if we didn't have it before
         if (!compQuery.ads_id && targetQuery.startsWith('AR')) {
            db.prepare("UPDATE competitors SET ads_id = ? WHERE id = ?").run(targetQuery, competitorId);
         }
       }
 
-      // Play Store Scraper Loop
       for (let i = 0; i < results.length; i++) {
         const pkg = results[i];
         
@@ -287,17 +290,42 @@ app.post("/api/scan", async (req, res) => {
           const iconUrl = fixUrl(appData.icon);
           const screenshotsArray = (appData.screenshots || []).map(fixUrl);
 
+          // 3. SAVING THE NEW ASOSPY METRICS (Installs, Updated Date, etc.)
           const insertGame = db.prepare(`
-            INSERT INTO games (package_name, title, category, rating, ratings_count, icon, screenshots, description)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO games (package_name, title, category, rating, ratings_count, icon, screenshots, description, installs, min_installs, released, updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(package_name) DO UPDATE SET 
               title=excluded.title, category=excluded.category, rating=excluded.rating, ratings_count=excluded.ratings_count,
-              icon=excluded.icon, screenshots=excluded.screenshots, description=excluded.description
+              icon=excluded.icon, screenshots=excluded.screenshots, description=excluded.description,
+              installs=excluded.installs, min_installs=excluded.min_installs, released=excluded.released, updated=excluded.updated
           `);
           
-          insertGame.run(pkg, appData.title, appData.genre, appData.score || 0, appData.ratings || 0, iconUrl, JSON.stringify(screenshotsArray), appData.description);
+          insertGame.run(
+            pkg, appData.title, appData.genre, appData.score || 0, appData.ratings || 0, 
+            iconUrl, JSON.stringify(screenshotsArray), appData.description,
+            appData.installs || "0+", appData.minInstalls || 0, appData.released || "Unknown", appData.updated || 0
+          );
+          
+          // Add this right after you run your DB insert
+isolatedScanData.push({
+  title: appData.title,
+  publisher_name: pubName,
+  category: appData.genre,
+  rating: appData.score || 0,
+  installs: appData.installs || "0+"
+});
+          
           const gameQuery = db.prepare("SELECT id FROM games WHERE package_name = ?").get(pkg);
           db.prepare("INSERT OR IGNORE INTO account_games (account_id, game_id) VALUES (?, ?)").run(accountId, gameQuery.id);
+
+          // 4. PUSH TO ISOLATED ARRAY FOR THE PDF
+          isolatedScanData.push({
+            title: appData.title,
+            publisher_name: pubName,
+            category: appData.genre,
+            rating: appData.score || 0,
+            installs: appData.installs || "0+"
+          });
 
           scanEvents.emit("progress", {
             target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length,
@@ -319,7 +347,6 @@ app.post("/api/scan", async (req, res) => {
         log: `> 📊 Syncing data snapshot to Google Sheets...`
       });
       
-      // Ensure GoogleSheetsSync.js handles this safely!
       try {
         await pushScanToSheets(db, targetDisplayName, results);
       } catch (e) {
@@ -334,6 +361,30 @@ app.post("/api/scan", async (req, res) => {
       currentAd: limit, totalAds: limit, timeRemaining: "00:00",
       log: `> 🎉 BATCH COMPLETE! Dashboard updating...`
     });
+
+    // 5. TRIGGER THE ISOLATED PDF REPORT
+    if (sendReport && isolatedScanData.length > 0) {
+      scanEvents.emit("progress", {
+        target: "Generating Report", targetIndex: targets.length, totalTargets: targets.length,
+        currentAd: limit, totalAds: limit, timeRemaining: "00:00",
+        log: `> ✉️ Generating isolated PDF report and sending email...`
+      });
+      
+      const { generateAndSendReport } = require("./AutomatedReport");
+      // Put your manager's email here!
+      await generateAndSendReport("manager@company.com", isolatedScanData);
+    }
+
+    if (sendReport && isolatedScanData.length > 0) {
+      scanEvents.emit("progress", {
+        target: "Generating Report", targetIndex: targets.length, totalTargets: targets.length,
+        currentAd: limit, totalAds: limit, timeRemaining: "00:00",
+        log: `> ✉️ Generating isolated PDF report and sending email...`
+      });
+      const { generateAndSendReport } = require("./AutomatedReport");
+      // Replace with your manager's email!
+      await generateAndSendReport("manager@company.com", isolatedScanData);
+    }
 
     res.json({ status: "success", data: allResults });
   } catch (error) {

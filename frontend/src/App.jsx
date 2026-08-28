@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 function App() {
   const [activeTab, setActiveTab] = useState("dashboard"); 
@@ -10,8 +10,7 @@ function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [lastScanTime, setLastScanTime] = useState("Never");
   const [scanQuery, setScanQuery] = useState("");
-  const [targetCountry, setTargetCountry] = useState("Any Region (Global)");
-  const [scanLimit, setScanLimit] = useState(500);
+  const [scanLimit, setScanLimit] = useState(5);
   const [selectedSource, setSelectedSource] = useState("manual"); // Format: "manual", "list_1", "comp_2"
 
   // Drawer & Progress States
@@ -27,6 +26,8 @@ function App() {
   const [newListTargets, setNewListTargets] = useState("");
   const [newCompName, setNewCompName] = useState("");
   const [newCompAdsId, setNewCompAdsId] = useState("");
+
+  const [sendReport, setSendReport] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem("atlas_theme");
@@ -70,6 +71,17 @@ function App() {
     } catch (err) { console.error(err); }
   };
 
+  const handleToggleList = async (id, currentStatus) => {
+    try {
+      await fetch(`http://localhost:3000/api/lists/${id}/toggle`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: currentStatus === 1 ? 0 : 1 })
+      });
+      loadTargetLists();
+    } catch (err) { console.error("Failed to toggle list", err); }
+  };
+
   const handleSaveCompetitor = async (e) => {
     e.preventDefault();
     if (!newCompName || !newCompAdsId) return alert("Fill in both fields.");
@@ -101,7 +113,6 @@ function App() {
     
     setScanProgress({ target: "Initializing...", targetIndex: 1, totalTargets: 1, currentAd: 0, totalAds: scanLimit, timeRemaining: "Calculating...", logs: ["> Booting Intelligence Node..."] });
 
-    // Parse the selected source (e.g. "list_12" -> type: "list", id: 12)
     let scanType = "manual";
     let targetId = null;
     if (selectedSource.startsWith("list_")) {
@@ -138,8 +149,9 @@ function App() {
           searchQuery: scanQuery, 
           scanType: scanType, 
           targetId: targetId, 
-          targetCountry: targetCountry.includes("Any") ? "Any" : targetCountry, 
-          limit: scanLimit 
+          targetCountry: "Any", 
+          limit: scanLimit,
+          sendReport: sendReport
         })
       });
       const data = await res.json();
@@ -200,9 +212,7 @@ function App() {
 
         <main className="relative pt-24 min-h-screen px-4 sm:px-6 lg:px-8 py-8">
           
-          {/* ========================================================
-                               DASHBOARD TAB
-          ======================================================== */}
+          {/* DASHBOARD TAB */}
           {activeTab === "dashboard" && (
             <div className="flex flex-col w-full gap-8 animate-in fade-in duration-300">
               <div className="w-full bg-surface-glass backdrop-blur-2xl rounded-2xl p-6 shadow-xl relative overflow-hidden group border border-border-subtle">
@@ -247,6 +257,16 @@ function App() {
                     <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest pl-1 block">Ad Limit</label>
                     <input value={scanLimit} onChange={(e) => setScanLimit(Number(e.target.value))} className="w-full bg-input-bg text-text-main border border-border-subtle font-body-md rounded-xl py-3 px-4 outline-none focus:ring-2 focus:ring-electric-blue/50 transition-all shadow-inner text-center placeholder:text-text-muted" type="number" />
                   </div>
+                  <div className="w-full sm:w-36 space-y-2">
+                <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest pl-1 block">Email PDF</label>
+  <button
+    onClick={() => setSendReport(!sendReport)}
+    className={`w-full py-3 px-4 rounded-xl flex items-center justify-center transition-all border font-body-md shadow-inner ${sendReport ? 'bg-electric-blue/10 border-electric-blue text-electric-blue' : 'bg-input-bg border-border-subtle text-text-muted hover:bg-surface-glass'}`}
+  >
+    <span className="material-symbols-outlined text-[20px] mr-2">{sendReport ? 'check_box' : 'check_box_outline_blank'}</span>
+    {sendReport ? 'Yes' : 'No'}
+  </button>
+</div>
                   <div className="flex gap-4 items-center flex-shrink-0 w-full md:w-auto mt-2 md:mt-0">
                     <button onClick={handleRunScan} disabled={isScanning} className="flex-1 md:flex-none bg-electric-blue hover:bg-primary-container text-white font-body-md font-semibold py-3 px-6 rounded-xl shadow-[0_0_20px_rgba(59,130,246,0.3)] transition-all flex justify-center items-center gap-2 disabled:opacity-50">
                       <span className={`material-symbols-outlined text-[20px] ${isScanning ? "animate-spin" : ""}`}>data_usage</span> {isScanning ? "Scanning..." : "Run Scan"}
@@ -307,12 +327,23 @@ function App() {
                   <div className="p-6 pb-4 bg-surface-solid border-b border-border-subtle rounded-t-2xl"><h2 className="font-headline-lg text-text-main text-xl">Trending Targets</h2></div>
                   <div className="flex-1 p-2 space-y-2 overflow-y-auto custom-scrollbar">
                     {trending.length === 0 ? <div className="text-center font-body-sm text-text-muted mt-10">No trending data. Run a scan!</div> : trending.map((game) => (
-                      <div key={game.id} onClick={() => handleGameClick(game)} className="flex items-center p-4 rounded-xl hover:bg-electric-blue/5 cursor-pointer">
-                        <div className="w-12 h-12 rounded-xl overflow-hidden bg-surface-solid shadow-md flex items-center justify-center flex-shrink-0 mr-4">
-                          {game.icon ? <img src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-primary/50">sports_esports</span>}
-                        </div>
-                        <div className="flex-1 min-w-0"><h3 className="font-body-md font-semibold text-text-main truncate">{game.title}</h3><p className="font-body-sm text-text-muted truncate">{game.publisher_name}</p></div>
-                      </div>
+                      <div key={game.id} onClick={() => handleGameClick(game)} className="flex items-center p-4 rounded-xl hover:bg-surface-solid border border-transparent hover:border-border-subtle cursor-pointer transition-all group">
+  <div className="w-12 h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle shadow-md flex items-center justify-center flex-shrink-0 mr-4">
+    {game.icon ? <img src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-primary/50">sports_esports</span>}
+  </div>
+  <div className="flex-1 min-w-0">
+    <h3 className="font-body-md font-semibold text-text-main truncate group-hover:text-primary transition-colors">{game.title}</h3>
+    <p className="font-body-sm text-text-muted truncate">{game.publisher_name}</p>
+  </div>
+  
+  {/* THE NEW INSTALLS BADGE */}
+  {game.installs && game.installs !== "0+" && (
+    <div className="flex-shrink-0 ml-3 bg-emerald-metric/10 border border-emerald-metric/20 px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-inner">
+      <span className="material-symbols-outlined text-[14px] text-emerald-metric">download</span>
+      <span className="font-mono text-[11px] text-emerald-metric font-bold tracking-wider">{game.installs}</span>
+    </div>
+  )}
+</div>
                     ))}
                   </div>
                 </div>
@@ -337,9 +368,7 @@ function App() {
             </div>
           )}
 
-          {/* ========================================================
-                             AUTOMATED SCANS TAB
-          ======================================================== */}
+          {/* AUTOMATED SCANS TAB */}
           {activeTab === "automated" && (
             <div className="flex flex-col w-full gap-8 animate-in fade-in duration-300">
               <div className="flex justify-between items-end mb-2">
@@ -453,7 +482,7 @@ function App() {
         </main>
       </div>
 
-      {/* --- OVERLAYS & MODALS --- */}
+      {/* OVERLAYS & MODALS */}
       {isDrawerOpen && <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[55]" onClick={closeDrawer}></div>}
       <div className={`fixed top-0 right-0 h-full w-full sm:w-[40%] min-w-[320px] max-w-[500px] bg-surface-solid border-l border-border-subtle shadow-2xl flex flex-col transition-transform duration-300 ease-in-out z-[60] ${isDrawerOpen ? 'translate-x-0' : 'translate-x-full'}`}>
         {selectedGame && (
