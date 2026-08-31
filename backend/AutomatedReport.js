@@ -5,7 +5,7 @@ const path = require('path');
 const db = require('./database'); // Pulls data directly from your database
 
 // Your exact Google Sheet URL for the manager to click
-const SHEET_URL = "https://docs.google.com/spreadsheets/d/1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs/edit?gid=705066303#gid=705066303";
+const SHEET_URL = "https://docs.google.com/spreadsheets/d/1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs/edit?pli=1&gid=705066303#gid=705066303";
 
 async function generateAndSendReport(managerEmail, specificScanData = null) {
   console.log("📄 [REPORT ENGINE] Building custom data report...");

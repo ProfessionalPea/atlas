@@ -1,6 +1,6 @@
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor } = require("./GoogleAdsScanner");
-const { pushScanToSheets } = require("./GoogleSheetsSync"); // <--- ADD THIS
+const { pushScanToSheets } = require("./GoogleSheetsSync"); 
 const EventEmitter = require('events');
 const cron = require('node-cron');
 const express = require("express");
@@ -8,24 +8,21 @@ const cors = require("cors");
 const fs = require("fs"); 
 const db = require("./database");
 
-// Auto-upgrade DB to hold AsoSpy Metrics
-try {
-  db.prepare("ALTER TABLE games ADD COLUMN installs TEXT").run();
-  db.prepare("ALTER TABLE games ADD COLUMN min_installs INTEGER").run();
-  db.prepare("ALTER TABLE games ADD COLUMN released TEXT").run();
-  db.prepare("ALTER TABLE games ADD COLUMN updated INTEGER").run();
-} catch (e) {
-  // Columns already exist, safely ignore
-}
+// Safe Schema Upgrader: Evaluates every column independently
+const addColumn = (table, column, type) => {
+  try { db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`).run(); } catch (e) {}
+};
 
-// Auto-upgrade DB to hold Icons and Screenshots
-try {
-  db.prepare("ALTER TABLE games ADD COLUMN icon TEXT").run();
-  db.prepare("ALTER TABLE games ADD COLUMN screenshots TEXT").run();
-  db.prepare("ALTER TABLE games ADD COLUMN description TEXT").run();
-} catch (e) {
-  // Columns already exist, safely ignore
-}
+// Auto-upgrade DB
+addColumn("games", "similar_apps", "TEXT");
+addColumn("games", "installs", "TEXT");
+addColumn("games", "min_installs", "INTEGER");
+addColumn("games", "released", "TEXT");
+addColumn("games", "updated", "INTEGER");
+addColumn("games", "ad_count", "INTEGER DEFAULT 1");
+addColumn("games", "icon", "TEXT");
+addColumn("games", "screenshots", "TEXT");
+addColumn("games", "description", "TEXT");
 
 // Auto-upgrade DB for Target Lists
 try {
@@ -67,35 +64,33 @@ app.get("/api/stats", (req, res) => {
   res.json({ competitors, accounts, games });
 });
 
+// --- NON-DESTRUCTIVE DATABASE RESET ---
 app.post("/api/reset", (req, res) => {
   try {
-    console.log("🧹 NUKE INITIATED: Wiping all database tables...");
+    console.log("🧹 NUKE INITIATED: Wiping scan data cache...");
     
-    // Delete data from all tables
     db.prepare("DELETE FROM account_games").run();
     db.prepare("DELETE FROM games").run();
     db.prepare("DELETE FROM accounts").run();
-    db.prepare("DELETE FROM competitors").run();
+    db.prepare("DELETE FROM competitors WHERE ads_id IS NULL").run();
     
-    console.log("✨ Database is now completely empty.");
-    res.json({ status: "success", message: "Database reset complete" });
+    console.log("✨ Scan cache wiped. Saved competitors, batch lists, and email lists preserved.");
+    res.json({ status: "success" });
   } catch (err) {
-    console.error("Failed to reset database:", err);
-    res.status(500).json({ error: "Failed to reset database" });
+    console.error("Reset Error:", err);
+    res.status(500).json({ error: "Failed to reset scan data" });
   }
 });
 
-// --- UPGRADED: TOP CHARTS ROUTE ---
+// --- TOP CHARTS ROUTE ---
 app.get("/api/trending", (req, res) => {
   try {
-    // Sorts by actual install volume instead of just "recently added"
     const trending = db.prepare(`
-      SELECT g.id, g.title, g.icon, g.package_name, g.installs, g.min_installs, g.category, a.publisher_name 
+      SELECT g.id, g.title, g.icon, g.package_name, g.installs, g.min_installs, g.category, g.released, g.updated, g.similar_apps, g.rating, g.ratings_count, g.screenshots, g.ad_count, a.publisher_name 
       FROM games g
       LEFT JOIN account_games ag ON g.id = ag.game_id
       LEFT JOIN accounts a ON ag.account_id = a.id
-      ORDER BY g.min_installs DESC
-      LIMIT 10
+      ORDER BY g.ad_count DESC
     `).all();
     res.json(trending);
   } catch (err) {
@@ -103,120 +98,104 @@ app.get("/api/trending", (req, res) => {
   }
 });
 
+// ==========================================
+// ✉️ EMAIL LIST MANAGEMENT
+// ==========================================
+
+try {
+  db.prepare(`CREATE TABLE IF NOT EXISTS email_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    emails TEXT NOT NULL
+  )`).run();
+} catch (e) { }
+
+app.get("/api/emails", (req, res) => {
+  try { res.json(db.prepare("SELECT * FROM email_lists ORDER BY id DESC").all()); } 
+  catch (err) { res.status(500).json({ error: "Failed to fetch emails" }); }
+});
+
+app.post("/api/emails", (req, res) => {
+  const { name, emails } = req.body;
+  try { db.prepare("INSERT INTO email_lists (name, emails) VALUES (?, ?)").run(name, JSON.stringify(emails)); res.json({ status: "success" }); } 
+  catch (err) { res.status(500).json({ error: "Failed to save email" }); }
+});
+
+app.delete("/api/emails/:id", (req, res) => {
+  try { db.prepare("DELETE FROM email_lists WHERE id = ?").run(req.params.id); res.json({ status: "success" }); } 
+  catch (err) { res.status(500).json({ error: "Failed to delete" }); }
+});
+
 // ----------------------------------------------------
 // TARGET LISTS ROUTES (AUTOMATED SCANS)
 // ----------------------------------------------------
 
-// Get all lists
 app.get("/api/lists", (req, res) => {
   try {
     const lists = db.prepare("SELECT * FROM target_lists ORDER BY created_at DESC").all();
-    // Parse the targets from JSON string back to array for the frontend
     const parsedLists = lists.map(list => ({ ...list, targets: JSON.parse(list.targets) }));
     res.json(parsedLists);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch lists" });
-  }
+  } catch (err) { res.status(500).json({ error: "Failed to fetch lists" }); }
 });
 
-// Create a new list
 app.post("/api/lists", (req, res) => {
   const { name, targets } = req.body;
   if (!name || !targets || !Array.isArray(targets)) return res.status(400).json({ error: "Invalid data" });
-  
   try {
     const result = db.prepare("INSERT INTO target_lists (name, targets) VALUES (?, ?)").run(name, JSON.stringify(targets));
     res.json({ id: result.lastInsertRowid, name, targets, is_active: 1 });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to create list" });
-  }
+  } catch (err) { res.status(500).json({ error: "Failed to create list" }); }
 });
 
-// Toggle a list on/off
 app.patch("/api/lists/:id/toggle", (req, res) => {
   const { id } = req.params;
   const { is_active } = req.body;
-  try {
-    db.prepare("UPDATE target_lists SET is_active = ? WHERE id = ?").run(is_active ? 1 : 0, id);
-    res.json({ status: "success" });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to toggle list" });
-  }
+  try { db.prepare("UPDATE target_lists SET is_active = ? WHERE id = ?").run(is_active ? 1 : 0, id); res.json({ status: "success" }); } 
+  catch (err) { res.status(500).json({ error: "Failed to toggle list" }); }
 });
 
-// Delete a list
 app.delete("/api/lists/:id", (req, res) => {
   const { id } = req.params;
-  try {
-    db.prepare("DELETE FROM target_lists WHERE id = ?").run(id);
-    res.json({ status: "success" });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to delete list" });
-  }
+  try { db.prepare("DELETE FROM target_lists WHERE id = ?").run(id); res.json({ status: "success" }); } 
+  catch (err) { res.status(500).json({ error: "Failed to delete list" }); }
 });
 
 // --- SAVED COMPETITORS MANAGEMENT ---
 
-// Auto-upgrade DB to ensure we have the ads_id column
-try {
-  db.prepare("ALTER TABLE competitors ADD COLUMN ads_id TEXT").run();
-} catch (e) {
-  // Column exists, ignore
-}
+try { db.prepare("ALTER TABLE competitors ADD COLUMN ads_id TEXT").run(); } catch (e) { }
 
-// Get flat list of saved competitors for the UI
 app.get("/api/saved-competitors", (req, res) => {
-  try {
-    const comps = db.prepare("SELECT * FROM competitors WHERE ads_id IS NOT NULL ORDER BY id DESC").all();
-    res.json(comps);
-  } catch(err) {
-    res.status(500).json({error: "Failed to fetch saved competitors"});
-  }
+  try { res.json(db.prepare("SELECT * FROM competitors WHERE ads_id IS NOT NULL ORDER BY id DESC").all()); } 
+  catch(err) { res.status(500).json({error: "Failed to fetch saved competitors"}); }
 });
 
-// Delete a saved competitor
 app.delete("/api/saved-competitors/:id", (req, res) => {
   const { id } = req.params;
   try {
-    // Delete their accounts, games, and the competitor itself
     const accounts = db.prepare("SELECT id FROM accounts WHERE competitor_id = ?").all(id);
-    accounts.forEach(acc => {
-      db.prepare("DELETE FROM account_games WHERE account_id = ?").run(acc.id);
-    });
+    accounts.forEach(acc => { db.prepare("DELETE FROM account_games WHERE account_id = ?").run(acc.id); });
     db.prepare("DELETE FROM accounts WHERE competitor_id = ?").run(id);
     db.prepare("DELETE FROM competitors WHERE id = ?").run(id);
     res.json({ status: "success" });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to delete competitor" });
-  }
+  } catch (err) { res.status(500).json({ error: "Failed to delete competitor" }); }
 });
 
 app.get("/api/scan-stream", (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform", // Forces real-time delivery
+    "Cache-Control": "no-cache, no-transform",
     "Connection": "keep-alive"
   });
   
-  // Send a heartbeat to force the pipe open
   res.write(`data: ${JSON.stringify({ log: "> Secure SSE connection established..." })}\n\n`);
-
-  const sendProgress = (data) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
+  const sendProgress = (data) => { res.write(`data: ${JSON.stringify(data)}\n\n`); };
   scanEvents.on("progress", sendProgress);
-
-  req.on("close", () => {
-    scanEvents.off("progress", sendProgress);
-  });
+  req.on("close", () => { scanEvents.off("progress", sendProgress); });
 });
 
 // --- THE ULTIMATE BATCH SCAN ROUTE ---
 app.post("/api/scan", async (req, res) => {
-  
-  // 1. Grab the 'sendReport' boolean from the frontend toggle
-  const { searchQuery, scanType, targetId, targetCountry, limit, sendReport } = req.body;
+  const { searchQuery, scanType, targetId, targetCountry, limit, sendReport, emailListId } = req.body;
   
   try {
     let targets = []; 
@@ -235,8 +214,6 @@ app.post("/api/scan", async (req, res) => {
 
     const fixUrl = (url) => url && url.startsWith('//') ? 'https:' + url : url;
     let allResults = [];
-    
-    // 2. THIS HOLDS ISOLATED DATA FOR THE ON-DEMAND PDF
     let isolatedScanData = []; 
 
     for (let tIndex = 0; tIndex < targets.length; tIndex++) {
@@ -245,10 +222,7 @@ app.post("/api/scan", async (req, res) => {
 
       const results = await scanCompetitor(targetQuery, targetCountry, limit, (progressData) => {
         scanEvents.emit("progress", {
-          ...progressData,
-          target: targetDisplayName,
-          targetIndex: tIndex + 1,
-          totalTargets: targets.length
+          ...progressData, target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length
         });
       });
       
@@ -264,13 +238,18 @@ app.post("/api/scan", async (req, res) => {
         }
       }
 
-      for (let i = 0; i < results.length; i++) {
-        const pkg = results[i];
+      // --- SPEED OPTIMIZATION: ONLY FETCH UNIQUE GAMES ---
+      const adCounts = {};
+      results.forEach(pkg => { adCounts[pkg] = (adCounts[pkg] || 0) + 1; });
+      const uniquePackages = [...new Set(results)];
+
+      for (let i = 0; i < uniquePackages.length; i++) {
+        const pkg = uniquePackages[i];
         
         scanEvents.emit("progress", {
           target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length,
           currentAd: limit, totalAds: limit, timeRemaining: "00:00",
-          log: `> ⏳ Fetching live Play Store data for: ${pkg}... (${i+1}/${results.length})`
+          log: `> ⏳ Fetching live Play Store data for: ${pkg}... (${i+1}/${uniquePackages.length})`
         });
 
         try {
@@ -278,59 +257,54 @@ app.post("/api/scan", async (req, res) => {
           const pubName = appData.developer || "Unknown Publisher";
           const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
           
+          let similarApps = [];
+          try {
+            const rawSimilar = await gplay.similar({ appId: pkg, country: 'us' });
+            similarApps = (rawSimilar || []).slice(0, 6).map(sim => ({
+              title: sim.title, appId: sim.appId, developer: sim.developer, icon: fixUrl(sim.icon), score: sim.score || 0
+            }));
+          } catch (simErr) { similarApps = []; }
+
           let accQuery = db.prepare("SELECT id FROM accounts WHERE publisher_name = ? AND competitor_id = ?").get(pubName, competitorId);
           let accountId;
           if (!accQuery) {
             const resAcc = db.prepare("INSERT INTO accounts (competitor_id, publisher_name, normalized_name) VALUES (?, ?, ?)").run(competitorId, pubName, normalizedPub);
             accountId = resAcc.lastInsertRowid;
-          } else {
-            accountId = accQuery.id;
-          }
+          } else { accountId = accQuery.id; }
 
           const iconUrl = fixUrl(appData.icon);
           const screenshotsArray = (appData.screenshots || []).map(fixUrl);
 
-          // 3. SAVING THE NEW ASOSPY METRICS (Installs, Updated Date, etc.)
           const insertGame = db.prepare(`
-            INSERT INTO games (package_name, title, category, rating, ratings_count, icon, screenshots, description, installs, min_installs, released, updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO games (package_name, title, category, rating, ratings_count, icon, screenshots, description, installs, min_installs, released, updated, similar_apps, ad_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(package_name) DO UPDATE SET 
               title=excluded.title, category=excluded.category, rating=excluded.rating, ratings_count=excluded.ratings_count,
               icon=excluded.icon, screenshots=excluded.screenshots, description=excluded.description,
-              installs=excluded.installs, min_installs=excluded.min_installs, released=excluded.released, updated=excluded.updated
+              installs=excluded.installs, min_installs=excluded.min_installs, released=excluded.released, updated=excluded.updated,
+              similar_apps=excluded.similar_apps,
+              ad_count=excluded.ad_count
           `);
           
           insertGame.run(
             pkg, appData.title, appData.genre, appData.score || 0, appData.ratings || 0, 
             iconUrl, JSON.stringify(screenshotsArray), appData.description,
-            appData.installs || "0+", appData.minInstalls || 0, appData.released || "Unknown", appData.updated || 0
+            appData.installs || "0+", appData.minInstalls || 0, appData.released || "Unknown", appData.updated || 0,
+            JSON.stringify(similarApps),
+            adCounts[pkg] 
           );
-          
-          // Add this right after you run your DB insert
-isolatedScanData.push({
-  title: appData.title,
-  publisher_name: pubName,
-  category: appData.genre,
-  rating: appData.score || 0,
-  installs: appData.installs || "0+"
-});
           
           const gameQuery = db.prepare("SELECT id FROM games WHERE package_name = ?").get(pkg);
           db.prepare("INSERT OR IGNORE INTO account_games (account_id, game_id) VALUES (?, ?)").run(accountId, gameQuery.id);
 
-          // 4. PUSH TO ISOLATED ARRAY FOR THE PDF
           isolatedScanData.push({
-            title: appData.title,
-            publisher_name: pubName,
-            category: appData.genre,
-            rating: appData.score || 0,
-            installs: appData.installs || "0+"
+            title: appData.title, publisher_name: pubName, category: appData.genre, rating: appData.score || 0, installs: appData.installs || "0+"
           });
 
           scanEvents.emit("progress", {
             target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length,
             currentAd: limit, totalAds: limit, timeRemaining: "00:00",
-            log: `> ✅ Saved: ${appData.title} (Pub: ${pubName})`
+            log: `> 🎯 Saved: ${appData.title} (${similarApps.length} clones, ${adCounts[pkg]} ads)`
           });
         } catch (err) {
           scanEvents.emit("progress", {
@@ -347,11 +321,7 @@ isolatedScanData.push({
         log: `> 📊 Syncing data snapshot to Google Sheets...`
       });
       
-      try {
-        await pushScanToSheets(db, targetDisplayName, results);
-      } catch (e) {
-        console.error("Sheets Sync Error:", e);
-      }
+      try { await pushScanToSheets(db, targetDisplayName, results); } catch (e) { console.error("Sheets Sync Error:", e); }
       
       allResults.push(...results);
     } // End of Batch Loop
@@ -362,28 +332,32 @@ isolatedScanData.push({
       log: `> 🎉 BATCH COMPLETE! Dashboard updating...`
     });
 
-    // 5. TRIGGER THE ISOLATED PDF REPORT
-    if (sendReport && isolatedScanData.length > 0) {
+    // --- STRICT EMAIL LOGIC ---
+    // Evaluates strictly true, entirely bypassing "none" ghosts.
+    const isReportRequested = sendReport === true && emailListId && emailListId !== "none";
+
+    if (isReportRequested && isolatedScanData.length > 0) {
       scanEvents.emit("progress", {
         target: "Generating Report", targetIndex: targets.length, totalTargets: targets.length,
         currentAd: limit, totalAds: limit, timeRemaining: "00:00",
         log: `> ✉️ Generating isolated PDF report and sending email...`
       });
       
-      const { generateAndSendReport } = require("./AutomatedReport");
-      // Put your manager's email here!
-      await generateAndSendReport("manager@company.com", isolatedScanData);
-    }
-
-    if (sendReport && isolatedScanData.length > 0) {
-      scanEvents.emit("progress", {
-        target: "Generating Report", targetIndex: targets.length, totalTargets: targets.length,
-        currentAd: limit, totalAds: limit, timeRemaining: "00:00",
-        log: `> ✉️ Generating isolated PDF report and sending email...`
-      });
-      const { generateAndSendReport } = require("./AutomatedReport");
-      // Replace with your manager's email!
-      await generateAndSendReport("manager@company.com", isolatedScanData);
+      try {
+        const emailRow = db.prepare("SELECT emails FROM email_lists WHERE id = ?").get(emailListId);
+        if (emailRow) {
+          const emailString = JSON.parse(emailRow.emails).join(", ");
+          const { generateAndSendReport } = require("./AutomatedReport");
+          
+          await generateAndSendReport(emailString, isolatedScanData);
+          
+          scanEvents.emit("progress", {
+            target: "Generating Report", targetIndex: targets.length, totalTargets: targets.length,
+            currentAd: limit, totalAds: limit, timeRemaining: "00:00",
+            log: `> ✅ Email successfully dispatched to targets!`
+          });
+        }
+      } catch (err) { console.error("Email Dispatch Error:", err); }
     }
 
     res.json({ status: "success", data: allResults });
@@ -393,7 +367,6 @@ isolatedScanData.push({
   }
 });
 
-// 1. Create a Competitor
 app.post("/api/competitors", (req, res) => {
   const { name, adsId, country } = req.body;
   if (!name) return res.status(400).json({ error: "Competitor name is required" });
@@ -402,7 +375,6 @@ app.post("/api/competitors", (req, res) => {
   res.json({ id: result.lastInsertRowid, name, adsId: adsId || null, country: country || null });
 });
 
-// 2. Add an Account linked to a Competitor
 app.post("/api/accounts", (req, res) => {
   const { competitorId, publisherName, country, status } = req.body;
   if (!publisherName) return res.status(400).json({ error: "Publisher name is required" });
@@ -412,7 +384,6 @@ app.post("/api/accounts", (req, res) => {
   res.json({ id: result.lastInsertRowid, competitorId, publisherName, normalizedName: normalized, country: country || null, status: status || "active" });
 });
 
-// 3. Add a Game and Link it to an Account
 app.post("/api/games", (req, res) => {
   const { accountId, packageName, title, rating, ratingsCount, category } = req.body;
   if (!packageName || !title) return res.status(400).json({ error: "Package name and title are required" });
@@ -431,7 +402,6 @@ app.post("/api/games", (req, res) => {
   res.json({ id: game.id, packageName, title, linkedAccountId: accountId || null });
 });
 
-// 4. Get All Competitors with their Accounts & Games
 app.get("/api/competitors", (req, res) => {
   const competitors = db.prepare("SELECT * FROM competitors").all();
   
@@ -453,59 +423,35 @@ app.get("/api/competitors", (req, res) => {
 
 const PORT = 3000;
 
-// ==========================================
-// 👻 THE GHOST AUTOMATION (CRON JOBS)
-// ==========================================
-
-// Schedule: Runs every day at 3:00 AM ('0 3 * * *')
-// For testing purposes right now, you can change '0 3 * * *' to '*/2 * * * *' to make it run every 2 minutes.
 cron.schedule('0 3 * * *', async () => {
   console.log("\n👻 [GHOST AUTOMATION] Waking up. Initiating scheduled background scans...");
 
   try {
-    // 1. Get a list of every competitor currently in your database
     const targets = db.prepare("SELECT name, country FROM competitors").all();
-
     if (targets.length === 0) {
       console.log("👻 [GHOST AUTOMATION] No targets found in database. Going back to sleep.");
       return;
     }
 
-    // 2. Loop through them one by one
     for (const target of targets) {
       console.log(`\n👻 [GHOST AUTOMATION] Initiating silent scan for: ${target.name}`);
-      
-      // Run the scanner with a 500 ad limit. 
-      // We pass a dummy callback because no UI is listening in the middle of the night!
       await scanCompetitor(target.name, target.country || "Any", 500, (progress) => {
-        // Only log major milestones to the backend terminal to keep it clean
         if (progress.log && progress.log.includes('✅')) {
           console.log(`   ${progress.log}`);
         }
       });
-
-      // 3. The Cooldown: Wait 30 seconds before hitting Google again so they don't block our IP
       console.log(`👻 [GHOST AUTOMATION] Target complete. Cooling down for 30 seconds...`);
       await new Promise(resolve => setTimeout(resolve, 30000));
     }
-
     console.log("\n👻 [GHOST AUTOMATION] All scheduled scans complete. Database is primed for the day.");
   } catch (error) {
     console.error("👻 [GHOST AUTOMATION] Critical failure in background task:", error);
   }
 });
 
-// ==========================================
-// ✉️ THE 6:00 AM MANAGER REPORT
-// ==========================================
-
-// Schedule: Runs every day at 6:00 AM ('0 6 * * *')
 cron.schedule('0 6 * * *', async () => {
   console.log("\n⏰ [CRON] Triggering 6:00 AM Automated PDF Report...");
-  
-  // Replace this with your manager's actual email
   const managerEmail = "danish1042awan@gmail.com"; 
-  
   await generateAndSendReport(managerEmail);
 });
 
