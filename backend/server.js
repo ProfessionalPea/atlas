@@ -1,6 +1,6 @@
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor } = require("./GoogleAdsScanner");
-const { pushScanToSheets } = require("./GoogleSheetsSync"); 
+const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const EventEmitter = require('events');
 const cron = require('node-cron');
 const express = require("express");
@@ -64,7 +64,7 @@ app.get("/api/stats", (req, res) => {
   res.json({ competitors, accounts, games });
 });
 
-// --- NON-DESTRUCTIVE DATABASE RESET ---
+// --- UPGRADED: DATABASE RESET (CLEANS JUNK AR IDs) ---
 app.post("/api/reset", (req, res) => {
   try {
     console.log("🧹 NUKE INITIATED: Wiping scan data cache...");
@@ -72,7 +72,9 @@ app.post("/api/reset", (req, res) => {
     db.prepare("DELETE FROM account_games").run();
     db.prepare("DELETE FROM games").run();
     db.prepare("DELETE FROM accounts").run();
-    db.prepare("DELETE FROM competitors WHERE ads_id IS NULL").run();
+    
+    // Deletes auto-generated entries OR entries where name is just the AR ID
+    db.prepare("DELETE FROM competitors WHERE ads_id IS NULL OR name = ads_id").run();
     
     console.log("✨ Scan cache wiped. Saved competitors, batch lists, and email lists preserved.");
     res.json({ status: "success" });
@@ -165,8 +167,12 @@ app.delete("/api/lists/:id", (req, res) => {
 try { db.prepare("ALTER TABLE competitors ADD COLUMN ads_id TEXT").run(); } catch (e) { }
 
 app.get("/api/saved-competitors", (req, res) => {
-  try { res.json(db.prepare("SELECT * FROM competitors WHERE ads_id IS NOT NULL ORDER BY id DESC").all()); } 
-  catch(err) { res.status(500).json({error: "Failed to fetch saved competitors"}); }
+  try { 
+    // UPGRADED: Filters out auto-generated AR ID entries from displaying in UI
+    res.json(db.prepare("SELECT * FROM competitors WHERE ads_id IS NOT NULL AND name != ads_id ORDER BY id DESC").all()); 
+  } catch(err) { 
+    res.status(500).json({error: "Failed to fetch saved competitors"}); 
+  }
 });
 
 app.delete("/api/saved-competitors/:id", (req, res) => {
@@ -238,7 +244,6 @@ app.post("/api/scan", async (req, res) => {
         }
       }
 
-      // --- SPEED OPTIMIZATION: ONLY FETCH UNIQUE GAMES ---
       const adCounts = {};
       results.forEach(pkg => { adCounts[pkg] = (adCounts[pkg] || 0) + 1; });
       const uniquePackages = [...new Set(results)];
@@ -257,12 +262,21 @@ app.post("/api/scan", async (req, res) => {
           const pubName = appData.developer || "Unknown Publisher";
           const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
           
-          let similarApps = [];
+         let similarApps = [];
           try {
             const rawSimilar = await gplay.similar({ appId: pkg, country: 'us' });
-            similarApps = (rawSimilar || []).slice(0, 6).map(sim => ({
-              title: sim.title, appId: sim.appId, developer: sim.developer, icon: fixUrl(sim.icon), score: sim.score || 0
-            }));
+            
+            similarApps = (rawSimilar || [])
+              // FIX: Explicitly block apps published by the exact same developer
+              .filter(sim => sim.developer !== pubName) 
+              .slice(0, 6)
+              .map(sim => ({
+                title: sim.title, 
+                appId: sim.appId, 
+                developer: sim.developer, 
+                icon: fixUrl(sim.icon), 
+                score: sim.score || 0
+              }));
           } catch (simErr) { similarApps = []; }
 
           let accQuery = db.prepare("SELECT id FROM accounts WHERE publisher_name = ? AND competitor_id = ?").get(pubName, competitorId);
@@ -321,7 +335,12 @@ app.post("/api/scan", async (req, res) => {
         log: `> 📊 Syncing data snapshot to Google Sheets...`
       });
       
-      try { await pushScanToSheets(db, targetDisplayName, results); } catch (e) { console.error("Sheets Sync Error:", e); }
+      try { 
+        await pushScanToSheets(db, targetDisplayName, results); 
+        await syncPublisherLinksToSheets(db, targetDisplayName);
+      } catch (e) { 
+        console.error("Sheets Sync Error:", e); 
+      }
       
       allResults.push(...results);
     } // End of Batch Loop
@@ -332,8 +351,6 @@ app.post("/api/scan", async (req, res) => {
       log: `> 🎉 BATCH COMPLETE! Dashboard updating...`
     });
 
-    // --- STRICT EMAIL LOGIC ---
-    // Evaluates strictly true, entirely bypassing "none" ghosts.
     const isReportRequested = sendReport === true && emailListId && emailListId !== "none";
 
     if (isReportRequested && isolatedScanData.length > 0) {
