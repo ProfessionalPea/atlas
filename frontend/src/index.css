@@ -4,64 +4,67 @@
 
 @layer base {
   :root {
-    /* BAHUAUS LIGHT MODE */
-    --bg-base: 245 240 230;          /* Cream */
+    /* PRISTINE LIGHT MODE */
+    --bg-base: 248 250 252;          /* Slate 50 */
     --surface-solid: 255 255 255;    /* Pure White */
-    --surface-glass: 255 255 255;    /* Solid White */
-    --input-bg: 255 255 255;         
+    --surface-glass: 255 255 255;    /* Pure White */
+    --input-bg: 248 250 252;         /* Slate 50 */
     
-    --text-main: 26 26 26;           /* Charcoal */
-    --text-muted: 74 74 74;          /* Slate Grey */
-    --border-subtle: 26 26 26;       /* Brutalist Black Borders */
+    --text-main: 15 23 42;           /* Slate 900 */
+    --text-muted: 100 116 139;       /* Slate 500 */
+    --border-subtle: 226 232 240;    /* Slate 200 */
     
-    --electric-blue: 31 64 115;      /* Navy Blue */
-    --primary-container: 217 38 38;  /* Bauhaus Red */
-    --on-primary-container: 255 255 255;
+    --electric-blue: 59 130 246;     /* Blue 500 */
+    --primary-container: 219 234 254;/* Blue 100 */
+    --on-primary-container: 30 58 138;/* Blue 900 */
     
-    --urgent-red: 217 38 38;         
-    --emerald-metric: 5 150 105;     
+    --urgent-red: 239 68 68;         /* Red 500 */
+    --emerald-metric: 16 185 129;    /* Emerald 500 */
     
-    --primary: 242 183 5;            /* Mustard Yellow */
-    --secondary: 217 38 38;          /* Red */
-    --tertiary-container: 31 64 115; /* Navy */
+    /* Stat Card Icon Colors */
+    --primary: 59 130 246;           /* Blue 500 */
+    --secondary: 16 185 129;         /* Emerald 500 */
+    --tertiary-container: 249 115 22;/* Orange 500 */
 
-    /* Brutalist Physics */
-    --border-main: 3px;
-    --radius-main: 4px;
-    --radius-sm: 2px;
+    /* Modern Glass Physics (Light) */
+    --border-main: 1px;
+    --border-thin: 1px;
+    --radius-main: 16px;
+    --radius-sm: 12px;
     
-    --shadow-main: 6px 6px 0px #1a1a1a;
-    --shadow-hover: 10px 10px 0px #1a1a1a;
-    --shadow-sm: 3px 3px 0px #1a1a1a;
-    --shadow-sm-hover: 5px 5px 0px #1a1a1a;
-    --translate-x: -4px;
+    --shadow-main: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+    --shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+    --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    --shadow-sm-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    --translate-x: 0px;
     --translate-y: -4px;
   }
 
   .dark {
     /* MODERN DARK MODE */
-    --bg-base: 15 23 42;             /* Deep Slate */
+    --bg-base: 15 23 42;             
     --surface-solid: 30 41 59;       
-    --surface-glass: 30 41 59;       /* Tailwind adds /80 opacity in JS */
+    --surface-glass: 30 41 59;       
     --input-bg: 15 23 42;
     
     --text-main: 248 250 252;
     --text-muted: 148 163 184;
     --border-subtle: 51 65 85; 
     
-    --electric-blue: 59 130 246;     /* Neon Blue */
+    --electric-blue: 59 130 246;     
     --primary-container: 30 58 138;
     --on-primary-container: 255 255 255;
     
     --urgent-red: 239 68 68;
     --emerald-metric: 16 185 129;
     
-    --primary: 96 165 250;           /* Soft Blue */
-    --secondary: 52 211 153;         /* Soft Green */
-    --tertiary-container: 251 146 60;/* Soft Orange */
+    --primary: 96 165 250;           
+    --secondary: 52 211 153;         
+    --tertiary-container: 251 146 60;
 
-    /* Modern Glass Physics */
+    /* Modern Glass Physics (Dark) */
     --border-main: 1px;
+    --border-thin: 1px;
     --radius-main: 16px;
     --radius-sm: 12px;
     
@@ -74,13 +77,15 @@
   }
 }
 
-/* Subtle Architectural Grid for Light Mode ONLY */
-body:not(.dark) {
-  background-image: 
-    linear-gradient(rgba(26, 26, 26, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(26, 26, 26, 0.05) 1px, transparent 1px);
-  background-size: 32px 32px;
-  background-attachment: fixed;
+/* Animations */
+@keyframes slideUpFade {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-slide-up-fade {
+  animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
 }
 
 /* Scrollbar */

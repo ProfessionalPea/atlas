@@ -10,14 +10,13 @@ export default {
       fontFamily: {
         'headline-lg': ['Space Grotesk', 'sans-serif'], 
         'body-md': ['Inter', 'sans-serif'],
-        'body-sm': ['Inter', 'sans-serif'],
-        'body-xs': ['Inter', 'sans-serif'],
         'label-caps': ['Space Grotesk', 'sans-serif'],
         'metric-xl': ['Space Grotesk', 'sans-serif'],
         'mono': ['JetBrains Mono', 'monospace'],
       },
       borderWidth: {
         'theme': 'var(--border-main)',
+        'theme-thin': 'var(--border-thin)',
       },
       borderRadius: {
         'theme': 'var(--radius-main)',

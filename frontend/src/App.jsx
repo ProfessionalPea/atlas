@@ -2,73 +2,6 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "./lib/utils"; 
 
-// --- THE WEBGL BAUHAUS SHADER COMPONENT ---
-const BauhausShader = ({ isDarkMode }) => {
-  useEffect(() => {
-    if (isDarkMode) return;
-    const canvas = document.getElementById('bauhaus-shader');
-    if (!canvas) return;
-
-    function syncSize() {
-      const w = canvas.clientWidth || window.innerWidth;
-      const h = canvas.clientHeight || window.innerHeight;
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-      }
-    }
-    window.addEventListener('resize', syncSize);
-    syncSize();
-
-    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-    if (!gl) return;
-
-    const vs = `attribute vec2 a_position; varying vec2 v_texCoord; void main() { v_texCoord = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }`;
-    const fs = `precision highp float; uniform float u_time; uniform vec2 u_resolution; uniform vec2 u_mouse; varying vec2 v_texCoord;
-      void main() { 
-        vec2 uv = v_texCoord; vec2 p = uv * 2.0 - 1.0; p.x *= u_resolution.x / u_resolution.y; 
-        float t = u_time * 0.5; 
-        vec3 c1 = vec3(0.96, 0.94, 0.89); vec3 c2 = vec3(0.85, 0.15, 0.10); vec3 c3 = vec3(0.12, 0.25, 0.55); 
-        float noise = sin(p.x * 2.0 + t) * cos(p.y * 2.0 - t * 0.8) * 0.5; 
-        float mask1 = smoothstep(0.4, 0.38, length(p - vec2(sin(t * 0.7) * 0.5, cos(t * 0.5) * 0.3)) + noise * 0.2); 
-        float mask2 = smoothstep(0.5, 0.48, length(p + vec2(cos(t * 0.4) * 0.6, sin(t * 0.6) * 0.4)) + noise * 0.3); 
-        vec3 color = mix(mix(c1, c2, mask1 * 0.1), c3, mask2 * 0.1); 
-        vec2 grid = fract(uv * 20.0); float gridLine = step(0.98, grid.x) + step(0.98, grid.y); 
-        gl_FragColor = vec4(mix(color, vec3(0.0), gridLine * 0.03), 1.0); 
-      }`;
-
-    function cs(type, src) {
-      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s;
-    }
-    const prog = gl.createProgram();
-    gl.attachShader(prog, cs(gl.VERTEX_SHADER, vs)); gl.attachShader(prog, cs(gl.FRAGMENT_SHADER, fs));
-    gl.linkProgram(prog); gl.useProgram(prog);
-    
-    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-    const pos = gl.getAttribLocation(prog, 'a_position');
-    gl.enableVertexAttribArray(pos); gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
-    
-    const uTime = gl.getUniformLocation(prog, 'u_time');
-    const uRes = gl.getUniformLocation(prog, 'u_resolution');
-
-    let animationFrameId;
-    function render(t) {
-      syncSize(); gl.viewport(0, 0, canvas.width, canvas.height);
-      if (uTime) gl.uniform1f(uTime, t * 0.001);
-      if (uRes) gl.uniform2f(uRes, canvas.width, canvas.height);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      animationFrameId = requestAnimationFrame(render);
-    }
-    render(0);
-
-    return () => { window.removeEventListener('resize', syncSize); cancelAnimationFrame(animationFrameId); };
-  }, [isDarkMode]);
-
-  if (isDarkMode) return null;
-  return <canvas id="bauhaus-shader" className="fixed inset-0 w-full h-full pointer-events-none -z-10" style={{ display: 'block' }} />;
-};
-
 function getAgeText(dateValue) {
   if (!dateValue || dateValue === "Unknown" || dateValue === 0) return null;
   const dateObj = typeof dateValue === 'number' ? new Date(dateValue) : new Date(dateValue);
@@ -115,7 +48,7 @@ function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem("atlas_theme");
     if (saved) return saved === "dark";
-    return true; 
+    return false; 
   });
 
   useEffect(() => {
@@ -238,13 +171,12 @@ function App() {
   const dropDownAnim = { hidden: { opacity: 0, y: -10, scale: 0.95 }, show: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.15, ease: "easeOut" } }, exit: { opacity: 0, y: -10, scale: 0.95, transition: { duration: 0.1, ease: "easeIn" } } };
 
   return (
-    <div className={cn("font-body-md text-text-main min-h-screen relative transition-colors duration-400 z-10", isDarkMode ? "bg-bg-base" : "bg-transparent")}>
-      <BauhausShader isDarkMode={isDarkMode} />
+    <div className="bg-bg-base font-body-md text-text-main min-h-screen relative transition-colors duration-400 z-10 overflow-x-hidden">
 
-      {/* SIDEBAR */}
-      <aside className="fixed left-0 top-0 h-full w-64 lg:w-72 bg-surface-solid z-40 hidden md:flex flex-col border-r border-border-subtle transition-colors duration-400">
+      {/* SIDEBAR - Fixed with matching glass effect */}
+      <aside className="fixed left-0 top-0 h-full w-64 lg:w-72 bg-surface-glass backdrop-blur-xl z-40 hidden md:flex flex-col border-r border-border-subtle transition-colors duration-400">
         <div className="px-6 lg:px-8 py-8 flex items-center gap-3">
-          <img src="/atlas-logo.png" alt="Atlas Logo" className="h-10 w-10 object-contain rounded-md shadow-lg" />
+          <img src="/atlas-logo.png" alt="Atlas Logo" className="h-10 w-10 object-contain rounded-md shadow-[0_0_15px_rgba(59,130,246,0.3)]" />
           <span className="font-headline-lg text-2xl tracking-tight text-text-main">Atlas</span>
         </div>
         <nav className="flex-1 px-4 mt-4 space-y-2">
@@ -478,6 +410,18 @@ function App() {
                       ))}
                     </div>
                   </div>
+                  <div>
+                    <h2 className="font-label-caps text-text-muted uppercase tracking-widest mb-4 pl-2 flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">mail</span> Report Recipients</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {emailLists.map((list) => (
+                        <div key={list.id} className="bg-surface-glass rounded-2xl p-5 shadow-lg border border-border-subtle flex flex-col">
+                          <h3 className="font-headline-lg text-text-main text-lg truncate mb-3">{list.name}</h3>
+                          <div className="bg-input-bg border border-border-subtle rounded-xl p-3 h-16 overflow-y-auto font-mono text-[12px] text-text-muted mb-4">{JSON.parse(list.emails).map((e, i) => <div key={i} className="truncate">{e}</div>)}</div>
+                          <button onClick={() => handleDeleteEmail(list.id)} className="mt-auto text-urgent-red hover:bg-urgent-red/10 font-label-caps text-xs uppercase tracking-widest py-2 px-4 rounded-lg transition-colors flex justify-center gap-2"><span className="material-symbols-outlined text-[16px]">delete</span> Delete Contact</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </motion.div>
               </div>
             </motion.div>
@@ -500,7 +444,7 @@ function App() {
                 <div className="flex flex-col pt-1">
                   <h1 className="font-headline-lg text-text-main text-xl mb-1 leading-tight">{selectedGame.title}</h1>
                   <p className="font-body-sm text-text-muted mb-4">{selectedGame.publisher_name}</p>
-                  <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue text-white font-label-caps text-xs uppercase px-4 py-2 rounded-full border border-brutal-black hover:bg-primary-container transition-colors w-max shadow-md">
+                  <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue text-white font-label-caps text-xs uppercase px-4 py-2 rounded-full hover:bg-primary-container transition-colors w-max shadow-md">
                     Play Store <span className="material-symbols-outlined text-[16px]">open_in_new</span>
                   </a>
                 </div>
