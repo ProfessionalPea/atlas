@@ -77,89 +77,88 @@ function getColumnLetter(colIndex) {
 // THE BULLETPROOF PUBLISHER SYNC ENGINE
 // ----------------------------------------------------
 // The new Publisher Link Sync Engine
-async function syncPublisherLinksToSheets(db, competitorName) {
-  console.log(`\n⚙️ [Publisher Sync] Waking up for target: "${competitorName}"`);
+async function syncPublisherLinksToSheets(db, competitorName, adsId) {
+  console.log(`\n⚙️ [Publisher Sync] Waking up for target: "${competitorName}" (ID: ${adsId || "None"})`);
   
   try {
-    // 1. AUTHENTICATION FIX: Create a dedicated sheets client for this function
     const { google } = require("googleapis");
     const auth = new google.auth.GoogleAuth({
-      keyFile: "google-credentials.json", // Points to your secure keys
+      keyFile: "google-credentials.json", 
       scopes: ["https://www.googleapis.com/auth/spreadsheets"],
     });
     const sheets = google.sheets({ version: "v4", auth });
 
-    // 2. HARDCODED ID
     const SHEET_ID = "1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs";
-    const sheetTabName = "'Competitor Analysis'"; // Single quotes required for spaces!
+    const sheetTabName = "'Competitor Analysis'"; 
 
-    // 3. Fetch unique publishers linked to this competitor
+    // SMART HEADER: If the name is "Playmax", it outputs "Playmax [AR123...]". 
+    // If the name is already "Unsaved (AR123...)", it won't duplicate the ID.
+    const expectedHeader = (adsId && !competitorName.includes(adsId)) 
+      ? `${competitorName} [${adsId}]` 
+      : competitorName;
+
     const accounts = db.prepare(`
       SELECT DISTINCT a.publisher_name 
-      FROM accounts a
-      JOIN competitors c ON a.competitor_id = c.id
+      FROM accounts a JOIN competitors c ON a.competitor_id = c.id
       WHERE c.name = ?
     `).all(competitorName);
 
-    console.log(`⚙️ [Publisher Sync] Found ${accounts.length} linked publishers in database.`);
+    if (accounts.length === 0) return;
 
-    if (accounts.length === 0) {
-      console.log(`⚠️ [Publisher Sync] Aborting: No publishers to sync.`);
-      return;
-    }
-
-    // 4. Format them into Google Play Developer URLs 
     const urls = accounts.map(acc => {
       const encodedName = encodeURIComponent(acc.publisher_name).replace(/%20/g, '+');
       return [`https://play.google.com/store/apps/developer?id=${encodedName}`];
     });
 
-    // 5. Fetch Row 1 to find the correct column
-    console.log(`⚙️ [Publisher Sync] Fetching headers from Google Sheets...`);
     const headerRes = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
       range: `${sheetTabName}!1:1`,
     });
 
     let headers = headerRes.data.values ? headerRes.data.values[0] : [];
-    let colIndex = headers.indexOf(competitorName);
+    
+    // SMART COLUMN HUNTING
+    let colIndex = -1;
+    
+    // 1. Look for the exact new header
+    colIndex = headers.indexOf(expectedHeader);
+    
+    // 2. Look for the raw AR ID anywhere in the existing columns (This fixes your current sheet!)
+    if (colIndex === -1 && adsId) colIndex = headers.findIndex(h => h && h.includes(adsId));
+    
+    // 3. Fallback to just the name
+    if (colIndex === -1) colIndex = headers.indexOf(competitorName);
 
-    // 6. If the competitor isn't in the header, add them
     if (colIndex === -1) {
       colIndex = headers.length;
-      headers.push(competitorName);
-      console.log(`⚙️ [Publisher Sync] Target not found in headers. Creating new column at index ${colIndex}...`);
-      
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `${sheetTabName}!1:1`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [headers] }
-      });
+      headers.push(expectedHeader);
+    } else {
+      headers[colIndex] = expectedHeader; // Instantly upgrades old "AR..." columns to "Playmax [AR...]"
     }
+    
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID, range: `${sheetTabName}!1:1`,
+      valueInputOption: "USER_ENTERED", requestBody: { values: [headers] }
+    });
 
     const colLetter = getColumnLetter(colIndex);
-    console.log(`⚙️ [Publisher Sync] Target Column Letter: ${colLetter}`);
 
-    // 7. Clear old data to prevent ghost links
     await sheets.spreadsheets.values.clear({
-      spreadsheetId: SHEET_ID,
-      range: `${sheetTabName}!${colLetter}2:${colLetter}`,
+      spreadsheetId: SHEET_ID, range: `${sheetTabName}!${colLetter}2:${colLetter}`,
     });
 
-    // 8. Write the URLs directly beneath the header
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `${sheetTabName}!${colLetter}2`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: urls }
+      spreadsheetId: SHEET_ID, range: `${sheetTabName}!${colLetter}2`,
+      valueInputOption: "USER_ENTERED", requestBody: { values: urls }
     });
 
-    console.log(`✅ [Google Sheets] BOOM! Synced ${urls.length} publisher links for ${competitorName} to column ${colLetter}.`);
+    console.log(`✅ [Google Sheets] Synced column ${colLetter} -> ${expectedHeader}`);
 
   } catch (err) {
-    console.error(`❌ [Google Sheets] Publisher Sync Failed for ${competitorName}:`, err);
+    console.error(`❌ [Google Sheets] Publisher Sync Failed:`, err);
   }
 }
+
+module.exports = { pushScanToSheets, syncPublisherLinksToSheets };
 
 module.exports = { pushScanToSheets, syncPublisherLinksToSheets };
