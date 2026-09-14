@@ -256,8 +256,6 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
         for (const frame of frames) {
           try { fullHtml += await frame.content(); } catch (e) {}
         }
-        
-        let adFoundPackages = [];
 
         const storeUrlRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi;
         for (const m of fullHtml.matchAll(storeUrlRegex)) {
