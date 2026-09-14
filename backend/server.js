@@ -1,4 +1,6 @@
 require("dotenv").config();
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor } = require("./GoogleAdsScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
@@ -8,8 +10,11 @@ const express = require("express");
 const cors = require("cors");
 const { Pool } = require('pg');
 
+// Strip ?sslmode=... from the URL so it doesn't overwrite rejectUnauthorized: false
+const cleanConnectionString = (process.env.DATABASE_URL || "").split("?")[0];
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: cleanConnectionString,
   ssl: { rejectUnauthorized: false }
 });
 
@@ -57,14 +62,29 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
+// Dedicated auth verification route for the gate screen
+app.post("/api/auth/verify", (req, res) => {
+  const expectedKey = process.env.ATLAS_ADMIN_KEY;
+  const suppliedKey = req.get("x-atlas-admin-key") || req.body?.key;
+
+  if (!expectedKey) {
+    return res.status(500).json({ error: "ATLAS_ADMIN_KEY is not set in backend .env" });
+  }
+
+  if (!suppliedKey || suppliedKey !== expectedKey) {
+    return res.status(401).json({ error: "Unauthorized: Invalid team key." });
+  }
+
+  return res.json({ status: "authenticated" });
+});
+
+// Central protection for all API routes
 app.use("/api", (req, res, next) => {
-  // Allow browser CORS preflight checks
   if (req.method === "OPTIONS") {
     return next();
   }
 
   const expectedKey = process.env.ATLAS_ADMIN_KEY;
-  // Read key from header, or query param for SSE EventSource streams
   const suppliedKey = req.get("x-atlas-admin-key") || req.query.key;
 
   if (!expectedKey || suppliedKey !== expectedKey) {
@@ -367,7 +387,17 @@ app.post("/api/scan", async (req, res) => {
             await pool.query("INSERT INTO account_games (account_id, game_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [accountId, gameId]);
             await pool.query(`INSERT INTO ad_history (game_id, ad_count, scan_date) VALUES ($1, 1, CURRENT_DATE) ON CONFLICT (game_id, scan_date) DO UPDATE SET ad_count = ad_history.ad_count + 1`, [gameId]);
             
-            isolatedScanData.push({ title: appData.title, publisher_name: pubName, category: appData.genre, rating: appData.score || 0, installs: appData.installs || "0+" });
+            isolatedScanData.push({
+              title: appData.title,
+              publisher_name: pubName,
+              package_name: pkg,
+              icon: fixUrl(appData.icon),
+              category: appData.genre || "Game",
+              rating: appData.score ? Number(appData.score).toFixed(1) : "N/A",
+              installs: appData.installs || "0+",
+              ad_count: currentScanAdCounts[pkg] || 1,
+              released: appData.released || "Unknown"
+            });
           } else {
             try {
               await pool.query("UPDATE games SET ad_count = ad_count + 1 WHERE package_name = $1", [pkg]);
