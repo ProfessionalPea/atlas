@@ -6,12 +6,24 @@ import { cn } from "./lib/utils";
 // 🚨 NGROK URL
 const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
 
+const ADMIN_KEY_STORAGE = "atlas_admin_key";
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+// Auto-detect magic link: ?key=YourPassword
+if (typeof window !== "undefined") {
+  const urlParams = new URLSearchParams(window.location.search);
+  const magicKey = urlParams.get("key");
+  if (magicKey) {
+    localStorage.setItem(ADMIN_KEY_STORAGE, magicKey.trim());
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+}
+
 const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" 
   ? "http://localhost:3000" 
-  : NGROK_URL;
+  : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
 
 const CHART_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6"];
-
 const FADE_UP = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } };
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -31,13 +43,37 @@ function parseInstalls(installStr) {
   return parseInt(installStr.replace(/[^0-9]/g, '')) || 0;
 }
 
+// Attach key to all mutations; triggers auth modal on missing or invalid key
 async function fetchJson(url, options = {}) {
-  options.headers = { ...options.headers, "ngrok-skip-browser-warning": "69420" };
-  const response = await fetch(url, options);
+  const method = String(options.method || "GET").toUpperCase();
+  const needsAuth = !SAFE_METHODS.has(method);
+
+  const headers = {
+    ...options.headers,
+    "ngrok-skip-browser-warning": "69420",
+  };
+
+  if (needsAuth) {
+    const key = localStorage.getItem(ADMIN_KEY_STORAGE);
+    if (!key) {
+      window.dispatchEvent(new CustomEvent("atlas:auth-required"));
+      throw new Error("Admin authentication required.");
+    }
+    headers["x-atlas-admin-key"] = key;
+  }
+
+  const response = await fetch(url, { ...options, headers });
+
+  if (response.status === 401 && needsAuth) {
+    localStorage.removeItem(ADMIN_KEY_STORAGE);
+    window.dispatchEvent(new CustomEvent("atlas:auth-required"));
+    throw new Error("Invalid team password.");
+  }
+
   const text = await response.text();
   let data;
-  try { data = text ? JSON.parse(text) : null; } catch { throw new Error(`Invalid JSON response (${response.status}) from ${url}`); }
-  if (!response.ok) { throw new Error(data?.error || data?.message || `Request failed with status ${response.status}`); }
+  try { data = text ? JSON.parse(text) : null; } catch { throw new Error("Invalid server response."); }
+  if (!response.ok) throw new Error(data?.error || `Error ${response.status}`);
   return data;
 }
 
@@ -56,8 +92,6 @@ function formatInstalls(num) {
   return num === 0 ? '0+' : num + '+';
 }
 
-// Stable identity for Trending cards. package_name is the best key because API/database
-// row IDs can be missing, duplicated, or change between responses.
 function getGameIdentity(game) {
   const packageName = String(game?.package_name || "").trim();
   if (packageName) return `pkg:${packageName}`;
@@ -102,7 +136,6 @@ function getCompetitorForGame(game, competitorTree) {
   }
   return null;
 }
-
 
 function processHistoryData(rawHistory) {
   if (!rawHistory || rawHistory.length === 0) return { data: [], lines: [] };
@@ -400,10 +433,21 @@ function App() {
 
   const [isNodeOnline, setIsNodeOnline] = useState(true);
 
+  // Authentication Modal State
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authInput, setAuthInput] = useState("");
+  const [authError, setAuthError] = useState("");
+
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem("atlas_theme");
     return saved ? saved === "dark" : true; 
   });
+
+  useEffect(() => {
+    const handleAuthRequired = () => setIsAuthModalOpen(true);
+    window.addEventListener("atlas:auth-required", handleAuthRequired);
+    return () => window.removeEventListener("atlas:auth-required", handleAuthRequired);
+  }, []);
 
   useEffect(() => {
     const closeDropdowns = () => {
@@ -642,8 +686,6 @@ function App() {
   }, [activeStatPanel, deferredStatPanelSearch, statCompetitors, statPublishers, statGames]);
 
   const sortedTrending = useMemo(() => {
-    // De-dupe first. Besides preventing duplicate cards from the API, this guarantees
-    // every animated row has exactly one stable React key during a reorder.
     const uniqueGames = new Map();
 
     visibleTrending.forEach((game) => {
@@ -655,8 +697,6 @@ function App() {
         return;
       }
 
-      // If the backend happens to return the same package more than once, preserve
-      // the strongest counters while keeping the most complete/latest row data.
       const existingInstalls = getInstallCount(existing);
       const incomingInstalls = getInstallCount(game);
 
@@ -686,7 +726,6 @@ function App() {
         difference = getInstallCount(b) - getInstallCount(a);
       }
 
-      // Deterministic tie-breakers keep equal-value rows from needlessly swapping.
       if (difference !== 0) return difference;
       return getGameIdentity(a).localeCompare(getGameIdentity(b));
     });
@@ -730,6 +769,16 @@ function App() {
     });
   }, [visibleCompetitorTree, searchLower, pubFilterNew, pubFilterComp, pubSort]);
 
+  const handleSaveKey = (e) => {
+    e.preventDefault();
+    const trimmed = authInput.trim();
+    if (!trimmed) return;
+    localStorage.setItem(ADMIN_KEY_STORAGE, trimmed);
+    setIsAuthModalOpen(false);
+    setAuthError("");
+    setAuthInput("");
+  };
+
   const handleSaveSettings = async (e) => {
     e.preventDefault(); setIsSavingSettings(true); setSettingsStatus("");
     try {
@@ -738,18 +787,126 @@ function App() {
     } catch { setSettingsStatus("Failed to save settings."); } finally { setIsSavingSettings(false); }
   };
 
-  const handleSeedHistory = async () => { if (window.confirm("Seed 7 days of historical testing data?")) { try { await fetch(`${API_BASE}/api/dev/seed-history`, { method: "POST", headers: {"ngrok-skip-browser-warning": "true"} }); loadAllData(); } catch {} } };
-  const handleCreateList = async (e) => { e.preventDefault(); if (!newListName || !newListTargets || isSaving) return; setIsSaving(true); try { await fetch(`${API_BASE}/api/lists`, { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" }, body: JSON.stringify({ name: newListName, targets: newListTargets.split(/[\n,]+/).map(t => t.trim()).filter(t => t) }) }); setNewListName(""); setNewListTargets(""); loadAllData(); } catch {} finally { setIsSaving(false); } };
-  const handleToggleList = async (id, currentStatus) => { try { await fetch(`${API_BASE}/api/lists/${id}/toggle`, { method: "PATCH", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" }, body: JSON.stringify({ is_active: currentStatus === 1 ? 0 : 1 }) }); loadAllData(); } catch {} };
-  const handleSaveCompetitor = async (e) => { e.preventDefault(); if (!newCompName || !newCompAdsId || isSaving) return; setIsSaving(true); try { await fetch(`${API_BASE}/api/competitors`, { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" }, body: JSON.stringify({ name: newCompName, adsId: newCompAdsId, country: "Any" }) }); setNewCompName(""); setNewCompAdsId(""); loadAllData(); } catch {} finally { setIsSaving(false); } };
-  const handleSaveEmailList = async (e) => { e.preventDefault(); if (!newEmailName || !newEmailTargets || isSaving) return; setIsSaving(true); try { await fetch(`${API_BASE}/api/emails`, { method: "POST", headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" }, body: JSON.stringify({ name: newEmailName, emails: newEmailTargets.split(/[\n,]+/).map(t => t.trim()).filter(t => t) }) }); setNewEmailName(""); setNewEmailTargets(""); loadAllData(); } catch {} finally { setIsSaving(false); } };
-  const handleDeleteList = async (id) => { if (window.confirm("Delete this target list?")) { try { await fetch(`${API_BASE}/api/lists/${id}`, { method: "DELETE", headers: {"ngrok-skip-browser-warning": "true"} }); loadAllData(); } catch {} } };
-  const handleDeleteCompetitor = async (id) => { if (window.confirm("Delete this saved competitor?")) { try { await fetch(`${API_BASE}/api/saved-competitors/${id}`, { method: "DELETE", headers: {"ngrok-skip-browser-warning": "true"} }); loadAllData(); } catch {} } };
-  const handleDeleteEmail = async (id) => { if (window.confirm("Delete this email target?")) { try { await fetch(`${API_BASE}/api/emails/${id}`, { method: "DELETE", headers: {"ngrok-skip-browser-warning": "true"} }); loadAllData(); } catch {} } };
+  const handleCreateList = async (e) => {
+    e.preventDefault();
+    if (!newListName || !newListTargets || isSaving) return;
+    setIsSaving(true);
+    try {
+      await fetchJson(`${API_BASE}/api/lists`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newListName,
+          targets: newListTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+        })
+      });
+      setNewListName("");
+      setNewListTargets("");
+      loadAllData();
+    } catch (err) {
+      console.error("List creation error:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleToggleList = async (id, currentStatus) => {
+    try {
+      await fetchJson(`${API_BASE}/api/lists/${id}/toggle`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: currentStatus === 1 ? 0 : 1 })
+      });
+      loadAllData();
+    } catch (err) {
+      console.error("List toggle error:", err);
+    }
+  };
+
+  const handleSaveCompetitor = async (e) => {
+    e.preventDefault();
+    if (!newCompName || !newCompAdsId || isSaving) return;
+    setIsSaving(true);
+    try {
+      await fetchJson(`${API_BASE}/api/competitors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newCompName, adsId: newCompAdsId, country: "Any" })
+      });
+      setNewCompName("");
+      setNewCompAdsId("");
+      loadAllData();
+    } catch (err) {
+      console.error("Competitor save error:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveEmailList = async (e) => {
+    e.preventDefault();
+    if (!newEmailName || !newEmailTargets || isSaving) return;
+    setIsSaving(true);
+    try {
+      await fetchJson(`${API_BASE}/api/emails`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newEmailName,
+          emails: newEmailTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+        })
+      });
+      setNewEmailName("");
+      setNewEmailTargets("");
+      loadAllData();
+    } catch (err) {
+      console.error("Email list save error:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteList = async (id) => {
+    if (window.confirm("Delete this target list?")) {
+      try {
+        await fetchJson(`${API_BASE}/api/lists/${id}`, { method: "DELETE" });
+        loadAllData();
+      } catch (err) {
+        console.error("List delete error:", err);
+      }
+    }
+  };
+
+  const handleDeleteCompetitor = async (id) => {
+    if (window.confirm("Delete this saved competitor?")) {
+      try {
+        await fetchJson(`${API_BASE}/api/saved-competitors/${id}`, { method: "DELETE" });
+        loadAllData();
+      } catch (err) {
+        console.error("Competitor delete error:", err);
+      }
+    }
+  };
+
+  const handleDeleteEmail = async (id) => {
+    if (window.confirm("Delete this email target?")) {
+      try {
+        await fetchJson(`${API_BASE}/api/emails/${id}`, { method: "DELETE" });
+        loadAllData();
+      } catch (err) {
+        console.error("Email delete error:", err);
+      }
+    }
+  };
   
   const handleCancelScan = async () => {
     if (!window.confirm("Abort the current scan? Any targets already processed will be saved safely.")) return;
-    try { await fetch(`${API_BASE}/api/cancel-scan`, { method: "POST", headers: {"ngrok-skip-browser-warning": "true"} }); setScanProgress(prev => ({ ...prev, logs: [...prev.logs, "> 🛑 Sending abort signal to backend..."] })); } catch {}
+    try {
+      await fetchJson(`${API_BASE}/api/cancel-scan`, { method: "POST" });
+      setScanProgress(prev => ({ ...prev, logs: [...prev.logs, "> 🛑 Sending abort signal to backend..."] }));
+    } catch (err) {
+      console.error("Scan cancel error:", err);
+    }
   };
 
   const handleRunScan = async () => {
@@ -805,7 +962,6 @@ function App() {
 
       if (!data || typeof data !== "object") return;
 
-      // Completion exclusively handles scan termination
       if (data.isComplete) {
         if (data.packages && Array.isArray(data.packages)) {
           setLatestScanPackages(data.packages);
@@ -828,7 +984,6 @@ function App() {
         }, 2500);
 
       } else if (data.isCancelled || data.fatalError) {
-        // Only stop if user actively cancelled or backend had a fatal, total abort
         setScanProgress(prev => ({
           ...prev,
           logs: [...prev.logs, data.log || "> Scan terminated."].slice(-5)
@@ -840,7 +995,6 @@ function App() {
         }, 3000);
 
       } else {
-        // Standard progress update - continues running even if individual ads fail/timeout
         setScanProgress(prev => {
           const newLogs = [...prev.logs, data.log].filter(Boolean).slice(-5);
 
@@ -1298,7 +1452,6 @@ function App() {
                 })}
               </div>
 
-              {/* Heavy Recharts subtree is memoized so opening drawers/modals does not redraw it. */}
               <DashboardTelemetry historyData={historyData} isDarkMode={isDarkMode} />
 
               <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-6 md:gap-8 mt-2 md:mt-4">
@@ -1894,7 +2047,7 @@ function App() {
                             {sim.icon ? <img loading="lazy" decoding="async" src={sim.icon} alt={sim.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-primary/50 text-[24px] flex h-full items-center justify-center">sports_esports</span>}
                           </div>
                           <div className="min-w-0 pr-2">
-                            <p className="font-body-sm font-bold text-text-main truncate">{sim.title}</p>
+                            <p className="font-body-sm font-bold text-text-main truncate group-hover:text-primary transition-colors">{sim.title}</p>
                             <p className="font-body-xs text-xs text-text-muted truncate mt-0.5">{sim.developer}</p>
                           </div>
                         </div>
@@ -1980,12 +2133,10 @@ function App() {
                 <button onClick={() => setIsGuideOpen(false)} className="w-8 h-8 rounded-full hover:bg-input-bg flex items-center justify-center transition-colors text-text-muted hover:text-text-main"><span className="material-symbols-outlined text-[20px]">close</span></button>
               </div>
               <div className="p-4 md:p-6 overflow-y-auto custom-scrollbar space-y-8">
-                
                 <div className="space-y-2.5">
                   <h3 className="font-label-caps text-xs text-electric-blue uppercase tracking-widest font-bold">1. The Core Premise</h3>
                   <p className="font-body-sm text-text-muted leading-relaxed">Atlas is a competitive intelligence engine. It monitors competitor ad campaigns, reverse-engineers their Google Play bundle IDs from live creatives, and maps their publisher entity networks.</p>
                 </div>
-                
                 <div className="space-y-2.5">
                   <h3 className="font-label-caps text-xs text-secondary uppercase tracking-widest font-bold">2. How to Run a Scan</h3>
                   <ul className="space-y-3 font-body-sm text-text-muted">
@@ -1994,7 +2145,6 @@ function App() {
                     <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Automated:</span>Save competitors or build Batch Lists in the Automated Scans tab to track them without manual entry.</li>
                   </ul>
                 </div>
-                
                 <div className="space-y-2.5">
                   <h3 className="font-label-caps text-xs text-tertiary-container uppercase tracking-widest font-bold">3. Managing Data</h3>
                   <ul className="space-y-3 font-body-sm text-text-muted">
@@ -2002,11 +2152,78 @@ function App() {
                     <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Data Cleanup:</span>Click the <span className="material-symbols-outlined text-[14px] align-middle text-text-main bg-input-bg rounded p-0.5 border border-border-subtle">delete</span> trash icon next to any Competitor or Publisher to permanently wipe their test data from the database.</li>
                   </ul>
                 </div>
-
               </div>
               <div className="p-4 border-t border-border-subtle bg-surface-glass flex justify-end">
                 <button onClick={() => setIsGuideOpen(false)} className="bg-electric-blue text-white font-label-caps text-xs font-bold px-6 py-2.5 rounded-lg shadow-sm hover:shadow-md transition-all active:scale-[0.98]">Got It</button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* TEAM AUTH KEY MODAL */}
+      <AnimatePresence>
+        {isAuthModalOpen && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+              onClick={() => setIsAuthModalOpen(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="relative w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 shadow-2xl space-y-4 z-10"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-electric-blue/10 border border-electric-blue/20 flex items-center justify-center text-electric-blue">
+                  <span className="material-symbols-outlined text-[22px]">lock</span>
+                </div>
+                <div>
+                  <h3 className="font-bold text-text-main text-base uppercase tracking-wide">Enter Team Key</h3>
+                  <p className="text-[11px] text-text-muted">Authentication required for action</p>
+                </div>
+              </div>
+              <p className="text-xs text-text-muted leading-relaxed">
+                Enter the team password to run scans, create lists, or modify database records.
+              </p>
+              
+              <form onSubmit={handleSaveKey} className="space-y-3">
+                <input
+                  type="password"
+                  autoFocus
+                  value={authInput}
+                  onChange={(e) => {
+                    setAuthInput(e.target.value);
+                    setAuthError("");
+                  }}
+                  placeholder="Team password..."
+                  className="w-full bg-input-bg border border-border-subtle rounded-xl px-3.5 py-2.5 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-mono shadow-inner"
+                />
+                {authError && <p className="text-urgent-red text-xs">{authError}</p>}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAuthModalOpen(false);
+                      setAuthInput("");
+                      setAuthError("");
+                    }}
+                    className="px-4 py-2 text-xs font-bold text-text-muted hover:text-text-main rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 text-xs font-bold bg-electric-blue text-white rounded-lg shadow-md hover:bg-blue-600 transition-colors"
+                  >
+                    Unlock
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}

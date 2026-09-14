@@ -18,8 +18,60 @@ const scanEvents = new EventEmitter();
 const gplay = gplayRaw.default || gplayRaw;
 
 const app = express();
-app.use(cors());
+
+const allowedOriginPatterns = [
+  /^http:\/\/localhost(:\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+  /\.vercel\.app$/,
+];
+
+if (process.env.FRONTEND_URL) {
+  try {
+    const parsed = new URL(process.env.FRONTEND_URL).origin;
+    allowedOriginPatterns.push(new RegExp(`^${parsed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+  } catch {
+    allowedOriginPatterns.push(process.env.FRONTEND_URL);
+  }
+}
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    const isAllowed = allowedOriginPatterns.some((pattern) =>
+      typeof pattern === "string" ? pattern === origin : pattern.test(origin)
+    );
+    if (isAllowed) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "x-atlas-admin-key",
+    "ngrok-skip-browser-warning"
+  ],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Central protection for all mutating routes
+app.use("/api", (req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    return next();
+  }
+
+  const expectedKey = process.env.ATLAS_ADMIN_KEY;
+  const suppliedKey = req.get("x-atlas-admin-key");
+
+  if (!expectedKey || suppliedKey !== expectedKey) {
+    return res.status(401).json({ error: "Unauthorized: Invalid or missing team key." });
+  }
+
+  next();
+});
 
 let activeScanCancelled = false;
 let isScanRunning = false;
@@ -109,34 +161,6 @@ app.post("/api/dev/recalc-history", async (_req, res) => {
   }
 });
 
-app.post("/api/dev/seed-history", async (_req, res) => {
-  try {
-    const { rows: competitors } = await pool.query("SELECT id FROM competitors");
-    for (const c of competitors) {
-      const gameCountRes = await pool.query(
-        `SELECT COUNT(DISTINCT ag.game_id) as count 
-         FROM account_games ag 
-         JOIN accounts a ON ag.account_id = a.id 
-         WHERE a.competitor_id = $1`, [c.id]
-      );
-      let currentGames = parseInt(gameCountRes.rows[0]?.count || 0, 10);
-      if (currentGames === 0) currentGames = Math.floor(Math.random() * 8) + 6;
-
-      for (let i = 0; i < 7; i++) {
-        let dayGames = Math.max(1, currentGames - Math.floor((6 - i) * 1.2));
-        await pool.query(
-          `INSERT INTO competitor_history (competitor_id, total_ads, scan_date) 
-           VALUES ($1, $2, CURRENT_DATE - ($3 || ' days')::interval) 
-           ON CONFLICT (competitor_id, scan_date) 
-           DO UPDATE SET total_ads = EXCLUDED.total_ads`, 
-          [c.id, dayGames, 6 - i]
-        );
-      }
-    }
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 app.get("/api/emails", async (_req, res) => { try { res.json((await pool.query("SELECT * FROM email_lists ORDER BY id DESC")).rows); } catch { res.status(500).json({ error: "Fail" }); } });
 app.post("/api/emails", async (req, res) => { try { await pool.query("INSERT INTO email_lists (name, emails) VALUES ($1, $2)", [req.body.name, JSON.stringify(req.body.emails)]); res.json({ status: "success" }); } catch { res.status(500).json({ error: "Fail" }); } });
 app.delete("/api/emails/:id", async (req, res) => { try { await pool.query("DELETE FROM email_lists WHERE id = $1", [req.params.id]); res.json({ status: "success" }); } catch { res.status(500).json({ error: "Fail" }); } });
@@ -209,7 +233,6 @@ app.post("/api/scan", async (req, res) => {
   activeScanCancelled = false;
   isScanRunning = true;
 
-  // Immediate response prevents 60s Ngrok gateway timeout
   res.json({ status: "initiated", message: "Scan running in background." });
 
   (async () => {
@@ -276,7 +299,7 @@ app.post("/api/scan", async (req, res) => {
           (progressData) => {
             scanEvents.emit("progress", { ...progressData, target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length });
           }, 
-          async () => {}, // Safe callback handler
+          async () => {},
           () => activeScanCancelled
         );
 
@@ -352,7 +375,6 @@ app.post("/api/scan", async (req, res) => {
           }
         }
 
-        // QUERY EXACT UNIQUE GAMES COUNT FOR THIS COMPETITOR
         const compGamesCountRes = await pool.query(
           `SELECT COUNT(DISTINCT ag.game_id) as count 
            FROM account_games ag 
@@ -362,7 +384,6 @@ app.post("/api/scan", async (req, res) => {
         );
         const totalGamesForCompetitor = parseInt(compGamesCountRes.rows[0]?.count || 0, 10);
 
-        // Record real game count, NOT ad volume
         await pool.query(
           `INSERT INTO competitor_history (competitor_id, total_ads, scan_date) 
            VALUES ($1, $2, CURRENT_DATE) 
@@ -391,7 +412,6 @@ app.post("/api/scan", async (req, res) => {
         try {
           let recipients = "";
 
-          // One-time custom recipient from the dashboard takes priority.
           if (customReportEmail) {
             recipients = customReportEmail;
           } else if (emailListId && emailListId !== "none") {
@@ -412,7 +432,6 @@ app.post("/api/scan", async (req, res) => {
 
       isScanRunning = false;
 
-      // Signals UI to finish and update view
       scanEvents.emit("progress", { 
         isComplete: true, 
         target: "Batch Completed",

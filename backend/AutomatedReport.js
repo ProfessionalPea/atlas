@@ -141,7 +141,7 @@ async function generateAndSendReport(managerEmail, specificScanData = null) {
 
     // 6. Send the Email
     const mailOptions = {
-      from: '"Atlas Intelligence" <danish1042awan@gmail.com>', 
+      from: `"Atlas Intelligence" <${process.env.REPORT_SENDER_EMAIL}>`,
       to: managerEmail,
       subject: `📊 Atlas ASO Report - ${new Date().toLocaleDateString()}`,
       html: `
