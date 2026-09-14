@@ -7,7 +7,6 @@ import { cn } from "./lib/utils";
 const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
 
 const ADMIN_KEY_STORAGE = "atlas_admin_key";
-const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 // Auto-detect magic link: ?key=YourPassword
 if (typeof window !== "undefined") {
@@ -43,31 +42,21 @@ function parseInstalls(installStr) {
   return parseInt(installStr.replace(/[^0-9]/g, '')) || 0;
 }
 
-// Attach key to all mutations; triggers auth modal on missing or invalid key
+// Every API request now supplies the key
 async function fetchJson(url, options = {}) {
-  const method = String(options.method || "GET").toUpperCase();
-  const needsAuth = !SAFE_METHODS.has(method);
-
+  const key = localStorage.getItem(ADMIN_KEY_STORAGE);
   const headers = {
     ...options.headers,
     "ngrok-skip-browser-warning": "69420",
+    ...(key ? { "x-atlas-admin-key": key } : {})
   };
-
-  if (needsAuth) {
-    const key = localStorage.getItem(ADMIN_KEY_STORAGE);
-    if (!key) {
-      window.dispatchEvent(new CustomEvent("atlas:auth-required"));
-      throw new Error("Admin authentication required.");
-    }
-    headers["x-atlas-admin-key"] = key;
-  }
 
   const response = await fetch(url, { ...options, headers });
 
-  if (response.status === 401 && needsAuth) {
+  if (response.status === 401) {
     localStorage.removeItem(ADMIN_KEY_STORAGE);
-    window.dispatchEvent(new CustomEvent("atlas:auth-required"));
-    throw new Error("Invalid team password.");
+    window.dispatchEvent(new CustomEvent("atlas:unauthorized"));
+    throw new Error("Unauthorized");
   }
 
   const text = await response.text();
@@ -371,6 +360,10 @@ const LiveDirectory = memo(function LiveDirectory({
 });
 
 function App() {
+  const [isUnlocked, setIsUnlocked] = useState(() => Boolean(localStorage.getItem(ADMIN_KEY_STORAGE)));
+  const [gatePasswordInput, setGatePasswordInput] = useState("");
+  const [gateError, setGateError] = useState("");
+
   const [activeTab, setActiveTab] = useState("dashboard"); 
   const [trendingSort, setTrendingSort] = useState("ads");
   const [stats, setStats] = useState({ competitors: 0, accounts: 0, games: 0 });
@@ -433,20 +426,18 @@ function App() {
 
   const [isNodeOnline, setIsNodeOnline] = useState(true);
 
-  // Authentication Modal State
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authInput, setAuthInput] = useState("");
-  const [authError, setAuthError] = useState("");
-
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem("atlas_theme");
     return saved ? saved === "dark" : true; 
   });
 
   useEffect(() => {
-    const handleAuthRequired = () => setIsAuthModalOpen(true);
-    window.addEventListener("atlas:auth-required", handleAuthRequired);
-    return () => window.removeEventListener("atlas:auth-required", handleAuthRequired);
+    const handleUnauthorized = () => {
+      setIsUnlocked(false);
+      setGateError("Session expired or invalid team key.");
+    };
+    window.addEventListener("atlas:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("atlas:unauthorized", handleUnauthorized);
   }, []);
 
   useEffect(() => {
@@ -482,6 +473,7 @@ function App() {
   }, [activeStatPanel]);
 
   const loadAllData = useCallback(async () => {
+    if (!isUnlocked) return;
     try {
       await fetchJson(`${API_BASE}/api/health`);
       setIsNodeOnline(true);
@@ -501,16 +493,35 @@ function App() {
     ];
     const results = await Promise.allSettled(requests);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
-  }, []);
+  }, [isUnlocked]);
 
   useEffect(() => { 
-    loadAllData(); 
-    const heartbeat = setInterval(async () => {
-      try { await fetchJson(`${API_BASE}/api/health`); setIsNodeOnline(true); } 
-      catch { setIsNodeOnline(false); }
-    }, 30000);
-    return () => clearInterval(heartbeat);
-  }, [loadAllData]);
+    if (isUnlocked) {
+      loadAllData(); 
+      const heartbeat = setInterval(async () => {
+        try { await fetchJson(`${API_BASE}/api/health`); setIsNodeOnline(true); } 
+        catch { setIsNodeOnline(false); }
+      }, 30000);
+      return () => clearInterval(heartbeat);
+    }
+  }, [isUnlocked, loadAllData]);
+
+  const handleGateSubmit = async (e) => {
+    e.preventDefault();
+    const key = gatePasswordInput.trim();
+    if (!key) return;
+    try {
+      setGateError("");
+      localStorage.setItem(ADMIN_KEY_STORAGE, key);
+      // Validate key with quick backend call
+      await fetchJson(`${API_BASE}/api/health`);
+      setIsUnlocked(true);
+      setGatePasswordInput("");
+    } catch {
+      localStorage.removeItem(ADMIN_KEY_STORAGE);
+      setGateError("Access Denied: Invalid team key.");
+    }
+  };
 
   const toggleNode = useCallback((nodeId) => {
     setExpandedNodes(prev => ({ ...prev, [nodeId]: !prev[nodeId] }));
@@ -769,16 +780,6 @@ function App() {
     });
   }, [visibleCompetitorTree, searchLower, pubFilterNew, pubFilterComp, pubSort]);
 
-  const handleSaveKey = (e) => {
-    e.preventDefault();
-    const trimmed = authInput.trim();
-    if (!trimmed) return;
-    localStorage.setItem(ADMIN_KEY_STORAGE, trimmed);
-    setIsAuthModalOpen(false);
-    setAuthError("");
-    setAuthInput("");
-  };
-
   const handleSaveSettings = async (e) => {
     e.preventDefault(); setIsSavingSettings(true); setSettingsStatus("");
     try {
@@ -948,8 +949,9 @@ function App() {
     if (selectedSource.startsWith("list_")) { scanType = "list"; targetId = selectedSource.split("_")[1]; } 
     else if (selectedSource.startsWith("comp_")) { scanType = "competitor"; targetId = selectedSource.split("_")[1]; }
 
+    const key = localStorage.getItem(ADMIN_KEY_STORAGE) || "";
     const eventSource = new EventSource(
-      `${API_BASE}/api/scan-stream?ngrok-skip-browser-warning=true`
+      `${API_BASE}/api/scan-stream?ngrok-skip-browser-warning=true&key=${encodeURIComponent(key)}`
     );
 
     eventSource.onmessage = (event) => {
@@ -1083,6 +1085,54 @@ function App() {
   const dropDownAnim = { hidden: { opacity: 0, y: -10, scale: 0.95 }, show: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.15, ease: "easeOut" } }, exit: { opacity: 0, y: -10, scale: 0.95, transition: { duration: 0.1, ease: "easeIn" } } };
   const scanPercentage = Math.min(100, (scanProgress.currentAd / Math.max(1, scanProgress.totalAds)) * 100).toFixed(0);
 
+  // FULL-SCREEN SECURITY GATE FOR UNAUTHENTICATED USERS
+  if (!isUnlocked) {
+    return (
+      <div className="bg-bg-base font-body-md text-text-main min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
+        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-electric-blue/10 blur-[130px] pointer-events-none"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-primary/10 blur-[120px] pointer-events-none"></div>
+        
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 15 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="relative z-10 w-full max-w-sm bg-surface-solid border border-border-subtle rounded-3xl p-8 shadow-2xl space-y-6"
+        >
+          <div className="flex flex-col items-center text-center space-y-3">
+            <div className="w-16 h-16 rounded-2xl bg-electric-blue/10 border border-electric-blue/30 flex items-center justify-center text-electric-blue shadow-inner">
+              <span className="material-symbols-outlined text-[32px]">shield_lock</span>
+            </div>
+            <div className="space-y-1">
+              <h1 className="font-headline-lg text-2xl font-bold text-text-main uppercase tracking-tight">Atlas Intelligence</h1>
+              <p className="text-xs text-text-muted">Team key required for access.</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleGateSubmit} className="space-y-4">
+            <input
+              type="password"
+              autoFocus
+              value={gatePasswordInput}
+              onChange={(e) => {
+                setGatePasswordInput(e.target.value);
+                setGateError("");
+              }}
+              placeholder="Enter team key..."
+              className="w-full bg-input-bg border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-mono shadow-inner text-center tracking-wider"
+            />
+            {gateError && <p className="text-urgent-red text-xs text-center font-semibold">{gateError}</p>}
+            <button
+              type="submit"
+              className="w-full py-3.5 bg-electric-blue hover:bg-blue-600 text-white font-label-caps text-xs uppercase tracking-wider font-bold rounded-xl shadow-lg transition-all active:scale-[0.98]"
+            >
+              Authenticate Node
+            </button>
+          </form>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-bg-base font-body-md text-text-main min-h-screen relative transition-colors duration-400 z-10 overflow-x-hidden pb-20 md:pb-0">
       
@@ -1130,6 +1180,10 @@ function App() {
           
           <button onClick={() => setIsDarkMode(!isDarkMode)} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-main hover:bg-surface-glass transition-all shadow-sm border border-border-subtle" title="Toggle Theme">
             <span className="material-symbols-outlined text-[18px] md:text-[20px]" style={{ fontVariationSettings: "'wght' 500" }}>{isDarkMode ? "light_mode" : "dark_mode"}</span>
+          </button>
+
+          <button onClick={() => { localStorage.removeItem(ADMIN_KEY_STORAGE); setIsUnlocked(false); }} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-muted hover:text-urgent-red transition-all shadow-sm border border-border-subtle" title="Lock Atlas">
+            <span className="material-symbols-outlined text-[18px] md:text-[20px]">logout</span>
           </button>
         </div>
       </header>
@@ -2156,74 +2210,6 @@ function App() {
               <div className="p-4 border-t border-border-subtle bg-surface-glass flex justify-end">
                 <button onClick={() => setIsGuideOpen(false)} className="bg-electric-blue text-white font-label-caps text-xs font-bold px-6 py-2.5 rounded-lg shadow-sm hover:shadow-md transition-all active:scale-[0.98]">Got It</button>
               </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* TEAM AUTH KEY MODAL */}
-      <AnimatePresence>
-        {isAuthModalOpen && (
-          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-              onClick={() => setIsAuthModalOpen(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              className="relative w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 shadow-2xl space-y-4 z-10"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-electric-blue/10 border border-electric-blue/20 flex items-center justify-center text-electric-blue">
-                  <span className="material-symbols-outlined text-[22px]">lock</span>
-                </div>
-                <div>
-                  <h3 className="font-bold text-text-main text-base uppercase tracking-wide">Enter Team Key</h3>
-                  <p className="text-[11px] text-text-muted">Authentication required for action</p>
-                </div>
-              </div>
-              <p className="text-xs text-text-muted leading-relaxed">
-                Enter the team password to run scans, create lists, or modify database records.
-              </p>
-              
-              <form onSubmit={handleSaveKey} className="space-y-3">
-                <input
-                  type="password"
-                  autoFocus
-                  value={authInput}
-                  onChange={(e) => {
-                    setAuthInput(e.target.value);
-                    setAuthError("");
-                  }}
-                  placeholder="Team password..."
-                  className="w-full bg-input-bg border border-border-subtle rounded-xl px-3.5 py-2.5 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-mono shadow-inner"
-                />
-                {authError && <p className="text-urgent-red text-xs">{authError}</p>}
-                <div className="flex justify-end gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAuthModalOpen(false);
-                      setAuthInput("");
-                      setAuthError("");
-                    }}
-                    className="px-4 py-2 text-xs font-bold text-text-muted hover:text-text-main rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 text-xs font-bold bg-electric-blue text-white rounded-lg shadow-md hover:bg-blue-600 transition-colors"
-                  >
-                    Unlock
-                  </button>
-                </div>
-              </form>
             </motion.div>
           </div>
         )}

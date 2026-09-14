@@ -57,17 +57,18 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Central protection for all mutating routes
 app.use("/api", (req, res, next) => {
-  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+  // Allow browser CORS preflight checks
+  if (req.method === "OPTIONS") {
     return next();
   }
 
   const expectedKey = process.env.ATLAS_ADMIN_KEY;
-  const suppliedKey = req.get("x-atlas-admin-key");
+  // Read key from header, or query param for SSE EventSource streams
+  const suppliedKey = req.get("x-atlas-admin-key") || req.query.key;
 
   if (!expectedKey || suppliedKey !== expectedKey) {
-    return res.status(401).json({ error: "Unauthorized: Invalid or missing team key." });
+    return res.status(401).json({ error: "Unauthorized: Access restricted." });
   }
 
   next();
