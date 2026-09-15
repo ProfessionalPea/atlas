@@ -23,8 +23,14 @@ function isValidPackage(pkg) {
   return true;
 }
 
-// NOTICE: Added onPackageFound callback parameter
-async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, onProgress = () => {}, onPackageFound = async () => {}, isCancelled = () => false) {
+async function scanCompetitor(
+  searchQuery, 
+  targetCountry, 
+  maxAdsToTest = 500, 
+  onProgress = () => {}, 
+  onPackageFound = async () => {}, 
+  isCancelled = () => false
+) {
   const query = searchQuery.trim();
   console.log(`\n🚀 [Master Scanner] Starting full pipeline for: "${query}"`);
   
@@ -45,7 +51,6 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
   };
 
   console.log("🟢 [DEBUG] 1. Launching Headless Browser with Stealth Params...");
-  // CHANGE THIS FROM 'const browser' TO 'let browser'
   let browser = await chromium.launch({
     headless: true,
     args: [
@@ -60,13 +65,11 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
   });
 
   console.log("🟢 [DEBUG] 2. Creating Stealth Context...");
-  // CHANGE THIS FROM 'const context' TO 'let context'
   let context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     viewport: { width: 1920, height: 1080 }
   });
 
-  // This first page is strictly for searching and sniffing the IDs
   const searchPage = await context.newPage();
 
   console.log("🟢 [DEBUG] 3. Applying RAM Optimizations...");
@@ -140,20 +143,59 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
       await searchBox.waitFor({ state: 'visible', timeout: 15000 });
       await searchBox.click();
       await searchBox.fill(query);
+      await searchPage.waitForTimeout(2000); // Allow Google autocomplete to fully render
 
-      let dropdownOption;
-      if (!targetCountry || targetCountry.toLowerCase() === 'any' || targetCountry.includes('Any')) {
-        dropdownOption = searchPage.locator(`text=/${query}/i`).first();
-      } else {
-        dropdownOption = searchPage.locator(`text=/${targetCountry}/i`).first();
+      // Retrieve all rendered autocomplete options
+      const options = await searchPage.locator('[role="option"]').all();
+      let matchedAdvertiserOption = null;
+      let matchedAdvertiserName = "";
+
+      for (const opt of options) {
+        const rawText = (await opt.innerText()).trim();
+        const firstLine = rawText.split('\n')[0].trim();
+
+        // 1. Skip website domain options (e.g. "tekken-dojo.com")
+        if (/\.(com|net|org|io|co|dojo|app|site|dev)/i.test(firstLine)) {
+          continue;
+        }
+
+        // 2. Strict matching: Option must start with or exactly match query words
+        // "Voodoo" matches "Voodoo", "Playmax" matches "PLAYMAX Game Studio"
+        // But "Tekken" will REJECT "Roof - Tekken Kft."
+        const cleanName = firstLine.toLowerCase();
+        const cleanQuery = query.toLowerCase();
+
+        const isExactOrPrefix = 
+          cleanName === cleanQuery ||
+          cleanName.startsWith(cleanQuery + " ") ||
+          cleanName.startsWith(cleanQuery + " -") ||
+          cleanName.startsWith(cleanQuery + " –") ||
+          cleanName.startsWith(cleanQuery + " (");
+
+        if (isExactOrPrefix) {
+          matchedAdvertiserOption = opt;
+          matchedAdvertiserName = firstLine;
+          break;
+        }
       }
 
-      await dropdownOption.waitFor({ state: 'visible', timeout: 15000 });
-      await searchPage.waitForTimeout(1000);
+      // If no corporate entity cleanly matches, abort immediately
+      if (!matchedAdvertiserOption) {
+        console.log(`🛑 [SCAN ABORT] No corporate advertiser matching "${query}" found.`);
+        emitProgress(
+          0, 
+          maxAdsToTest, 
+          `> ❌ No advertiser named "${query}" found. If this is a game title, search for its publisher (e.g. Bandai Namco) instead.`
+        );
+        await searchPage.close();
+        return [];
+      }
 
+      console.log(`🟢 [DEBUG] Autocomplete matched: "${matchedAdvertiserName}". Clicking...`);
       hasClicked = true;
-      await dropdownOption.click();
-      emitProgress(0, maxAdsToTest, `> 🖱️ Clicked! Sniffing network for true AR ID...`);
+      await matchedAdvertiserOption.click();
+
+      emitProgress(0, maxAdsToTest, `> 🖱️ Locked onto "${matchedAdvertiserName}". Resolving AR ID...`);
 
       let timeWaited = 0;
       while (!arId && timeWaited < 15000) {
@@ -163,10 +205,25 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
       }
 
       if (isCancelled()) throw new Error('Scan aborted by user.');
-      if (!arId) throw new Error('Failed to intercept true AR ID.');
+      if (!arId) {
+        console.log(`🛑 [SCAN ABORT] Failed to resolve a valid Advertiser ID for "${matchedAdvertiserName}".`);
+        emitProgress(0, maxAdsToTest, `> ❌ No advertiser account linked to "${query}".`);
+        await searchPage.close();
+        return [];
+      }
       
       console.log(`🟢 [DEBUG] 5E. Successfully locked onto Advertiser ID: ${arId}`);
       emitProgress(0, maxAdsToTest, `> ✅ Locked onto Advertiser ID: ${arId}`);
+    }
+
+    // CHECK FOR EMPTY ADVERTISER / 0 ADS BEFORE SCROLLING
+    await searchPage.waitForTimeout(2000);
+    const hasZeroAds = await searchPage.locator('text="0 ads", text="No ads found"').first().isVisible({ timeout: 2500 }).catch(() => false);
+    if (hasZeroAds) {
+      console.log(`ℹ️ [SCAN] Advertiser ${arId} has 0 active ads. Aborting early.`);
+      emitProgress(0, maxAdsToTest, `> ℹ️ Target has 0 active ads. Scan complete.`);
+      await searchPage.close();
+      return [];
     }
 
     console.log("🟢 [DEBUG] 6. Entering scroll phase to trigger ad network requests...");
@@ -197,18 +254,25 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
 
     if (isCancelled()) throw new Error('Scan aborted by user.');
 
-    // We have our IDs. We can safely close the search page to free up RAM!
     await searchPage.close(); 
     console.log(`🟢 [DEBUG] Closed search page to free RAM.`);
 
     const idArray = Array.from(adIds).slice(0, maxAdsToTest);
+    
+    if (idArray.length === 0) {
+      console.log(`ℹ️ [SCAN] Zero ads intercepted for advertiser ${arId}.`);
+      emitProgress(0, 0, `> ℹ️ No ads available to inspect.`);
+      return [];
+    }
+
     console.log(`🟢 [DEBUG] 7. Scroll phase complete. Moving to deep extraction loop...`);
     emitProgress(0, idArray.length, `> ✅ Intercepted ${idArray.length} ads! Moving to deep extraction...`);
 
-    let allFoundPackagesArray = []; // Tracks every instance to return to server.js at the end
+    let allFoundPackagesArray = [];
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 3; // 3-strike circuit breaker for non-mobile targets
 
     for (let i = 0; i < idArray.length; i++) {
-      // ---------------------------------------------------------
       if (isCancelled()) {
         emitProgress(i + 1, idArray.length, '> 🛑 Abort signal received. Terminating deep extraction...');
         break;
@@ -217,12 +281,9 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
       const adId = idArray[i];
       const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
 
-      // CREATE EPHEMERAL PAGE FOR THIS SINGLE AD
       const adPage = await context.newPage();
-
       const adFoundPackages = [];
       
-      // Sniff click redirect URLs that fire inside the ad iframes
       adPage.on('request', req => {
         const reqUrl = req.url();
         const storeUrlRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/i;
@@ -231,6 +292,7 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
           adFoundPackages.push(match[1]);
         }
       });
+
       await adPage.route('**/*', (route) => {
         const resourceType = route.request().resourceType();
         if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
@@ -275,23 +337,31 @@ async function scanCompetitor(searchQuery, targetCountry, maxAdsToTest = 500, on
         const uniqueInAd = [...new Set(adFoundPackages)];
 
         if (uniqueInAd.length > 0) {
+          consecutiveFailures = 0; // Reset counter upon finding a valid app
           console.log(`🟢 [DEBUG] [Ad ${i + 1}] SUCCESS: Found ${uniqueInAd.length} packages:`, uniqueInAd);
           emitProgress(i + 1, idArray.length, `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} packages`);
           
-          // EAGERLY SEND TO SERVER.JS DATABASE
           for (const pkg of uniqueInAd) {
             allFoundPackagesArray.push(pkg);
             await onPackageFound(pkg); 
           }
         } else {
+          consecutiveFailures++;
           console.log(`🟡 [DEBUG] [Ad ${i + 1}] FAILURE: No valid packages found.`);
           emitProgress(i + 1, idArray.length, `> ❌ Ad ${i + 1}: No valid package found.`);
+
+          // Circuit breaker: if the first 3 consecutive ads have 0 Play Store packages, abort
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && allFoundPackagesArray.length === 0) {
+            console.log(`🛑 [CIRCUIT BREAKER] First ${MAX_CONSECUTIVE_FAILURES} ads had zero Play Store links. Non-mobile target detected. Aborting deep scan.`);
+            emitProgress(i + 1, idArray.length, `> 🛑 Non-mobile advertiser detected (Web/PC). Aborting scan.`);
+            await adPage.close();
+            break;
+          }
         }
       } catch (error) {
         console.error(`🔴 [DEBUG] [Ad ${i + 1}] Unexpected Error:`, error.message);
         emitProgress(i + 1, idArray.length, `> ⚠️ Ad ${i + 1}: Timeout. Skipping.`);
       } finally {
-        // THE MAGIC RAM BULLET: Destroy the page after extraction
         await adPage.close();
         console.log(`🟢 [DEBUG] [Ad ${i + 1}] Closed ad tab to free RAM.`);
       }

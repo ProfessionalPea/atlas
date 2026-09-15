@@ -387,7 +387,7 @@ function App() {
   const [latestScanCompId, setLatestScanCompId] = useState(() => localStorage.getItem("atlas_latest_comp_id") || null);
   const [hasLatestScan, setHasLatestScan] = useState(() => localStorage.getItem("atlas_has_latest_scan") === "1");
 
-  const [settings, setSettings] = useState({ ghost_scan_enabled: "1", auto_report_enabled: "1", default_report_email: "", report_subject_template: "", report_notes: "", google_sheet_id: "" });
+  const [settings, setSettings] = useState({ default_report_email: "", report_subject_template: "", report_notes: "", google_sheet_id: "" });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState("");
 
@@ -513,7 +513,6 @@ function App() {
     try {
       setGateError("");
       localStorage.setItem(ADMIN_KEY_STORAGE, key);
-      // Validate key with quick backend call
       await fetchJson(`${API_BASE}/api/health`);
       setIsUnlocked(true);
       setGatePasswordInput("");
@@ -1144,13 +1143,27 @@ function App() {
       {/* TOP HEADER */}
       <header className="fixed top-0 left-0 right-0 h-16 md:h-20 bg-surface-glass backdrop-blur-xl z-30 px-4 md:px-6 lg:px-8 flex items-center justify-between border-b border-border-subtle transition-colors duration-400">
         <div className="flex items-center gap-6 lg:gap-8">
-          <div className="flex items-center gap-3">
-            <img src="/atlas-logo.png" alt="Atlas Logo" className="h-8 w-8 object-contain rounded-md shadow-sm" />
-            <span className="font-headline-lg text-lg tracking-tight text-text-main uppercase font-bold hidden sm:block">Atlas</span>
+          {/* CLICKABLE LOGO: Navigates to Dashboard & scrolls to top */}
+          <div 
+            onClick={() => {
+              setActiveTab("dashboard");
+              window.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+            className="flex items-center gap-3 cursor-pointer group select-none"
+            title="Return to Dashboard"
+          >
+            <img 
+              src="/atlas-logo.png" 
+              alt="Atlas Logo" 
+              className="h-8 w-8 object-contain rounded-md shadow-sm group-hover:scale-105 transition-transform" 
+            />
+            <span className="font-headline-lg text-lg tracking-tight text-text-main uppercase font-bold hidden sm:block group-hover:text-electric-blue transition-colors">
+              Atlas
+            </span>
           </div>
           
           <nav className="hidden md:flex items-center gap-1.5">
-            {[ { id: "dashboard", icon: "dashboard", label: "Dashboard" }, { id: "directory", icon: "folder_shared", label: "Directory" }, { id: "automated", icon: "radar", label: "Auto Scans" }, { id: "settings", icon: "tune", label: "Settings" } ].map((tab) => (
+            {[ { id: "dashboard", icon: "dashboard", label: "Dashboard" }, { id: "directory", icon: "folder_shared", label: "Directory" }, { id: "automated", icon: "radar", label: "Targets" }, { id: "settings", icon: "tune", label: "Settings" } ].map((tab) => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)} className="relative flex items-center gap-2 px-3.5 py-2 rounded-xl group transition-all">
                 {activeTab === tab.id && <motion.div layoutId="header-active" className="absolute inset-0 bg-primary-container rounded-xl z-0" transition={{ type: "spring", stiffness: 300, damping: 30 }} />}
                 <span className={cn("material-symbols-outlined z-10 transition-colors text-[18px]", activeTab === tab.id ? "text-on-primary-container" : "text-text-muted group-hover:text-text-main")} style={{ fontVariationSettings: "'wght' 500" }}>{tab.icon}</span>
@@ -1533,28 +1546,56 @@ function App() {
           {/* DIRECTORY SEARCH TAB */}
           {activeTab === "directory" && (
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-6 md:gap-8">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h1 className="font-headline-lg text-2xl md:text-3xl text-text-main tracking-tight uppercase">Master Directory {viewMode === 'latest' && <span className="text-emerald-metric text-sm md:text-lg ml-2 font-bold tracking-widest bg-emerald-metric/10 px-2 md:px-3 py-1 rounded-lg border border-emerald-metric/20 shadow-sm">● LATEST</span>}</h1>
-                  <p className="font-body-sm md:font-body-md text-text-muted mt-1">Full database index of all intercepted competitors, publishers, and games.</p>
-                </div>
-                
-                <div className="relative w-full md:w-96">
-                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">search</span>
-                  <input value={directorySearch} onChange={(e) => setDirectorySearch(e.target.value)} placeholder="Search games, packages..." className="w-full bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-xl py-3 pl-10 pr-4 outline-none focus:ring-2 focus:ring-electric-blue/50 text-text-main shadow-sm font-body-md transition-shadow" />
-                  {directorySearch && <button onClick={() => setDirectorySearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main"><span className="material-symbols-outlined text-[18px]">close</span></button>}
-                </div>
+              {/* Page Title (Scrolls away naturally) */}
+              <div>
+                <h1 className="font-headline-lg text-2xl md:text-3xl text-text-main tracking-tight uppercase">
+                  Master Directory {viewMode === 'latest' && <span className="text-emerald-metric text-sm md:text-lg ml-2 font-bold tracking-widest bg-emerald-metric/10 px-2 md:px-3 py-1 rounded-lg border border-emerald-metric/20 shadow-sm">● LATEST</span>}
+                </h1>
+                <p className="font-body-sm md:font-body-md text-text-muted mt-1">
+                  Full database index of all intercepted competitors, publishers, and games.
+                </p>
               </div>
 
-              <div className="flex overflow-x-auto items-center gap-2 border-b border-border-subtle pb-4 custom-scrollbar">
-                {[
-                  { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
-                  { id: "games", label: `Games (${filteredGames.length})` },
-                  { id: "publishers", label: `Publishers (${processedAccounts.length})` },
-                  { id: "competitors", label: `Competitors (${filteredCompetitors.length})` }
-                ].map(tab => (
-                  <button key={tab.id} onClick={() => setDirectoryFilter(tab.id)} className={cn("px-4 py-2 rounded-xl text-xs font-label-caps uppercase tracking-wider font-bold transition-all whitespace-nowrap", directoryFilter === tab.id ? "bg-electric-blue text-white shadow-md" : "bg-surface-glass text-text-muted hover:text-text-main border border-border-subtle shadow-sm")}>{tab.label}</button>
-                ))}
+              {/* FROZEN / STICKY BAR: Docks right underneath the fixed top header on scroll */}
+              <div className="sticky top-16 md:top-20 z-20 bg-bg-base/95 backdrop-blur-xl py-3 -mx-3 sm:-mx-6 lg:-mx-8 px-3 sm:px-6 lg:px-8 border-b border-border-subtle flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm transition-colors">
+                
+                {/* Filter Category Pills */}
+                <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
+                  {[
+                    { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
+                    { id: "games", label: `Games (${filteredGames.length})` },
+                    { id: "publishers", label: `Publishers (${processedAccounts.length})` },
+                    { id: "competitors", label: `Competitors (${filteredCompetitors.length})` }
+                  ].map(tab => (
+                    <button 
+                      key={tab.id} 
+                      onClick={() => setDirectoryFilter(tab.id)} 
+                      className={cn(
+                        "px-4 py-2 rounded-xl text-xs font-label-caps uppercase tracking-wider font-bold transition-all whitespace-nowrap flex-shrink-0", 
+                        directoryFilter === tab.id ? "bg-electric-blue text-white shadow-md" : "bg-surface-glass text-text-muted hover:text-text-main border border-border-subtle shadow-sm"
+                      )}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Pinned Search Input */}
+                <div className="relative w-full md:w-80 flex-shrink-0">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">search</span>
+                  <input 
+                    value={directorySearch} 
+                    onChange={(e) => setDirectorySearch(e.target.value)} 
+                    placeholder="Search games, packages..." 
+                    className="w-full bg-surface-solid border border-border-subtle rounded-xl py-2.5 pl-10 pr-9 outline-none focus:ring-2 focus:ring-electric-blue/50 text-text-main shadow-sm font-body-sm transition-shadow text-xs md:text-sm" 
+                  />
+                  {directorySearch && (
+                    <button onClick={() => setDirectorySearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main">
+                      <span className="material-symbols-outlined text-[18px]">close</span>
+                    </button>
+                  )}
+                </div>
+
               </div>
 
               {(directoryFilter === "all" || directoryFilter === "games") && filteredGames.length > 0 && (
@@ -1685,7 +1726,7 @@ function App() {
             </motion.div>
           )}
 
-          {/* AUTOMATED SCANS TAB */}
+          {/* DATABASE TARGETS TAB */}
           {activeTab === "automated" && (
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-7xl mx-auto">
               <motion.div variants={FADE_UP} className="flex justify-between items-end mb-4">
@@ -1788,26 +1829,10 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-4xl mx-auto">
               <div>
                 <h1 className="font-headline-lg text-2xl md:text-3xl text-text-main tracking-tight uppercase font-bold">System Settings</h1>
-                <p className="font-body-sm md:font-body-md text-text-muted mt-1">Configure background cron daemons, Google Sheets integrations, and report templates.</p>
+                <p className="font-body-sm md:font-body-md text-text-muted mt-1">Configure Google Sheets integrations and PDF report templates.</p>
               </div>
 
               <form onSubmit={handleSaveSettings} className="space-y-4 md:space-y-6">
-                <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl space-y-6">
-                  <h3 className="text-base font-bold text-text-main uppercase tracking-wide flex items-center gap-2">
-                    <span className="material-symbols-outlined text-secondary drop-shadow-[0_0_8px_rgba(16,185,129,0.5)] text-[24px]">smart_toy</span> Background Automations
-                  </h3>
-                  
-                  <div className="flex items-center justify-between p-4 bg-surface-solid rounded-xl border border-border-subtle shadow-sm">
-                    <div className="pr-4">
-                      <h4 className="text-sm md:text-base font-bold text-text-main">3:00 AM Ghost Scans</h4>
-                      <p className="text-xs text-text-muted mt-1">Silently scrapes all saved competitors daily.</p>
-                    </div>
-                    <button type="button" onClick={() => setSettings(s => ({ ...s, ghost_scan_enabled: s.ghost_scan_enabled === "1" ? "0" : "1" }))} className={cn("w-12 h-6 rounded-full flex items-center px-1 transition-colors border shadow-sm flex-shrink-0", settings.ghost_scan_enabled === "1" ? "bg-emerald-metric border-emerald-metric" : "bg-surface-glass border-border-subtle")}>
-                      <div className={cn("w-4 h-4 rounded-full bg-white shadow transition-transform", settings.ghost_scan_enabled === "1" ? "translate-x-6" : "translate-x-0")}></div>
-                    </button>
-                  </div>
-                </div>
-
                 <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl space-y-6">
                   <h3 className="text-base font-bold text-text-main uppercase tracking-wide flex items-center gap-2">
                     <span className="material-symbols-outlined text-electric-blue drop-shadow-[0_0_8px_rgba(59,130,246,0.5)] text-[24px]">cloud_sync</span> Cloud Config
@@ -2196,7 +2221,7 @@ function App() {
                   <ul className="space-y-3 font-body-sm text-text-muted">
                     <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Brand Search:</span>Enter a name (e.g., <code className="bg-input-bg border border-border-subtle rounded px-1.5 py-0.5 font-mono text-[11px] text-text-main">Voodoo</code>) to search Google's Transparency records.</li>
                     <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Direct ID:</span>Paste a Google Advertiser ID (e.g., <code className="bg-input-bg border border-border-subtle rounded px-1.5 py-0.5 font-mono text-[11px] text-text-main">AR01234...</code>) for direct deep scanning.</li>
-                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Automated:</span>Save competitors or build Batch Lists in the Automated Scans tab to track them without manual entry.</li>
+                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Target Lists:</span>Save competitors or build Batch Lists in the Targets tab to scan them with one click.</li>
                   </ul>
                 </div>
                 <div className="space-y-2.5">

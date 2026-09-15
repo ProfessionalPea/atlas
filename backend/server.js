@@ -5,7 +5,6 @@ const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor } = require("./GoogleAdsScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const EventEmitter = require('events');
-const cron = require('node-cron');
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require('pg');
@@ -326,6 +325,21 @@ app.post("/api/scan", async (req, res) => {
 
         if (activeScanCancelled) break;
 
+        // 🛑 EARLY BAIL: Target produced 0 Play Store packages/ads
+        if (!results || results.length === 0) {
+          console.log(`⚠️ [SCAN] No valid Play Store packages found for target: "${targetDisplayName}". Skipping downstream sync.`);
+          scanEvents.emit("progress", {
+            target: targetDisplayName,
+            targetIndex: tIndex + 1,
+            totalTargets: targets.length,
+            currentAd: 0,
+            totalAds: 0,
+            timeRemaining: "00:00",
+            log: `> ⚠️ No active mobile game campaigns found for "${targetDisplayName}".`
+          });
+          continue; // Skip DB inserts, Sheets sync, and Publisher Sync
+        }
+
         const currentScanAdCounts = {};
         scanEvents.emit("progress", { target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length, currentAd: limit, totalAds: limit, timeRemaining: "00:00", log: `> 🗄️ Ingesting creative entities to Atlas database...` });
 
@@ -463,12 +477,16 @@ app.post("/api/scan", async (req, res) => {
 
       isScanRunning = false;
 
+      const totalPackages = interceptedPackageSet.size;
+
       scanEvents.emit("progress", { 
         isComplete: true, 
         target: "Batch Completed",
         packages: Array.from(interceptedPackageSet),
         competitorId: lastResolvedCompetitorId,
-        log: `> 🎉 Ingest complete. Synchronized ${allResults.length} records.`
+        log: totalPackages > 0 
+          ? `> 🎉 Ingest complete. Synchronized ${allResults.length} records.`
+          : `> ℹ️ Scan finished. No mobile game ad campaigns found for this target.`
       });
 
     } catch (error) {
@@ -534,24 +552,5 @@ app.get("/api/competitors", async (_req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-
-cron.schedule('0 3 * * *', async () => {
-  const isEnabled = (await pool.query("SELECT value FROM settings WHERE key = 'ghost_scan_enabled'")).rows[0]?.value;
-  if (isEnabled !== "1") return;
-  try {
-    const targets = (await pool.query("SELECT name, country FROM competitors")).rows;
-    for (const target of targets) {
-      await scanCompetitor(target.name, target.country || "Any", 500, () => {}, async () => {}, () => false);
-      await new Promise(resolve => setTimeout(resolve, 30000));
-    }
-  } catch (error) { console.error("Ghost automation error:", error); }
-});
-
-cron.schedule('0 6 * * *', async () => {
-  const isEnabled = (await pool.query("SELECT value FROM settings WHERE key = 'auto_report_enabled'")).rows[0]?.value;
-  if (isEnabled !== "1") return;
-  const defaultEmail = (await pool.query("SELECT value FROM settings WHERE key = 'default_report_email'")).rows[0]?.value || "danish1042awan@gmail.com";
-  await generateAndSendReport(defaultEmail);
-});
 
 app.listen(PORT, () => console.log(`Atlas backend running on http://localhost:${PORT}`));
