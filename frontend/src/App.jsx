@@ -1044,6 +1044,16 @@ function App() {
       }
     };
 
+    eventSource.onerror = (err) => {
+      console.warn("SSE connection error or closed:", err);
+      // If the backend finished the scan while the connection dropped, recover after 5s
+      setTimeout(() => {
+        setIsScanning(false);
+        loadAllData();
+        eventSource.close();
+      }, 5000);
+    };
+
     try {
       await fetchJson(`${API_BASE}/api/scan`, { 
         method: "POST", 
