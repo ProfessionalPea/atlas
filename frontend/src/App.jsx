@@ -980,18 +980,9 @@ function App() {
     else if (selectedSource.startsWith("comp_")) { scanType = "competitor"; targetId = selectedSource.split("_")[1]; }
 
     const token = localStorage.getItem(AUTH_TOKEN_KEY) || "";
-    const eventSource = new EventSource(
-      `${API_BASE}/api/scan-stream?ngrok-skip-browser-warning=true&token=${encodeURIComponent(token)}`
-    );
+    const streamController = new AbortController();
 
-    eventSource.onmessage = (event) => {
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-
+    const handleProgressData = (data) => {
       if (!data || typeof data !== "object") return;
 
       if (data.isComplete) {
@@ -1012,10 +1003,13 @@ function App() {
 
         setTimeout(() => {
           setIsScanning(false);
-          eventSource.close();
+          streamController.abort();
         }, 2500);
 
-      } else if (data.isCancelled || data.fatalError) {
+        return;
+      }
+
+      if (data.isCancelled || data.fatalError) {
         setScanProgress(prev => ({
           ...prev,
           logs: [...prev.logs, data.log || "> Scan terminated."].slice(-5)
@@ -1023,38 +1017,111 @@ function App() {
 
         setTimeout(() => {
           setIsScanning(false);
-          eventSource.close();
+          streamController.abort();
         }, 3000);
 
-      } else {
-        setScanProgress(prev => {
-          const newLogs = [...prev.logs, data.log].filter(Boolean).slice(-5);
-
-          return {
-            ...prev,
-            target: data.target || prev.target,
-            targetIndex: data.targetIndex || prev.targetIndex,
-            totalTargets: data.totalTargets || prev.totalTargets,
-            currentAd: data.currentAd !== undefined ? data.currentAd : prev.currentAd,
-            totalAds: data.totalAds || prev.totalAds,
-            timeRemaining: data.timeRemaining || prev.timeRemaining,
-            logs: newLogs
-          };
-        });
+        return;
       }
-    };
 
-    eventSource.onerror = (err) => {
-      console.warn("SSE connection error or closed:", err);
-      // If the backend finished the scan while the connection dropped, recover after 5s
-      setTimeout(() => {
-        setIsScanning(false);
-        loadAllData();
-        eventSource.close();
-      }, 5000);
+      setScanProgress(prev => {
+        const newLogs = [...prev.logs, data.log].filter(Boolean).slice(-5);
+
+        return {
+          ...prev,
+          target: data.target || prev.target,
+          targetIndex: data.targetIndex || prev.targetIndex,
+          totalTargets: data.totalTargets || prev.totalTargets,
+          currentAd: data.currentAd !== undefined ? data.currentAd : prev.currentAd,
+          totalAds: data.totalAds !== undefined ? data.totalAds : prev.totalAds,
+          timeRemaining: data.timeRemaining || prev.timeRemaining,
+          logs: newLogs
+        };
+      });
     };
 
     try {
+      // Open the live progress stream first so no scanner events are missed.
+      // Unlike EventSource, fetch lets Atlas send the same auth + ngrok headers
+      // that are already used successfully by the rest of the API.
+      const streamResponse = await fetch(`${API_BASE}/api/scan-stream`, {
+        method: "GET",
+        headers: {
+          "x-atlas-token": token,
+          "ngrok-skip-browser-warning": "69420",
+          "Accept": "text/event-stream"
+        },
+        cache: "no-store",
+        signal: streamController.signal
+      });
+
+      if (streamResponse.status === 401) {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        localStorage.removeItem(AUTH_USER_KEY);
+        window.dispatchEvent(new CustomEvent("atlas:unauthorized"));
+        throw new Error("Unauthorized: Please log in.");
+      }
+
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error(`Could not open live scan stream (HTTP ${streamResponse.status}).`);
+      }
+
+      // Read the server-sent-event response in the background.
+      // The backend still emits normal SSE frames: data: {...}\n\n
+      const readProgressStream = async () => {
+        const reader = streamResponse.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            buffer = buffer.replace(/\r\n/g, "\n");
+
+            let boundaryIndex;
+            while ((boundaryIndex = buffer.indexOf("\n\n")) !== -1) {
+              const eventBlock = buffer.slice(0, boundaryIndex);
+              buffer = buffer.slice(boundaryIndex + 2);
+
+              const payload = eventBlock
+                .split("\n")
+                .filter(line => line.startsWith("data:"))
+                .map(line => line.slice(5).trimStart())
+                .join("\n");
+
+              if (!payload) continue;
+
+              try {
+                handleProgressData(JSON.parse(payload));
+              } catch (parseError) {
+                console.warn("Invalid scan progress event:", parseError);
+              }
+            }
+          }
+
+          if (!streamController.signal.aborted) {
+            setScanProgress(prev => ({
+              ...prev,
+              logs: [...prev.logs, "> ⚠️ Live progress stream disconnected."].slice(-5)
+            }));
+          }
+        } catch (streamError) {
+          if (streamError?.name !== "AbortError" && !streamController.signal.aborted) {
+            console.error("Scan progress stream error:", streamError);
+            setScanProgress(prev => ({
+              ...prev,
+              logs: [...prev.logs, "> ⚠️ Live progress stream disconnected."].slice(-5)
+            }));
+          }
+        } finally {
+          try { reader.releaseLock(); } catch {}
+        }
+      };
+
+      void readProgressStream();
+
       await fetchJson(`${API_BASE}/api/scan`, { 
         method: "POST", 
         headers: { "Content-Type": "application/json" }, 
@@ -1070,7 +1137,14 @@ function App() {
         }) 
       });
     } catch (err) {
-      console.error("Scan dispatch error:", err);
+      console.error("Scan dispatch/stream error:", err);
+      streamController.abort();
+      setIsScanning(false);
+      setScanProgress(prev => ({
+        ...prev,
+        timeRemaining: "Stopped",
+        logs: [...prev.logs, `> ❌ ${err.message || "Unable to start scan."}`].slice(-5)
+      }));
     }
   };
 
