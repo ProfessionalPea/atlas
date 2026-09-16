@@ -177,8 +177,8 @@ app.get("/api/auth/me", (req, res) => {
 app.use("/api", (req, res, next) => {
   if (req.method === "OPTIONS") return next();
 
-  // Public exceptions
-  if (req.path === "/auth/login" || req.path === "/health") {
+  // Allow scan-stream to authenticate inside its own route handler
+  if (req.path === "/auth/login" || req.path === "/health" || req.path === "/scan-stream") {
     return next();
   }
 
@@ -189,13 +189,11 @@ app.use("/api", (req, res, next) => {
     return res.status(401).json({ error: "Unauthorized: Please log in." });
   }
 
-  // Read-only access (GET) is allowed for both admin and user
   if (req.method === "GET") {
     req.user = session;
     return next();
   }
 
-  // Mutation operations strictly require admin privileges
   if (session.role !== "admin") {
     return res.status(403).json({
       error: "Forbidden: You do not have permission to modify records or execute scans."
@@ -341,12 +339,29 @@ app.delete("/api/publishers/:id/data", async (req, res) => {
   }
 });
 
-app.get("/api/scan-stream", (_req, res) => {
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "Connection": "keep-alive" });
+app.get("/api/scan-stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no", // Disables buffering on Ngrok / Nginx proxies
+  });
+
+  if (res.flushHeaders) {
+    res.flushHeaders();
+  }
+
   res.write(`data: ${JSON.stringify({ log: "> Secure SSE connection established..." })}\n\n`);
-  const sendProgress = (data) => { res.write(`data: ${JSON.stringify(data)}\n\n`); };
+
+  const sendProgress = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
   scanEvents.on("progress", sendProgress);
-  _req.on("close", () => { scanEvents.off("progress", sendProgress); });
+
+  req.on("close", () => {
+    scanEvents.off("progress", sendProgress);
+  });
 });
 
 app.post("/api/scan", async (req, res) => {

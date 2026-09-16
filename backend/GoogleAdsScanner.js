@@ -259,15 +259,29 @@ async function scanCompetitor(
         }
       });
 
+      // Keep scripts/XHR alive, but block heavy visual assets.
+      // This restores the extraction behavior that previously worked reliably.
+      await adPage.route('**/*', (route) => {
+        const resourceType = route.request().resourceType();
+        if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+          route.abort();
+        } else {
+          route.continue();
+        }
+      });
+
       try {
         console.log(`\n🟢 [DEBUG] 8. [Ad ${i + 1}/${idArray.length}] Navigating to: ${url}`);
         try {
-          await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
         } catch {
           console.log(`🔴 [DEBUG] [Ad ${i + 1}] Page load timed out, proceeding with inspection...`);
         }
 
-        await adPage.waitForTimeout(3500);
+        // Give Google Ads' nested creative frames/network redirects enough time
+        // to expose Play Store URLs/package IDs before scraping the frame HTML.
+        await adPage.waitForTimeout(5000);
+        await adPage.waitForTimeout(3000);
 
         const frames = adPage.frames();
         let fullHtml = '';
