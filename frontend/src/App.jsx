@@ -1,22 +1,13 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { cn } from "./lib/utils"; 
+import { cn } from "./lib/utils";
 
 // 🚨 NGROK URL
 const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
 
-const ADMIN_KEY_STORAGE = "atlas_admin_key";
-
-// Auto-detect magic link: ?key=YourPassword
-if (typeof window !== "undefined") {
-  const urlParams = new URLSearchParams(window.location.search);
-  const magicKey = urlParams.get("key");
-  if (magicKey) {
-    localStorage.setItem(ADMIN_KEY_STORAGE, magicKey.trim());
-    window.history.replaceState({}, document.title, window.location.pathname);
-  }
-}
+const AUTH_TOKEN_KEY = "atlas_auth_token";
+const AUTH_USER_KEY = "atlas_auth_user";
 
 const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" 
   ? "http://localhost:3000" 
@@ -42,21 +33,22 @@ function parseInstalls(installStr) {
   return parseInt(installStr.replace(/[^0-9]/g, '')) || 0;
 }
 
-// Every API request now supplies the key
+// Every API request supplies the session auth token
 async function fetchJson(url, options = {}) {
-  const key = localStorage.getItem(ADMIN_KEY_STORAGE);
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
   const headers = {
     ...options.headers,
     "ngrok-skip-browser-warning": "69420",
-    ...(key ? { "x-atlas-admin-key": key } : {})
+    ...(token ? { "x-atlas-token": token } : {})
   };
 
   const response = await fetch(url, { ...options, headers });
 
   if (response.status === 401) {
-    localStorage.removeItem(ADMIN_KEY_STORAGE);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
     window.dispatchEvent(new CustomEvent("atlas:unauthorized"));
-    throw new Error("Unauthorized");
+    throw new Error("Unauthorized: Please log in.");
   }
 
   const text = await response.text();
@@ -288,6 +280,7 @@ const LiveDirectory = memo(function LiveDirectory({
   visibleCompetitorTree,
   viewMode,
   expandedNodes,
+  isAdmin,
   onToggleNode,
   onGameClick,
   onNukeCompetitorData,
@@ -315,7 +308,9 @@ const LiveDirectory = memo(function LiveDirectory({
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-glass text-text-muted border border-border-subtle uppercase font-semibold">Group</span>
-                <button onClick={(e) => onNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1 rounded transition-colors" title="Delete ALL Group Data"><span className="material-symbols-outlined text-[14px]">delete</span></button>
+                {isAdmin && (
+                  <button onClick={(e) => onNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1 rounded transition-colors" title="Delete ALL Group Data"><span className="material-symbols-outlined text-[14px]">delete</span></button>
+                )}
               </div>
             </div>
 
@@ -331,7 +326,9 @@ const LiveDirectory = memo(function LiveDirectory({
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-[9px] px-1 py-0.5 rounded bg-surface-solid text-electric-blue font-semibold border border-electric-blue/30">Pub</span>
-                        <button onClick={(e) => onNukePublisherData(e, acc.id, acc.publisher_name)} className="text-text-muted hover:text-urgent-red p-1 rounded transition-colors" title="Delete Publisher Data"><span className="material-symbols-outlined text-[14px]">delete</span></button>
+                        {isAdmin && (
+                          <button onClick={(e) => onNukePublisherData(e, acc.id, acc.publisher_name)} className="text-text-muted hover:text-urgent-red p-1 rounded transition-colors" title="Delete Publisher Data"><span className="material-symbols-outlined text-[14px]">delete</span></button>
+                        )}
                       </div>
                     </div>
 
@@ -360,9 +357,15 @@ const LiveDirectory = memo(function LiveDirectory({
 });
 
 function App() {
-  const [isUnlocked, setIsUnlocked] = useState(() => Boolean(localStorage.getItem(ADMIN_KEY_STORAGE)));
-  const [gatePasswordInput, setGatePasswordInput] = useState("");
-  const [gateError, setGateError] = useState("");
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem(AUTH_TOKEN_KEY));
+  const [currentUser, setCurrentUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY)) || null; } catch { return null; }
+  });
+  const [usernameInput, setUsernameInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+
+  const isAdmin = currentUser?.role === "admin";
 
   const [activeTab, setActiveTab] = useState("dashboard"); 
   const [trendingSort, setTrendingSort] = useState("ads");
@@ -431,14 +434,22 @@ function App() {
     return saved ? saved === "dark" : true; 
   });
 
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
+    setAuthToken(null);
+    setCurrentUser(null);
+    setActiveTab("dashboard");
+  }, []);
+
   useEffect(() => {
     const handleUnauthorized = () => {
-      setIsUnlocked(false);
-      setGateError("Session expired or invalid team key.");
+      handleLogout();
+      setLoginError("Session expired. Please log in again.");
     };
     window.addEventListener("atlas:unauthorized", handleUnauthorized);
     return () => window.removeEventListener("atlas:unauthorized", handleUnauthorized);
-  }, []);
+  }, [handleLogout]);
 
   useEffect(() => {
     const closeDropdowns = () => {
@@ -473,7 +484,7 @@ function App() {
   }, [activeStatPanel]);
 
   const loadAllData = useCallback(async () => {
-    if (!isUnlocked) return;
+    if (!authToken || !currentUser) return;
     try {
       await fetchJson(`${API_BASE}/api/health`);
       setIsNodeOnline(true);
@@ -493,10 +504,10 @@ function App() {
     ];
     const results = await Promise.allSettled(requests);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
-  }, [isUnlocked]);
+  }, [authToken, currentUser]);
 
   useEffect(() => { 
-    if (isUnlocked) {
+    if (authToken && currentUser) {
       loadAllData(); 
       const heartbeat = setInterval(async () => {
         try { await fetchJson(`${API_BASE}/api/health`); setIsNodeOnline(true); } 
@@ -504,21 +515,30 @@ function App() {
       }, 30000);
       return () => clearInterval(heartbeat);
     }
-  }, [isUnlocked, loadAllData]);
+  }, [authToken, currentUser, loadAllData]);
 
-  const handleGateSubmit = async (e) => {
+  const handleLoginSubmit = async (e) => {
     e.preventDefault();
-    const key = gatePasswordInput.trim();
-    if (!key) return;
+    const user = usernameInput.trim();
+    const pass = passwordInput.trim();
+    if (!user || !pass) return;
+
     try {
-      setGateError("");
-      localStorage.setItem(ADMIN_KEY_STORAGE, key);
-      await fetchJson(`${API_BASE}/api/health`);
-      setIsUnlocked(true);
-      setGatePasswordInput("");
-    } catch {
-      localStorage.removeItem(ADMIN_KEY_STORAGE);
-      setGateError("Access Denied: Invalid team key.");
+      setLoginError("");
+      const res = await fetchJson(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user, password: pass })
+      });
+
+      localStorage.setItem(AUTH_TOKEN_KEY, res.token);
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(res.user));
+      setAuthToken(res.token);
+      setCurrentUser(res.user);
+      setUsernameInput("");
+      setPasswordInput("");
+    } catch (err) {
+      setLoginError(err.message || "Invalid credentials.");
     }
   };
 
@@ -528,23 +548,25 @@ function App() {
 
   const handleNukeCompetitorData = useCallback(async (e, id, name) => {
     e.stopPropagation();
+    if (!isAdmin) return;
     if (window.confirm(`⚠️ WARNING: Are you sure you want to PERMANENTLY delete ALL data for ${name} (including all associated games and publishers)? This cannot be undone.`)) {
       try {
         await fetchJson(`${API_BASE}/api/competitors/${id}/data`, { method: "DELETE" });
         loadAllData();
       } catch { alert("Failed to delete competitor."); }
     }
-  }, [loadAllData]);
+  }, [isAdmin, loadAllData]);
 
   const handleNukePublisherData = useCallback(async (e, id, name) => {
     e.stopPropagation();
+    if (!isAdmin) return;
     if (window.confirm(`⚠️ WARNING: Are you sure you want to PERMANENTLY delete ALL data for publisher ${name}?`)) {
       try {
         await fetchJson(`${API_BASE}/api/publishers/${id}/data`, { method: "DELETE" });
         loadAllData();
       } catch { alert("Failed to delete publisher."); }
     }
-  }, [loadAllData]);
+  }, [isAdmin, loadAllData]);
 
   const isFromLatestScan = (game) => {
     if (viewMode === "all") return true;
@@ -780,7 +802,10 @@ function App() {
   }, [visibleCompetitorTree, searchLower, pubFilterNew, pubFilterComp, pubSort]);
 
   const handleSaveSettings = async (e) => {
-    e.preventDefault(); setIsSavingSettings(true); setSettingsStatus("");
+    e.preventDefault(); 
+    if (!isAdmin) return;
+    setIsSavingSettings(true); 
+    setSettingsStatus("");
     try {
       const data = await fetchJson(`${API_BASE}/api/settings`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
       if (data?.status === "success") { setSettingsStatus("Settings saved successfully!"); setTimeout(() => setSettingsStatus(""), 3500); }
@@ -789,7 +814,7 @@ function App() {
 
   const handleCreateList = async (e) => {
     e.preventDefault();
-    if (!newListName || !newListTargets || isSaving) return;
+    if (!isAdmin || !newListName || !newListTargets || isSaving) return;
     setIsSaving(true);
     try {
       await fetchJson(`${API_BASE}/api/lists`, {
@@ -811,6 +836,7 @@ function App() {
   };
 
   const handleToggleList = async (id, currentStatus) => {
+    if (!isAdmin) return;
     try {
       await fetchJson(`${API_BASE}/api/lists/${id}/toggle`, {
         method: "PATCH",
@@ -825,7 +851,7 @@ function App() {
 
   const handleSaveCompetitor = async (e) => {
     e.preventDefault();
-    if (!newCompName || !newCompAdsId || isSaving) return;
+    if (!isAdmin || !newCompName || !newCompAdsId || isSaving) return;
     setIsSaving(true);
     try {
       await fetchJson(`${API_BASE}/api/competitors`, {
@@ -845,7 +871,7 @@ function App() {
 
   const handleSaveEmailList = async (e) => {
     e.preventDefault();
-    if (!newEmailName || !newEmailTargets || isSaving) return;
+    if (!isAdmin || !newEmailName || !newEmailTargets || isSaving) return;
     setIsSaving(true);
     try {
       await fetchJson(`${API_BASE}/api/emails`, {
@@ -867,6 +893,7 @@ function App() {
   };
 
   const handleDeleteList = async (id) => {
+    if (!isAdmin) return;
     if (window.confirm("Delete this target list?")) {
       try {
         await fetchJson(`${API_BASE}/api/lists/${id}`, { method: "DELETE" });
@@ -878,6 +905,7 @@ function App() {
   };
 
   const handleDeleteCompetitor = async (id) => {
+    if (!isAdmin) return;
     if (window.confirm("Delete this saved competitor?")) {
       try {
         await fetchJson(`${API_BASE}/api/saved-competitors/${id}`, { method: "DELETE" });
@@ -889,6 +917,7 @@ function App() {
   };
 
   const handleDeleteEmail = async (id) => {
+    if (!isAdmin) return;
     if (window.confirm("Delete this email target?")) {
       try {
         await fetchJson(`${API_BASE}/api/emails/${id}`, { method: "DELETE" });
@@ -900,6 +929,7 @@ function App() {
   };
   
   const handleCancelScan = async () => {
+    if (!isAdmin) return;
     if (!window.confirm("Abort the current scan? Any targets already processed will be saved safely.")) return;
     try {
       await fetchJson(`${API_BASE}/api/cancel-scan`, { method: "POST" });
@@ -910,6 +940,7 @@ function App() {
   };
 
   const handleRunScan = async () => {
+    if (!isAdmin) return alert("Only administrators can initiate scans.");
     if (selectedSource === "manual" && !scanQuery) return alert("Please enter a competitor name or AR ID!");
 
     const directReportEmail = customReportEmail.trim();
@@ -948,9 +979,9 @@ function App() {
     if (selectedSource.startsWith("list_")) { scanType = "list"; targetId = selectedSource.split("_")[1]; } 
     else if (selectedSource.startsWith("comp_")) { scanType = "competitor"; targetId = selectedSource.split("_")[1]; }
 
-    const key = localStorage.getItem(ADMIN_KEY_STORAGE) || "";
+    const token = localStorage.getItem(AUTH_TOKEN_KEY) || "";
     const eventSource = new EventSource(
-      `${API_BASE}/api/scan-stream?ngrok-skip-browser-warning=true&key=${encodeURIComponent(key)}`
+      `${API_BASE}/api/scan-stream?ngrok-skip-browser-warning=true&token=${encodeURIComponent(token)}`
     );
 
     eventSource.onmessage = (event) => {
@@ -1085,7 +1116,7 @@ function App() {
   const scanPercentage = Math.min(100, (scanProgress.currentAd / Math.max(1, scanProgress.totalAds)) * 100).toFixed(0);
 
   // FULL-SCREEN SECURITY GATE FOR UNAUTHENTICATED USERS
-  if (!isUnlocked) {
+  if (!authToken || !currentUser) {
     return (
       <div className="bg-bg-base font-body-md text-text-main min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-electric-blue/10 blur-[130px] pointer-events-none"></div>
@@ -1103,28 +1134,38 @@ function App() {
             </div>
             <div className="space-y-1">
               <h1 className="font-headline-lg text-2xl font-bold text-text-main uppercase tracking-tight">Atlas Intelligence</h1>
-              <p className="text-xs text-text-muted">Team key required for access.</p>
+              <p className="text-xs text-text-muted">Sign in with your workspace credentials.</p>
             </div>
           </div>
 
-          <form onSubmit={handleGateSubmit} className="space-y-4">
+          <form onSubmit={handleLoginSubmit} className="space-y-3">
+            <input
+              type="text"
+              autoFocus
+              value={usernameInput}
+              onChange={(e) => {
+                setUsernameInput(e.target.value);
+                setLoginError("");
+              }}
+              placeholder="Username"
+              className="w-full bg-input-bg border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-body-sm shadow-inner"
+            />
             <input
               type="password"
-              autoFocus
-              value={gatePasswordInput}
+              value={passwordInput}
               onChange={(e) => {
-                setGatePasswordInput(e.target.value);
-                setGateError("");
+                setPasswordInput(e.target.value);
+                setLoginError("");
               }}
-              placeholder="Enter team key..."
-              className="w-full bg-input-bg border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-mono shadow-inner text-center tracking-wider"
+              placeholder="Password"
+              className="w-full bg-input-bg border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-body-sm shadow-inner"
             />
-            {gateError && <p className="text-urgent-red text-xs text-center font-semibold">{gateError}</p>}
+            {loginError && <p className="text-urgent-red text-xs text-center font-semibold">{loginError}</p>}
             <button
               type="submit"
               className="w-full py-3.5 bg-electric-blue hover:bg-blue-600 text-white font-label-caps text-xs uppercase tracking-wider font-bold rounded-xl shadow-lg transition-all active:scale-[0.98]"
             >
-              Authenticate Node
+              Sign In
             </button>
           </form>
         </motion.div>
@@ -1136,8 +1177,8 @@ function App() {
     <div className="bg-bg-base font-body-md text-text-main min-h-screen relative transition-colors duration-400 z-10 overflow-x-hidden pb-20 md:pb-0">
       
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-electric-blue/5 blur-[120px]"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[30%] h-[30%] rounded-full bg-primary/5 blur-[100px]"></div>
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-electric-blue/5 blur-[120px] pointer-events-none"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[30%] h-[30%] rounded-full bg-primary/5 blur-[100px] pointer-events-none"></div>
       </div>
 
       {/* TOP HEADER */}
@@ -1163,7 +1204,12 @@ function App() {
           </div>
           
           <nav className="hidden md:flex items-center gap-1.5">
-            {[ { id: "dashboard", icon: "dashboard", label: "Dashboard" }, { id: "directory", icon: "folder_shared", label: "Directory" }, { id: "automated", icon: "radar", label: "Targets" }, { id: "settings", icon: "tune", label: "Settings" } ].map((tab) => (
+            {[
+              { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+              { id: "directory", icon: "folder_shared", label: "Directory" },
+              { id: "automated", icon: "radar", label: "Targets" },
+              ...(isAdmin ? [{ id: "settings", icon: "tune", label: "Settings" }] : [])
+            ].map((tab) => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)} className="relative flex items-center gap-2 px-3.5 py-2 rounded-xl group transition-all">
                 {activeTab === tab.id && <motion.div layoutId="header-active" className="absolute inset-0 bg-primary-container rounded-xl z-0" transition={{ type: "spring", stiffness: 300, damping: 30 }} />}
                 <span className={cn("material-symbols-outlined z-10 transition-colors text-[18px]", activeTab === tab.id ? "text-on-primary-container" : "text-text-muted group-hover:text-text-main")} style={{ fontVariationSettings: "'wght' 500" }}>{tab.icon}</span>
@@ -1187,6 +1233,15 @@ function App() {
             </button>
           </div>
 
+          <div className="hidden sm:flex items-center">
+            <span className={cn(
+              "font-mono text-[10px] font-bold px-2 py-1 rounded-lg border uppercase shadow-sm tracking-wider",
+              isAdmin ? "bg-electric-blue/10 text-electric-blue border-electric-blue/30" : "bg-surface-solid text-text-muted border-border-subtle"
+            )}>
+              {currentUser?.username}
+            </span>
+          </div>
+
           <button onClick={() => setIsGuideOpen(true)} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-main hover:bg-surface-glass transition-all shadow-sm border border-border-subtle" title="How Atlas Works">
             <span className="material-symbols-outlined text-[18px] md:text-[20px]" style={{ fontVariationSettings: "'wght' 500" }}>help</span>
           </button>
@@ -1195,7 +1250,7 @@ function App() {
             <span className="material-symbols-outlined text-[18px] md:text-[20px]" style={{ fontVariationSettings: "'wght' 500" }}>{isDarkMode ? "light_mode" : "dark_mode"}</span>
           </button>
 
-          <button onClick={() => { localStorage.removeItem(ADMIN_KEY_STORAGE); setIsUnlocked(false); }} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-muted hover:text-urgent-red transition-all shadow-sm border border-border-subtle" title="Lock Atlas">
+          <button onClick={handleLogout} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-muted hover:text-urgent-red transition-all shadow-sm border border-border-subtle" title="Sign Out">
             <span className="material-symbols-outlined text-[18px] md:text-[20px]">logout</span>
           </button>
         </div>
@@ -1222,8 +1277,14 @@ function App() {
                     <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest pl-1 block">Target Competitor / ID</label>
                     <div className="relative">
                       <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">my_location</span>
-                      <input value={selectedSource === "manual" ? scanQuery : "Auto-Target Selected"} onChange={(e) => setScanQuery(e.target.value)} disabled={selectedSource !== "manual" || isScanning}
-                        className="w-full bg-input-bg text-text-main border border-border-subtle font-mono font-semibold rounded-xl py-3 pl-10 pr-4 outline-none transition-all shadow-sm focus:ring-2 focus:ring-electric-blue/50 disabled:opacity-50" placeholder="e.g. Voodoo or ID: 12345" type="text" />
+                      <input 
+                        value={selectedSource === "manual" ? scanQuery : "Auto-Target Selected"} 
+                        onChange={(e) => setScanQuery(e.target.value)} 
+                        disabled={!isAdmin || selectedSource !== "manual" || isScanning}
+                        className="w-full bg-input-bg text-text-main border border-border-subtle font-mono font-semibold rounded-xl py-3 pl-10 pr-4 outline-none transition-all shadow-sm focus:ring-2 focus:ring-electric-blue/50 disabled:opacity-50" 
+                        placeholder={isAdmin ? "e.g. Voodoo or ID: 12345" : "Scan input restricted to Admin"} 
+                        type="text" 
+                      />
                     </div>
                   </div>
 
@@ -1232,20 +1293,20 @@ function App() {
                     <div className="flex-[1.5] min-w-[140px] space-y-2 relative">
                       <label className="font-label-caps text-[10px] md:text-xs text-text-muted uppercase tracking-widest pl-1 block truncate">Target Source</label>
                       <div onClick={(e) => { 
-                            if(!isScanning) { 
+                            if(!isScanning && isAdmin) { 
                               e.stopPropagation(); 
                               if (activeDropdown !== 'source') setSourceSearch("");
                               setActiveDropdown(activeDropdown === 'source' ? null : 'source'); 
                             } 
                           }}
-                        className={cn("w-full bg-input-bg text-text-main border border-border-subtle font-body-md rounded-xl py-3 px-3 md:pl-10 md:pr-4 outline-none transition-all shadow-sm cursor-pointer flex items-center justify-between select-none hover:border-text-muted/50", activeDropdown === 'source' && 'ring-2 ring-electric-blue/20', isScanning && "opacity-50 cursor-not-allowed")}
+                        className={cn("w-full bg-input-bg text-text-main border border-border-subtle font-body-md rounded-xl py-3 px-3 md:pl-10 md:pr-4 outline-none transition-all shadow-sm cursor-pointer flex items-center justify-between select-none hover:border-text-muted/50", activeDropdown === 'source' && 'ring-2 ring-electric-blue/20', (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed")}
                       >
                         <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">list_alt</span>
                         <span className="truncate font-semibold text-xs md:text-sm">{getTargetSourceName()}</span>
                         <span className="material-symbols-outlined text-text-muted text-[18px] transition-transform" style={{ transform: activeDropdown === 'source' ? 'rotate(180deg)' : 'rotate(0deg)' }}>expand_more</span>
                       </div>
                       <AnimatePresence>
-                        {activeDropdown === 'source' && (
+                        {activeDropdown === 'source' && isAdmin && (
                           <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" onClick={(e) => e.stopPropagation()} className="absolute top-full left-0 w-full md:w-[520px] mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl p-2 z-50">
                             <div className="flex items-center gap-2 bg-input-bg border border-border-subtle rounded-lg px-3 py-2 mb-2">
                               <span className="material-symbols-outlined text-text-muted text-[18px]">search</span>
@@ -1301,7 +1362,7 @@ function App() {
                         layout
                         transition={{ type: "spring", stiffness: 320, damping: 30 }}
                         onClick={(e) => {
-                          if (!isScanning) {
+                          if (!isScanning && isAdmin) {
                             e.stopPropagation();
                             setActiveDropdown(activeDropdown === 'email' ? null : 'email');
                           }
@@ -1310,14 +1371,14 @@ function App() {
                           "w-full h-[46px] md:h-[50px] bg-input-bg text-text-main border border-border-subtle font-body-md rounded-xl px-3 md:pl-10 md:pr-3 outline-none shadow-sm cursor-pointer flex items-center gap-2 select-none transition-[border-color,box-shadow,opacity]",
                           activeDropdown === 'email' && 'ring-2 ring-electric-blue/20',
                           selectedEmailList === 'custom' && EMAIL_REGEX.test(customReportEmail.trim()) && 'border-emerald-metric/40',
-                          isScanning && "opacity-50 cursor-not-allowed"
+                          (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed"
                         )}
                       >
                         <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">mail</span>
 
                         <div className="flex-1 min-w-0">
                           <AnimatePresence mode="wait" initial={false}>
-                            {selectedEmailList === 'custom' ? (
+                            {selectedEmailList === 'custom' && isAdmin ? (
                               <motion.input
                                 key="custom-report-email"
                                 initial={{ opacity: 0, x: -8 }}
@@ -1378,7 +1439,7 @@ function App() {
                       </motion.div>
 
                       <AnimatePresence>
-                        {activeDropdown === 'email' && (
+                        {activeDropdown === 'email' && isAdmin && (
                           <motion.div
                             variants={dropDownAnim}
                             initial="hidden"
@@ -1437,15 +1498,15 @@ function App() {
                   
                   <div className="flex-1 min-w-full md:min-w-[120px] space-y-1.5 md:space-y-2 relative">
                     <label className="font-label-caps text-[10px] md:text-xs text-text-muted uppercase tracking-widest pl-1 block">Ad Limit</label>
-                    <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-xl shadow-sm transition-all h-[46px] md:h-[50px]", (isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
-                      <button disabled={isMaxAds || isScanning} onClick={() => setScanLimit(Math.max(1, scanLimit - 10))} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">remove</span></button>
-                      <input disabled={isMaxAds || isScanning} value={isMaxAds ? "ALL" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-mono font-semibold outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
-                      <button disabled={isMaxAds || isScanning} onClick={() => setScanLimit((scanLimit || 0) + 10)} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">add</span></button>
+                    <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-xl shadow-sm transition-all h-[46px] md:h-[50px]", (!isAdmin || isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
+                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit(Math.max(1, scanLimit - 10))} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">remove</span></button>
+                      <input disabled={!isAdmin || isMaxAds || isScanning} value={isMaxAds ? "ALL" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-mono font-semibold outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
+                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit((scanLimit || 0) + 10)} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">add</span></button>
                       <div className="w-px h-full bg-border-subtle"></div>
-                      <button disabled={isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(!isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-xl transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
+                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(isAdmin && !isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-xl transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
                     </div>
                     <AnimatePresence>
-                      {activeDropdown === 'limit' && !isMaxAds && (
+                      {activeDropdown === 'limit' && isAdmin && !isMaxAds && (
                         <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" onClick={(e) => e.stopPropagation()} className="absolute top-full right-0 w-full md:w-28 mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl overflow-hidden p-2 z-50 grid grid-cols-3 md:grid-cols-1 gap-1">
                           {[10, 20, 50, 100, 250, 500].map(val => <div key={val} onClick={() => { setScanLimit(val); setActiveDropdown(null); }} className="px-3 py-2 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-mono font-semibold text-center transition-colors border border-border-subtle md:border-none">{val}</div>)}
                         </motion.div>
@@ -1454,21 +1515,29 @@ function App() {
                   </div>
 
                   <div className="flex gap-2 items-center flex-shrink-0 w-full xl:w-auto mt-2 xl:mt-0">
-                    <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[46px] md:h-[50px] px-4 rounded-xl font-semibold tracking-widest text-sm uppercase transition-all flex items-center justify-center gap-2 border border-border-subtle shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-urgent-red text-white border-urgent-red' : 'bg-surface-solid text-text-main')} title="Scan every single ad. No limits."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> MAX</button>
-                    
-                    {isScanning ? (
-                      <button onClick={handleCancelScan} className="h-[46px] md:h-[50px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-label-caps uppercase tracking-wider font-semibold px-6 rounded-xl border border-urgent-red/30 shadow-[0_0_15px_rgba(239,68,68,0.3)] flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
-                        <span className="material-symbols-outlined text-[20px]">cancel</span> Cancel
-                      </button>
-                    ) : (
-                      <button onClick={handleRunScan} className="h-[46px] md:h-[50px] flex-1 md:flex-none bg-electric-blue text-white font-label-caps uppercase tracking-wider font-semibold px-6 rounded-xl border border-border-subtle shadow-[0_0_15px_rgba(59,130,246,0.4)] hover:shadow-[0_0_25px_rgba(59,130,246,0.6)] hover:-translate-y-0.5 transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
-                        <span className="material-symbols-outlined text-[20px]">data_usage</span> Scan
-                      </button>
-                    )}
+                    {isAdmin ? (
+                      <>
+                        <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[46px] md:h-[50px] px-4 rounded-xl font-semibold tracking-widest text-sm uppercase transition-all flex items-center justify-center gap-2 border border-border-subtle shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-urgent-red text-white border-urgent-red' : 'bg-surface-solid text-text-main')} title="Scan every single ad. No limits."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> MAX</button>
+                        
+                        {isScanning ? (
+                          <button onClick={handleCancelScan} className="h-[46px] md:h-[50px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-label-caps uppercase tracking-wider font-semibold px-6 rounded-xl border border-urgent-red/30 shadow-[0_0_15px_rgba(239,68,68,0.3)] flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
+                            <span className="material-symbols-outlined text-[20px]">cancel</span> Cancel
+                          </button>
+                        ) : (
+                          <button onClick={handleRunScan} className="h-[46px] md:h-[50px] flex-1 md:flex-none bg-electric-blue text-white font-label-caps uppercase tracking-wider font-semibold px-6 rounded-xl border border-border-subtle shadow-[0_0_15px_rgba(59,130,246,0.4)] hover:shadow-[0_0_25px_rgba(59,130,246,0.6)] hover:-translate-y-0.5 transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
+                            <span className="material-symbols-outlined text-[20px]">data_usage</span> Scan
+                          </button>
+                        )}
 
-                    <button onClick={handleReset} disabled={isScanning} title="Clear Latest Scan View" className="h-[46px] md:h-[50px] bg-surface-solid text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle shadow-sm hover:shadow-md font-label-caps text-xs uppercase tracking-widest px-4 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                      <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
-                    </button>
+                        <button onClick={handleReset} disabled={isScanning} title="Clear Latest Scan View" className="h-[46px] md:h-[50px] bg-surface-solid text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle shadow-sm hover:shadow-md font-label-caps text-xs uppercase tracking-widest px-4 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                          <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+                        </button>
+                      </>
+                    ) : (
+                      <div className="h-[46px] md:h-[50px] px-5 rounded-xl bg-input-bg border border-border-subtle text-text-muted text-xs flex items-center gap-2 font-mono font-bold select-none cursor-not-allowed shadow-inner">
+                        <span className="material-symbols-outlined text-[17px] text-amber-500">lock</span> Read-Only View
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -1534,6 +1603,7 @@ function App() {
                   visibleCompetitorTree={visibleCompetitorTree}
                   viewMode={viewMode}
                   expandedNodes={expandedNodes}
+                  isAdmin={isAdmin}
                   onToggleNode={toggleNode}
                   onGameClick={handleGameClick}
                   onNukeCompetitorData={handleNukeCompetitorData}
@@ -1687,7 +1757,9 @@ function App() {
                               <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">Group: <span className="text-text-main">{acc.competitorName}</span></p>
                             </div>
                             <div className="flex items-center gap-1">
-                              <button onClick={(e) => handleNukePublisherData(e, acc.id, acc.publisher_name)} className="text-text-muted hover:text-urgent-red p-1 md:p-1.5 hover:bg-surface-solid rounded-lg transition-colors flex-shrink-0 border border-transparent hover:border-border-subtle shadow-sm" title="Delete Publisher Data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
+                              {isAdmin && (
+                                <button onClick={(e) => handleNukePublisherData(e, acc.id, acc.publisher_name)} className="text-text-muted hover:text-urgent-red p-1 md:p-1.5 hover:bg-surface-solid rounded-lg transition-colors flex-shrink-0 border border-transparent hover:border-border-subtle shadow-sm" title="Delete Publisher Data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
+                              )}
                               <a href={`https://play.google.com/store/apps/developer?id=${encoded}`} target="_blank" rel="noreferrer" className="text-text-muted hover:text-electric-blue p-1 md:p-1.5 hover:bg-surface-solid rounded-lg transition-colors flex-shrink-0 border border-transparent hover:border-border-subtle shadow-sm"><span className="material-symbols-outlined text-[16px] md:text-[18px]">open_in_new</span></a>
                             </div>
                           </div>
@@ -1715,8 +1787,12 @@ function App() {
                           <p className="font-mono text-[10px] md:text-xs text-text-muted mt-0.5 md:mt-1 truncate">{comp.ads_id || "Direct Target"}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button onClick={(e) => handleNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1.5 rounded-lg transition-colors border border-transparent hover:border-border-subtle hover:bg-surface-solid opacity-0 group-hover:opacity-100" title="Delete ALL Group Data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
-                          <button onClick={() => { setSelectedSource(`comp_${comp.id}`); setActiveTab("dashboard"); window.scrollTo(0,0); }} className="bg-surface-solid hover:bg-electric-blue hover:text-white border border-border-subtle px-3 py-1.5 md:px-4 md:py-2 rounded-lg md:rounded-xl text-[10px] md:text-xs font-label-caps uppercase tracking-wider font-bold transition-all shadow-sm">Target</button>
+                          {isAdmin && (
+                            <button onClick={(e) => handleNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1.5 rounded-lg transition-colors border border-transparent hover:border-border-subtle hover:bg-surface-solid opacity-0 group-hover:opacity-100" title="Delete ALL Group Data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
+                          )}
+                          {isAdmin && (
+                            <button onClick={() => { setSelectedSource(`comp_${comp.id}`); setActiveTab("dashboard"); window.scrollTo(0,0); }} className="bg-surface-solid hover:bg-electric-blue hover:text-white border border-border-subtle px-3 py-1.5 md:px-4 md:py-2 rounded-lg md:rounded-xl text-[10px] md:text-xs font-label-caps uppercase tracking-wider font-bold transition-all shadow-sm">Target</button>
+                          )}
                         </div>
                       </motion.div>
                     ))}
@@ -1732,53 +1808,59 @@ function App() {
               <motion.div variants={FADE_UP} className="flex justify-between items-end mb-4">
                 <div>
                   <h1 className="font-headline-lg text-3xl md:text-4xl text-text-main uppercase tracking-tight font-bold">Database Targets</h1>
-                  <p className="text-sm text-text-muted mt-2">Manage saved competitors, batch lists, and email reporting targets.</p>
+                  <p className="text-sm text-text-muted mt-2">
+                    {isAdmin ? "Manage saved competitors, batch lists, and email reporting targets." : "View saved competitor targets and active batch lists."}
+                  </p>
                 </div>
               </motion.div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8">
-                {/* FORMS */}
-                <motion.div variants={FADE_UP} className="lg:col-span-4 space-y-6 md:space-y-8">
-                  <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
-                    <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-secondary/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
-                    <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-secondary text-[24px]">person_add</span> Save Competitor</h2>
-                    <form onSubmit={handleSaveCompetitor} className="space-y-4 relative z-10">
-                      <input value={newCompName} onChange={(e) => setNewCompName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Playmax" type="text" />
-                      <input value={newCompAdsId} onChange={(e) => setNewCompAdsId(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="AR123456789012345" type="text" />
-                      <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-secondary hover:text-secondary hover:shadow-[0_0_15px_rgba(16,185,129,0.2)] font-label-caps uppercase font-bold py-3.5 px-6 rounded-xl transition-all shadow-md disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save Entity"}</button>
-                    </form>
-                  </div>
-                  
-                  <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
-                    <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-primary/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
-                    <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-primary text-[24px]">format_list_bulleted_add</span> Create Batch List</h2>
-                    <form onSubmit={handleCreateList} className="space-y-4 relative z-10">
-                      <input value={newListName} onChange={(e) => setNewListName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Tier 1 Tracking" type="text" />
-                      <textarea value={newListTargets} onChange={(e) => setNewListTargets(e.target.value)} className="w-full h-24 bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none" placeholder="AR123...&#10;AR456..." />
-                      <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-primary hover:text-primary hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] font-label-caps uppercase font-bold py-3.5 px-6 rounded-xl transition-all shadow-md disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save List"}</button>
-                    </form>
-                  </div>
+                {/* FORMS (ADMIN ONLY) */}
+                {isAdmin && (
+                  <motion.div variants={FADE_UP} className="lg:col-span-4 space-y-6 md:space-y-8">
+                    <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
+                      <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-secondary/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
+                      <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-secondary text-[24px]">person_add</span> Save Competitor</h2>
+                      <form onSubmit={handleSaveCompetitor} className="space-y-4 relative z-10">
+                        <input value={newCompName} onChange={(e) => setNewCompName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Playmax" type="text" />
+                        <input value={newCompAdsId} onChange={(e) => setNewCompAdsId(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="AR123456789012345" type="text" />
+                        <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-secondary hover:text-secondary hover:shadow-[0_0_15px_rgba(16,185,129,0.2)] font-label-caps uppercase font-bold py-3.5 px-6 rounded-xl transition-all shadow-md disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save Entity"}</button>
+                      </form>
+                    </div>
+                    
+                    <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
+                      <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-primary/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
+                      <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-primary text-[24px]">format_list_bulleted_add</span> Create Batch List</h2>
+                      <form onSubmit={handleCreateList} className="space-y-4 relative z-10">
+                        <input value={newListName} onChange={(e) => setNewListName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Tier 1 Tracking" type="text" />
+                        <textarea value={newListTargets} onChange={(e) => setNewListTargets(e.target.value)} className="w-full h-24 bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none" placeholder="AR123...&#10;AR456..." />
+                        <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-primary hover:text-primary hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] font-label-caps uppercase font-bold py-3.5 px-6 rounded-xl transition-all shadow-md disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save List"}</button>
+                      </form>
+                    </div>
 
-                  <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
-                    <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-tertiary-container/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
-                    <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-tertiary-container text-[24px]">contact_mail</span> Add Recipient</h2>
-                    <form onSubmit={handleSaveEmailList} className="space-y-4 relative z-10">
-                      <input value={newEmailName} onChange={(e) => setNewEmailName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-body-sm md:font-body-md rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Marketing Team" type="text" />
-                      <textarea value={newEmailTargets} onChange={(e) => setNewEmailTargets(e.target.value)} className="w-full h-16 md:h-20 bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none" placeholder="hello@gmail.com, team@..." />
-                      <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-tertiary-container hover:text-tertiary-container hover:shadow-[0_0_15px_rgba(139,92,246,0.2)] font-label-caps uppercase font-semibold py-2.5 px-6 rounded-xl transition-all shadow-md disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save Contact"}</button>
-                    </form>
-                  </div>
-                </motion.div>
+                    <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
+                      <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-tertiary-container/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
+                      <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-tertiary-container text-[24px]">contact_mail</span> Add Recipient</h2>
+                      <form onSubmit={handleSaveEmailList} className="space-y-4 relative z-10">
+                        <input value={newEmailName} onChange={(e) => setNewEmailName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-body-sm md:font-body-md rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Marketing Team" type="text" />
+                        <textarea value={newEmailTargets} onChange={(e) => setNewEmailTargets(e.target.value)} className="w-full h-16 md:h-20 bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none" placeholder="hello@gmail.com, team@..." />
+                        <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-tertiary-container hover:text-tertiary-container hover:shadow-[0_0_15px_rgba(139,92,246,0.2)] font-label-caps uppercase font-semibold py-2.5 px-6 rounded-xl transition-all shadow-md disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save Contact"}</button>
+                      </form>
+                    </div>
+                  </motion.div>
+                )}
 
                 {/* LISTS */}
-                <motion.div variants={FADE_UP} className="lg:col-span-8 space-y-6 md:space-y-8">
+                <motion.div variants={FADE_UP} className={cn("space-y-6 md:space-y-8", isAdmin ? "lg:col-span-8" : "lg:col-span-12")}>
                   <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 min-h-[250px] shadow-xl">
                     <h2 className="font-label-caps text-xs text-text-muted uppercase tracking-widest mb-5 font-bold flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">person</span> Saved Competitors</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {savedCompetitors.map((comp) => (
                         <motion.div whileHover={{ y: -2 }} key={comp.id} className="bg-surface-solid border border-border-subtle rounded-xl p-4 flex items-center justify-between transition-all group shadow-sm">
                           <div className="min-w-0 pr-4"><h3 className="text-sm font-bold text-text-main truncate uppercase tracking-wide">{comp.name}</h3><p className="font-mono text-xs text-text-muted mt-1 truncate">{comp.ads_id}</p></div>
-                          <button onClick={() => handleDeleteCompetitor(comp.id)} className="bg-surface-glass text-urgent-red border border-border-subtle p-2.5 rounded-lg hover:bg-urgent-red hover:text-white shadow-sm transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"><span className="material-symbols-outlined text-[20px]">delete</span></button>
+                          {isAdmin && (
+                            <button onClick={() => handleDeleteCompetitor(comp.id)} className="bg-surface-glass text-urgent-red border border-border-subtle p-2.5 rounded-lg hover:bg-urgent-red hover:text-white shadow-sm transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"><span className="material-symbols-outlined text-[20px]">delete</span></button>
+                          )}
                         </motion.div>
                       ))}
                       {savedCompetitors.length === 0 && <div className="col-span-full text-sm text-text-muted py-6 text-center italic border-2 border-dashed border-border-subtle rounded-xl">No competitors saved.</div>}
@@ -1792,12 +1874,20 @@ function App() {
                         <motion.div whileHover={{ y: -2 }} key={list.id} className="bg-surface-solid border border-border-subtle rounded-xl p-5 flex flex-col transition-all group shadow-sm">
                           <div className="flex justify-between items-start mb-4">
                             <h3 className="text-base font-bold text-text-main truncate pr-4 uppercase tracking-wide">{list.name}</h3>
-                            <button onClick={() => handleToggleList(list.id, list.is_active)} className={cn("w-12 h-6 rounded-full flex items-center px-1 transition-colors border shadow-sm flex-shrink-0", list.is_active ? "bg-emerald-metric border-emerald-metric" : "bg-surface-glass border-border-subtle")}><div className={cn("w-4 h-4 rounded-full bg-white shadow transition-transform", list.is_active ? "translate-x-6" : "translate-x-0")}></div></button>
+                            {isAdmin ? (
+                              <button onClick={() => handleToggleList(list.id, list.is_active)} className={cn("w-12 h-6 rounded-full flex items-center px-1 transition-colors border shadow-sm flex-shrink-0", list.is_active ? "bg-emerald-metric border-emerald-metric" : "bg-surface-glass border-border-subtle")}><div className={cn("w-4 h-4 rounded-full bg-white shadow transition-transform", list.is_active ? "translate-x-6" : "translate-x-0")}></div></button>
+                            ) : (
+                              <span className={cn("text-[9px] px-2 py-0.5 rounded font-mono font-bold uppercase", list.is_active ? "bg-emerald-metric/10 text-emerald-metric border border-emerald-metric/30" : "bg-surface-glass text-text-muted")}>
+                                {list.is_active ? "Active" : "Disabled"}
+                              </span>
+                            )}
                           </div>
                           <div className="bg-input-bg border border-border-subtle rounded-lg p-3 h-20 overflow-y-auto font-mono text-xs text-text-muted font-semibold mb-4 shadow-inner">
                             {list.targets.map((t, i) => (<div key={i} className="flex items-center gap-2 mb-1.5"><span className="w-1.5 h-1.5 bg-border-subtle rounded-full flex-shrink-0"></span> <span className="truncate">{t}</span></div>))}
                           </div>
-                          <button onClick={() => handleDeleteList(list.id)} className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle font-label-caps text-xs uppercase tracking-widest font-bold py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-0 group-hover:opacity-100"><span className="material-symbols-outlined text-[18px]">delete</span> Delete List</button>
+                          {isAdmin && (
+                            <button onClick={() => handleDeleteList(list.id)} className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle font-label-caps text-xs uppercase tracking-widest font-bold py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-0 group-hover:opacity-100"><span className="material-symbols-outlined text-[18px]">delete</span> Delete List</button>
+                          )}
                         </motion.div>
                       ))}
                       {targetLists.length === 0 && <div className="col-span-full text-sm text-text-muted py-6 text-center italic border-2 border-dashed border-border-subtle rounded-xl">No batch lists created.</div>}
@@ -1813,7 +1903,9 @@ function App() {
                           <div className="bg-input-bg border border-border-subtle rounded-lg p-3 h-16 overflow-y-auto font-mono text-xs text-text-muted mb-4 shadow-inner">
                             {parseJsonArray(list.emails).map((e, i) => <div key={i} className="truncate mb-1">{e}</div>)}
                           </div>
-                          <button onClick={() => handleDeleteEmail(list.id)} className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle font-label-caps text-xs uppercase tracking-widest font-bold py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-0 group-hover:opacity-100"><span className="material-symbols-outlined text-[18px]">delete</span> Delete Contact</button>
+                          {isAdmin && (
+                            <button onClick={() => handleDeleteEmail(list.id)} className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle font-label-caps text-xs uppercase tracking-widest font-bold py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-0 group-hover:opacity-100"><span className="material-symbols-outlined text-[18px]">delete</span> Delete Contact</button>
+                          )}
                         </motion.div>
                       ))}
                       {emailLists.length === 0 && <div className="col-span-full text-sm text-text-muted py-6 text-center italic border-2 border-dashed border-border-subtle rounded-xl">No recipients saved.</div>}
@@ -1824,8 +1916,8 @@ function App() {
             </motion.div>
           )}
 
-          {/* SETTINGS TAB */}
-          {activeTab === "settings" && (
+          {/* SETTINGS TAB (ADMIN ONLY) */}
+          {activeTab === "settings" && isAdmin && (
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-4xl mx-auto">
               <div>
                 <h1 className="font-headline-lg text-2xl md:text-3xl text-text-main tracking-tight uppercase font-bold">System Settings</h1>
@@ -2165,9 +2257,11 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-1 text-text-muted flex-shrink-0">
-                <button onClick={handleCancelScan} className="p-1.5 hover:bg-urgent-red/10 text-urgent-red rounded-lg transition-colors bg-urgent-red/5" title="Abort Scan">
-                  <span className="material-symbols-outlined text-[16px] md:text-[18px]">stop_circle</span>
-                </button>
+                {isAdmin && (
+                  <button onClick={handleCancelScan} className="p-1.5 hover:bg-urgent-red/10 text-urgent-red rounded-lg transition-colors bg-urgent-red/5" title="Abort Scan">
+                    <span className="material-symbols-outlined text-[16px] md:text-[18px]">stop_circle</span>
+                  </button>
+                )}
                 <button onClick={() => setIsScanMinimized(!isScanMinimized)} className="p-1.5 hover:bg-input-bg hover:text-text-main rounded-lg transition-colors bg-surface-solid" title={isScanMinimized ? "Expand" : "Minimize"}>
                   <span className="material-symbols-outlined text-[16px] md:text-[18px]">{isScanMinimized ? 'open_in_full' : 'minimize'}</span>
                 </button>

@@ -8,6 +8,7 @@ const EventEmitter = require('events');
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require('pg');
+const crypto = require('crypto');
 
 // Strip ?sslmode=... from the URL so it doesn't overwrite rejectUnauthorized: false
 const cleanConnectionString = (process.env.DATABASE_URL || "").split("?")[0];
@@ -16,6 +17,71 @@ const pool = new Pool({
   connectionString: cleanConnectionString,
   ssl: { rejectUnauthorized: false }
 });
+
+// Auto-initialize users table and default role accounts
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(50) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(20) NOT NULL DEFAULT 'view-only',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    const adminCheck = await pool.query("SELECT id FROM users WHERE username = 'admin'");
+    if (adminCheck.rows.length === 0) {
+      const defaultAdminHash = crypto.createHash("sha256").update("admin@gss").digest("hex");
+      const defaultUserHash = crypto.createHash("sha256").update("user123").digest("hex");
+      await pool.query(`
+        INSERT INTO users (username, password_hash, role)
+        VALUES
+          ('admin', $1, 'full access'),
+          ('user', $2, 'view-only')
+        ON CONFLICT (username) DO NOTHING;
+      `, [defaultAdminHash, defaultUserHash]);
+      console.log("👤 [AUTH] Seeded default accounts: admin (admin@gss) and user (user123)");
+    }
+  } catch (e) {
+    console.error("⚠️ [AUTH] Failed to initialize users table:", e.message);
+  }
+})();
+
+// In-memory token store: token -> { id, username, role, expires }
+const SESSION_SECRET = process.env.ATLAS_SESSION_SECRET || "atlas_secure_session_key_production_2026";
+const SESSION_EXPIRATION_DAYS = 30; // Sessions stay valid for 30 days
+
+function generateSessionToken(user) {
+  const payload = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    exp: Date.now() + 1000 * 60 * 60 * 24 * SESSION_EXPIRATION_DAYS
+  };
+  const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+  return `${data}.${signature}`;
+}
+function verifySessionToken(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [data, signature] = token.split(".");
+  const expectedSignature = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+
+  // Constant-time comparison prevents timing attacks
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(data, "base64url").toString());
+    if (!payload.exp || payload.exp < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 const gplayRaw = require('google-play-scraper');
 const scanEvents = new EventEmitter();
@@ -53,6 +119,7 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
     "Content-Type",
+    "x-atlas-token",
     "x-atlas-admin-key",
     "ngrok-skip-browser-warning"
   ],
@@ -61,35 +128,81 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Dedicated auth verification route for the gate screen
-app.post("/api/auth/verify", (req, res) => {
-  const expectedKey = process.env.ATLAS_ADMIN_KEY;
-  const suppliedKey = req.get("x-atlas-admin-key") || req.body?.key;
+// Public health check
+app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
-  if (!expectedKey) {
-    return res.status(500).json({ error: "ATLAS_ADMIN_KEY is not set in backend .env" });
+// Login route (Public)
+app.post("/api/auth/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: "Username and password are required." });
   }
 
-  if (!suppliedKey || suppliedKey !== expectedKey) {
-    return res.status(401).json({ error: "Unauthorized: Invalid team key." });
-  }
+  try {
+    const hash = crypto.createHash("sha256").update(password).digest("hex");
+    const { rows } = await pool.query(
+      "SELECT id, username, role FROM users WHERE LOWER(username) = LOWER($1) AND password_hash = $2",
+      [username.trim(), hash]
+    );
 
-  return res.json({ status: "authenticated" });
+    if (rows.length === 0) {
+      return res.status(401).json({ error: "Invalid username or password." });
+    }
+
+    const user = rows[0];
+    const token = generateSessionToken(user);
+
+    return res.json({
+      status: "authenticated",
+      token,
+      user: { id: user.id, username: user.username, role: user.role }
+    });
+  } catch (err) {
+    console.error("Login Error:", err);
+    return res.status(500).json({ error: "Authentication service error." });
+  }
 });
 
-// Central protection for all API routes
+// Session check route
+app.get("/api/auth/me", (req, res) => {
+  const token = req.get("x-atlas-token") || req.query.token;
+  const session = verifySessionToken(token);
+  if (!session) {
+    return res.status(401).json({ error: "Session invalid or expired." });
+  }
+  res.json({ user: { id: session.id, username: session.username, role: session.role } });
+});
+
+// Central Role-Based Access Control Middleware
 app.use("/api", (req, res, next) => {
-  if (req.method === "OPTIONS") {
+  if (req.method === "OPTIONS") return next();
+
+  // Public exceptions
+  if (req.path === "/auth/login" || req.path === "/health") {
     return next();
   }
 
-  const expectedKey = process.env.ATLAS_ADMIN_KEY;
-  const suppliedKey = req.get("x-atlas-admin-key") || req.query.key;
+  const token = req.get("x-atlas-token") || req.query.token;
+  const session = verifySessionToken(token);
 
-  if (!expectedKey || suppliedKey !== expectedKey) {
-    return res.status(401).json({ error: "Unauthorized: Access restricted." });
+  if (!session) {
+    return res.status(401).json({ error: "Unauthorized: Please log in." });
   }
 
+  // Read-only access (GET) is allowed for both admin and user
+  if (req.method === "GET") {
+    req.user = session;
+    return next();
+  }
+
+  // Mutation operations strictly require admin privileges
+  if (session.role !== "admin") {
+    return res.status(403).json({
+      error: "Forbidden: You do not have permission to modify records or execute scans."
+    });
+  }
+
+  req.user = session;
   next();
 });
 
@@ -100,8 +213,6 @@ app.post("/api/cancel-scan", (_req, res) => {
   activeScanCancelled = true;
   res.json({ status: "success", message: "Abort signal sent." });
 });
-
-app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
 app.get("/api/stats", async (_req, res) => {
   try {
@@ -325,7 +436,7 @@ app.post("/api/scan", async (req, res) => {
 
         if (activeScanCancelled) break;
 
-        // 🛑 EARLY BAIL: Target produced 0 Play Store packages/ads
+        // Early exit: Target produced 0 Play Store packages/ads
         if (!results || results.length === 0) {
           console.log(`⚠️ [SCAN] No valid Play Store packages found for target: "${targetDisplayName}". Skipping downstream sync.`);
           scanEvents.emit("progress", {
@@ -337,7 +448,7 @@ app.post("/api/scan", async (req, res) => {
             timeRemaining: "00:00",
             log: `> ⚠️ No active mobile game campaigns found for "${targetDisplayName}".`
           });
-          continue; // Skip DB inserts, Sheets sync, and Publisher Sync
+          continue;
         }
 
         const currentScanAdCounts = {};
@@ -501,13 +612,15 @@ app.post("/api/competitors", async (req, res) => {
   const result = await pool.query("INSERT INTO competitors (name, ads_id, country) VALUES ($1, $2, $3) RETURNING id", [req.body.name, req.body.adsId || null, req.body.country || null]);
   res.json({ id: result.rows[0].id, name: req.body.name, adsId: req.body.adsId || null });
 });
+
 app.post("/api/accounts", async (req, res) => {
   const result = await pool.query("INSERT INTO accounts (competitor_id, publisher_name, normalized_name) VALUES ($1, $2, $3) RETURNING id", [req.body.competitorId || null, req.body.publisherName, req.body.publisherName.toLowerCase().replace(/[^a-z0-9]/g, "")]);
   res.json({ id: result.rows[0].id });
 });
+
 app.post("/api/games", (_req, res) => { res.json({ status: "ok" }); });
 
-// BLAZING FAST CONCURRENT FETCH ROUTE
+// Concurrent directory fetch route
 app.get("/api/competitors", async (_req, res) => {
   try {
     const [compRes, accRes, gamesRes] = await Promise.all([
