@@ -192,6 +192,34 @@ async function generateAndSendReport(managerEmail, specificScanData = null) {
 
     if (specificScanData !== null) {
       tableData = await enrichManualScanData(specificScanData);
+
+      // A package can appear under multiple targets in a batch. Keep one card
+      // per package and use the highest SINGLE-TARGET scan count so an on-demand
+      // report never turns a 30-ad-per-competitor scan into a misleading 60+ count.
+      const uniqueScanRows = new Map();
+      for (const game of tableData) {
+        const key = game.package_name || game.title || `row-${uniqueScanRows.size}`;
+        const existing = uniqueScanRows.get(key);
+
+        if (!existing) {
+          uniqueScanRows.set(key, game);
+          continue;
+        }
+
+        const mergedTargets = [...new Set([
+          ...(String(existing.target_name || "").split(",").map(v => v.trim()).filter(Boolean)),
+          ...(String(game.target_name || "").split(",").map(v => v.trim()).filter(Boolean)),
+        ])];
+
+        uniqueScanRows.set(key, {
+          ...existing,
+          ...game,
+          scan_ads: Math.max(getAdCount(existing), getAdCount(game)),
+          target_name: mergedTargets.join(", ")
+        });
+      }
+      tableData = Array.from(uniqueScanRows.values());
+
       reportMode = "On-Demand";
       reportSubtitle = `On-Demand Scan Intelligence • ${new Date().toLocaleDateString(
         "en-US",
@@ -238,6 +266,11 @@ async function generateAndSendReport(managerEmail, specificScanData = null) {
       return getInstallFloor(b) - getInstallFloor(a);
     });
 
+    const isOnDemand = reportMode === "On-Demand";
+    const adMetricLabel = isOnDemand ? "Ads Seen" : "Historical Detections";
+    const summaryAdLabel = isOnDemand ? "Ads Mapped" : "Detections";
+    const reportAdNoun = isOnDemand ? "mapped ad detection" : "historical detection";
+
     const reportStats = {
       games: tableData.length,
       ads: tableData.reduce((sum, game) => sum + getAdCount(game), 0),
@@ -280,7 +313,7 @@ async function generateAndSendReport(managerEmail, specificScanData = null) {
 
             <div class="metric-grid">
               <div class="metric metric-red">
-                <span class="metric-label">Ads Seen</span>
+                <span class="metric-label">${escapeHtml(adMetricLabel)}</span>
                 <strong>${formatCompact(adCount)}</strong>
               </div>
 
@@ -591,7 +624,7 @@ async function generateAndSendReport(managerEmail, specificScanData = null) {
             </div>
 
             <div class="summary-card">
-              <div class="summary-label">Ads Mapped</div>
+              <div class="summary-label">${escapeHtml(summaryAdLabel)}</div>
               <div class="summary-value red">${formatCompact(reportStats.ads)}</div>
             </div>
 
@@ -681,7 +714,7 @@ async function generateAndSendReport(managerEmail, specificScanData = null) {
           <p style="font-size: 14px; color: #475569;">
             Attached is the latest intelligence brief covering ${reportStats.games} game${
               reportStats.games === 1 ? "" : "s"
-            }, ${reportStats.ads} mapped ad${reportStats.ads === 1 ? "" : "s"}, publisher data, install scale, ratings, and release metadata.
+            }, ${reportStats.ads} ${escapeHtml(reportAdNoun)}${reportStats.ads === 1 ? "" : "s"}, publisher data, install scale, ratings, and release metadata.
           </p>
           <div style="margin: 24px 0;">
             <a href="${SHEET_URL}" style="background: #2563eb; color: #ffffff; padding: 12px 20px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 13px; display: inline-block;">View Live Google Sheets Dashboard</a>

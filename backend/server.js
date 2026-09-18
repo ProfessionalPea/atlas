@@ -222,6 +222,8 @@ function createIdleScanStatus() {
     timeRemaining: "00:00",
     logs: [],
     packages: [],
+    adCounts: {},
+    adCountsByCompetitor: {},
     competitorId: null,
     startedAt: null,
     finishedAt: null,
@@ -331,7 +333,7 @@ app.post("/api/reset", async (_req, res) => {
 
 app.get("/api/trending", async (_req, res) => {
   try { 
-    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id ORDER BY g.ad_count DESC`);
+    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id ORDER BY g.ad_count DESC`);
     res.json(rows);
   } catch { res.status(500).json({ error: "Fail" }); }
 });
@@ -417,6 +419,82 @@ app.delete("/api/publishers/:id/data", async (req, res) => {
   } catch (err) {
     console.error("Delete Publisher Error:", err);
     res.status(500).json({ error: "Failed to delete publisher data" });
+  }
+});
+
+app.delete("/api/games/:id/data", async (req, res) => {
+  if (isScanRunning) {
+    return res.status(409).json({
+      error: "Wait for the active scan to finish before deleting a game."
+    });
+  }
+
+  const gameId = Number(req.params.id);
+  if (!Number.isInteger(gameId) || gameId <= 0) {
+    return res.status(400).json({ error: "Invalid game ID." });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const { rows } = await client.query(
+      "SELECT id, package_name, title FROM games WHERE id = $1 FOR UPDATE",
+      [gameId]
+    );
+
+    if (rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Game not found." });
+    }
+
+    const game = rows[0];
+
+    // Remove every Atlas relationship/history row for this game before
+    // deleting the game itself. Publisher and competitor entities are kept.
+    await client.query("DELETE FROM account_games WHERE game_id = $1", [gameId]);
+    await client.query("DELETE FROM ad_history WHERE game_id = $1", [gameId]);
+    await client.query("DELETE FROM games WHERE id = $1", [gameId]);
+
+    await client.query("COMMIT");
+
+    // Keep the recoverable latest-scan status consistent with the database so
+    // refreshing Atlas cannot resurrect a deleted game in the Latest Scan UI.
+    const packageName = game.package_name;
+    if (packageName) {
+      const nextAdCounts = { ...(scanStatus.adCounts || {}) };
+      delete nextAdCounts[packageName];
+
+      const nextAdCountsByCompetitor = {};
+      for (const [competitorId, counts] of Object.entries(scanStatus.adCountsByCompetitor || {})) {
+        const nextCounts = { ...(counts || {}) };
+        delete nextCounts[packageName];
+        if (Object.keys(nextCounts).length > 0) {
+          nextAdCountsByCompetitor[competitorId] = nextCounts;
+        }
+      }
+
+      updateScanStatus({
+        packages: Array.isArray(scanStatus.packages)
+          ? scanStatus.packages.filter(pkg => pkg !== packageName)
+          : [],
+        adCounts: nextAdCounts,
+        adCountsByCompetitor: nextAdCountsByCompetitor
+      });
+    }
+
+    res.json({
+      status: "success",
+      id: game.id,
+      package_name: game.package_name,
+      title: game.title
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Delete Game Error:", err);
+    res.status(500).json({ error: "Failed to delete game data" });
+  } finally {
+    client.release();
   }
 });
 
@@ -560,11 +638,34 @@ app.post("/api/scan", async (req, res) => {
           continue;
         }
 
+        // Count package appearances for this target FIRST. GoogleAdsScanner only
+        // contributes a package once per creative, so each count is bounded by
+        // the number of creatives scanned for this competitor.
         const currentScanAdCounts = {};
+        for (const pkg of results) {
+          interceptedPackageSet.add(pkg);
+          currentScanAdCounts[pkg] = (currentScanAdCounts[pkg] || 0) + 1;
+        }
+
+        // Keep exact latest-scan counts separate from the historical lifetime
+        // counter stored in games.ad_count. For batch scans, adCounts stores the
+        // highest per-competitor count for each package (never a sum across
+        // competitors), while adCountsByCompetitor preserves the exact target.
+        const mergedAdCounts = { ...(scanStatus.adCounts || {}) };
+        for (const [pkg, count] of Object.entries(currentScanAdCounts)) {
+          mergedAdCounts[pkg] = Math.max(Number(mergedAdCounts[pkg]) || 0, Number(count) || 0);
+        }
+
+        const mergedAdCountsByCompetitor = {
+          ...(scanStatus.adCountsByCompetitor || {}),
+          [String(competitorId)]: { ...currentScanAdCounts }
+        };
+
         const completedAdsForTarget = Math.max(
           0,
           Number(scanStatus.totalAds) || Number(limit) || 0
         );
+
         updateScanStatus({
           target: targetDisplayName,
           targetIndex: tIndex + 1,
@@ -572,84 +673,161 @@ app.post("/api/scan", async (req, res) => {
           currentAd: completedAdsForTarget,
           totalAds: completedAdsForTarget,
           timeRemaining: "00:00",
+          adCounts: mergedAdCounts,
+          adCountsByCompetitor: mergedAdCountsByCompetitor,
           log: `> 🗄️ Ingesting creative entities to Atlas database...`
         });
 
-        for (const pkg of results) {
-          interceptedPackageSet.add(pkg);
-          currentScanAdCounts[pkg] = (currentScanAdCounts[pkg] || 0) + 1;
+        // Enrich and persist each UNIQUE package once. The full per-scan count is
+        // applied in one database operation, avoiding the previous off-by-one bug.
+        for (const [pkg, scanAdCountRaw] of Object.entries(currentScanAdCounts)) {
+          const scanAdCount = Math.max(1, Number(scanAdCountRaw) || 1);
 
-          if (currentScanAdCounts[pkg] === 1) {
-            let appData = null;
+          let appData = null;
+          try {
+            appData = await gplay.app({ appId: pkg, country: 'us' });
+          } catch {
             try {
-              appData = await gplay.app({ appId: pkg, country: 'us' });
+              appData = await gplay.app({ appId: pkg });
             } catch {
-              try {
-                appData = await gplay.app({ appId: pkg });
-              } catch {
-                const cleanTitle = pkg.split('.').slice(-2).join(' ').replace(/_/g, ' ').toUpperCase();
-                appData = {
-                  title: cleanTitle,
-                  developer: targetDisplayName || "Unknown Developer",
-                  genre: "Game",
-                  score: 0,
-                  ratings: 0,
-                  icon: null,
-                  screenshots: [],
-                  description: "Captured directly via ad stream",
-                  installs: "0+",
-                  minInstalls: 0,
-                  released: "Unknown",
-                  updated: Date.now()
-                };
-              }
+              const cleanTitle = pkg.split('.').slice(-2).join(' ').replace(/_/g, ' ').toUpperCase();
+              appData = {
+                title: cleanTitle,
+                developer: targetDisplayName || "Unknown Developer",
+                genre: "Game",
+                score: 0,
+                ratings: 0,
+                icon: null,
+                screenshots: [],
+                description: "Captured directly via ad stream",
+                installs: "0+",
+                minInstalls: 0,
+                released: "Unknown",
+                updated: Date.now()
+              };
             }
-
-            const pubName = appData.developer || targetDisplayName || "Unknown Publisher";
-            const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
-
-            let accQuery = (await pool.query("SELECT id FROM accounts WHERE publisher_name = $1 AND competitor_id = $2", [pubName, competitorId])).rows[0];
-            let accountId;
-            if (!accQuery) { 
-              const accRes = await pool.query("INSERT INTO accounts (competitor_id, publisher_name, normalized_name) VALUES ($1, $2, $3) RETURNING id", [competitorId, pubName, normalizedPub]);
-              accountId = accRes.rows[0].id;
-            } else { accountId = accQuery.id; }
-
-            let similarApps = [];
-            try {
-              const rawSimilar = await gplay.similar({ appId: pkg, country: 'us' });
-              similarApps = (rawSimilar || []).filter(sim => sim.developer !== pubName).slice(0, 6).map(sim => ({ title: sim.title, appId: sim.appId, developer: sim.developer, icon: fixUrl(sim.icon), score: sim.score || 0 }));
-            } catch {}
-
-            const insertGame = `INSERT INTO games (package_name, title, category, rating, ratings_count, icon, screenshots, description, installs, min_installs, released, updated, similar_apps, ad_count, header_image, video, video_image) 
-                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) 
-                                ON CONFLICT (package_name) DO UPDATE SET 
-                                title=EXCLUDED.title, category=EXCLUDED.category, rating=EXCLUDED.rating, ratings_count=EXCLUDED.ratings_count, icon=EXCLUDED.icon, screenshots=EXCLUDED.screenshots, description=EXCLUDED.description, installs=EXCLUDED.installs, min_installs=EXCLUDED.min_installs, released=EXCLUDED.released, updated=EXCLUDED.updated, similar_apps=EXCLUDED.similar_apps, header_image=EXCLUDED.header_image, video=EXCLUDED.video, video_image=EXCLUDED.video_image
-                                RETURNING id`;
-            
-            const gameRes = await pool.query(insertGame, [pkg, appData.title, appData.genre, appData.score || 0, appData.ratings || 0, fixUrl(appData.icon), JSON.stringify((appData.screenshots || []).map(fixUrl)), appData.description, appData.installs || "0+", appData.minInstalls || 0, appData.released || "Unknown", appData.updated || 0, JSON.stringify(similarApps), 1, fixUrl(appData.headerImage) || null, appData.video || null, fixUrl(appData.videoImage) || null]);
-            const gameId = gameRes.rows[0].id;
-
-            await pool.query("INSERT INTO account_games (account_id, game_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [accountId, gameId]);
-            await pool.query(`INSERT INTO ad_history (game_id, ad_count, scan_date) VALUES ($1, 1, CURRENT_DATE) ON CONFLICT (game_id, scan_date) DO UPDATE SET ad_count = ad_history.ad_count + 1`, [gameId]);
-            
-            isolatedScanData.push({
-              title: appData.title,
-              publisher_name: pubName,
-              package_name: pkg,
-              icon: fixUrl(appData.icon),
-              category: appData.genre || "Game",
-              rating: appData.score ? Number(appData.score).toFixed(1) : "N/A",
-              installs: appData.installs || "0+",
-              ad_count: currentScanAdCounts[pkg] || 1,
-              released: appData.released || "Unknown"
-            });
-          } else {
-            try {
-              await pool.query("UPDATE games SET ad_count = ad_count + 1 WHERE package_name = $1", [pkg]);
-              await pool.query(`UPDATE ad_history SET ad_count = ad_count + 1 WHERE game_id = (SELECT id FROM games WHERE package_name = $1) AND scan_date = CURRENT_DATE`, [pkg]);
-            } catch {}
           }
+
+          const pubName = appData.developer || targetDisplayName || "Unknown Publisher";
+          const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+          let accQuery = (await pool.query(
+            "SELECT id FROM accounts WHERE publisher_name = $1 AND competitor_id = $2",
+            [pubName, competitorId]
+          )).rows[0];
+
+          let accountId;
+          if (!accQuery) {
+            const accRes = await pool.query(
+              "INSERT INTO accounts (competitor_id, publisher_name, normalized_name) VALUES ($1, $2, $3) RETURNING id",
+              [competitorId, pubName, normalizedPub]
+            );
+            accountId = accRes.rows[0].id;
+          } else {
+            accountId = accQuery.id;
+          }
+
+          let similarApps = [];
+          try {
+            const rawSimilar = await gplay.similar({ appId: pkg, country: 'us' });
+            similarApps = (rawSimilar || [])
+              .filter(sim => sim.developer !== pubName)
+              .slice(0, 6)
+              .map(sim => ({
+                title: sim.title,
+                appId: sim.appId,
+                developer: sim.developer,
+                icon: fixUrl(sim.icon),
+                score: sim.score || 0
+              }));
+          } catch {}
+
+          // games.ad_count is intentionally the ALL-TIME detection counter.
+          // Increment it by the exact count from this target scan in one shot.
+          const insertGame = `
+            INSERT INTO games (
+              package_name, title, category, rating, ratings_count, icon,
+              screenshots, description, installs, min_installs, released,
+              updated, similar_apps, ad_count, header_image, video, video_image
+            )
+            VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9,
+              $10, $11, $12, $13, $14, $15, $16, $17
+            )
+            ON CONFLICT (package_name) DO UPDATE SET
+              title = EXCLUDED.title,
+              category = EXCLUDED.category,
+              rating = EXCLUDED.rating,
+              ratings_count = EXCLUDED.ratings_count,
+              icon = EXCLUDED.icon,
+              screenshots = EXCLUDED.screenshots,
+              description = EXCLUDED.description,
+              installs = EXCLUDED.installs,
+              min_installs = EXCLUDED.min_installs,
+              released = EXCLUDED.released,
+              updated = EXCLUDED.updated,
+              similar_apps = EXCLUDED.similar_apps,
+              ad_count = games.ad_count + EXCLUDED.ad_count,
+              header_image = EXCLUDED.header_image,
+              video = EXCLUDED.video,
+              video_image = EXCLUDED.video_image
+            RETURNING id
+          `;
+
+          const gameRes = await pool.query(insertGame, [
+            pkg,
+            appData.title,
+            appData.genre,
+            appData.score || 0,
+            appData.ratings || 0,
+            fixUrl(appData.icon),
+            JSON.stringify((appData.screenshots || []).map(fixUrl)),
+            appData.description,
+            appData.installs || "0+",
+            appData.minInstalls || 0,
+            appData.released || "Unknown",
+            appData.updated || 0,
+            JSON.stringify(similarApps),
+            scanAdCount,
+            fixUrl(appData.headerImage) || null,
+            appData.video || null,
+            fixUrl(appData.videoImage) || null
+          ]);
+
+          const gameId = gameRes.rows[0].id;
+
+          await pool.query(
+            "INSERT INTO account_games (account_id, game_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            [accountId, gameId]
+          );
+
+          // Daily history remains cumulative across multiple scans on the same
+          // day, but now receives the complete count instead of N-1.
+          await pool.query(
+            `INSERT INTO ad_history (game_id, ad_count, scan_date)
+             VALUES ($1, $2, CURRENT_DATE)
+             ON CONFLICT (game_id, scan_date)
+             DO UPDATE SET ad_count = ad_history.ad_count + EXCLUDED.ad_count`,
+            [gameId, scanAdCount]
+          );
+
+          // The report must use THIS scan's count, not the lifetime counter.
+          isolatedScanData.push({
+            title: appData.title,
+            publisher_name: pubName,
+            package_name: pkg,
+            icon: fixUrl(appData.icon),
+            category: appData.genre || "Game",
+            rating: appData.score || 0,
+            ratings_count: appData.ratings || 0,
+            installs: appData.installs || "0+",
+            min_installs: appData.minInstalls || 0,
+            released: appData.released || "Unknown",
+            updated: appData.updated || 0,
+            scan_ads: scanAdCount,
+            target_name: targetDisplayName,
+            competitor_id: competitorId
+          });
         }
 
         const compGamesCountRes = await pool.query(

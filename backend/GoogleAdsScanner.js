@@ -23,6 +23,57 @@ function isValidPackage(pkg) {
   return true;
 }
 
+
+function decodeForStoreInspection(value) {
+  let decoded = String(value || '');
+
+  // Redirect URLs are often encoded once or twice by Google Ads.
+  for (let i = 0; i < 2; i++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+
+  return decoded;
+}
+
+function extractStorePackages(value) {
+  const decoded = decodeForStoreInspection(value);
+  const found = new Set();
+
+  // Only trust explicit Google Play / market destinations. The old generic
+  // dotted-string scraper could pick up package names belonging to unrelated
+  // advertiser metadata, which is why one creative sometimes "found" 10+ apps.
+  const patterns = [
+    /play\.google\.com\/store\/apps\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
+    /market:\/\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of decoded.matchAll(pattern)) {
+      if (isValidPackage(match[1])) found.add(match[1]);
+    }
+  }
+
+  return [...found];
+}
+
+function extractPackageKeys(value) {
+  const decoded = decodeForStoreInspection(value);
+  const found = new Set();
+  const jsonKeyRegex = /(?:packageName|package_name|appId|app_id)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
+
+  for (const match of decoded.matchAll(jsonKeyRegex)) {
+    if (isValidPackage(match[1])) found.add(match[1]);
+  }
+
+  return [...found];
+}
+
 async function scanCompetitor(
   searchQuery, 
   targetCountry, 
@@ -248,19 +299,24 @@ async function scanCompetitor(
       const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
 
       const adPage = await context.newPage();
-      const adFoundPackages = [];
-      
+      const primaryPackages = new Set();
+      const fallbackPackages = new Set();
+
       adPage.on('request', req => {
-        const reqUrl = req.url();
-        const storeUrlRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/i;
-        const match = reqUrl.match(storeUrlRegex);
-        if (match && isValidPackage(match[1])) {
-          adFoundPackages.push(match[1]);
-        }
+        const packages = extractStorePackages(req.url());
+        if (packages.length === 0) return;
+
+        let isCreativeFrameRequest = false;
+        try {
+          const frame = req.frame();
+          isCreativeFrameRequest = Boolean(frame && frame !== adPage.mainFrame());
+        } catch {}
+
+        const bucket = isCreativeFrameRequest ? primaryPackages : fallbackPackages;
+        packages.forEach(pkg => bucket.add(pkg));
       });
 
       // Keep scripts/XHR alive, but block heavy visual assets.
-      // This restores the extraction behavior that previously worked reliably.
       await adPage.route('**/*', (route) => {
         const resourceType = route.request().resourceType();
         if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
@@ -279,32 +335,45 @@ async function scanCompetitor(
         }
 
         // Give Google Ads' nested creative frames/network redirects enough time
-        // to expose Play Store URLs/package IDs before scraping the frame HTML.
+        // to expose the destination before inspecting the creative iframe.
         await adPage.waitForTimeout(5000);
         await adPage.waitForTimeout(3000);
 
         const frames = adPage.frames();
-        let fullHtml = '';
-        for (const frame of frames) {
-          try { fullHtml += await frame.content(); } catch (e) {}
+        const creativeFrames = frames.filter(frame => frame !== adPage.mainFrame());
+
+        // Highest-confidence source: explicit Play Store URLs inside the nested
+        // creative frames.
+        for (const frame of creativeFrames) {
+          try {
+            const html = await frame.content();
+            extractStorePackages(html).forEach(pkg => primaryPackages.add(pkg));
+          } catch {}
         }
 
-        const storeUrlRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi;
-        for (const m of fullHtml.matchAll(storeUrlRegex)) {
-          if (isValidPackage(m[1])) adFoundPackages.push(m[1]);
+        // Some creatives expose the package as a JSON key rather than a visible
+        // Play Store URL. Only inspect CHILD frames for this fallback; do not scan
+        // the advertiser page's giant serialized metadata blob.
+        if (primaryPackages.size === 0) {
+          for (const frame of creativeFrames) {
+            try {
+              const html = await frame.content();
+              extractPackageKeys(html).forEach(pkg => primaryPackages.add(pkg));
+            } catch {}
+          }
         }
 
-        const jsonKeyRegex = /(?:packageName|package_name|appId|app_id|bundleId)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
-        for (const m of fullHtml.matchAll(jsonKeyRegex)) {
-          if (isValidPackage(m[1])) adFoundPackages.push(m[1]);
+        // Last-resort fallback: explicit Play Store URLs from the main page or
+        // main-frame requests. We intentionally removed the old generic dotted-
+        // string regex because it was the source of most multi-package pollution.
+        if (primaryPackages.size === 0) {
+          try {
+            const mainHtml = await adPage.mainFrame().content();
+            extractStorePackages(mainHtml).forEach(pkg => fallbackPackages.add(pkg));
+          } catch {}
         }
 
-        const delimitedRegex = /["'`]([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){2,})["'`]/g;
-        for (const m of fullHtml.matchAll(delimitedRegex)) {
-          if (isValidPackage(m[1])) adFoundPackages.push(m[1]);
-        }
-
-        const uniqueInAd = [...new Set(adFoundPackages)];
+        const uniqueInAd = [...(primaryPackages.size > 0 ? primaryPackages : fallbackPackages)];
 
         if (uniqueInAd.length > 0) {
           console.log(`🟢 [DEBUG] [Ad ${i + 1}] SUCCESS: Found ${uniqueInAd.length} packages:`, uniqueInAd);

@@ -17,6 +17,14 @@ const CHART_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#e
 const FADE_UP = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } };
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+const DIRECTORY_GAME_SORT_OPTIONS = [
+  { id: "activity", label: "Ad Activity" },
+  { id: "installs", label: "Installs" },
+  { id: "newest", label: "Newest" },
+  { id: "rating", label: "Rating" },
+  { id: "az", label: "A–Z" },
+];
+
 function getAgeText(dateValue) {
   if (!dateValue || dateValue === "Unknown" || dateValue === 0) return null;
   const dateObj = typeof dateValue === 'number' ? new Date(dateValue) : new Date(dateValue);
@@ -90,6 +98,37 @@ function getInstallCount(game) {
   return parseInstalls(game?.installs);
 }
 
+function dedupeGames(games = []) {
+  const uniqueGames = new Map();
+
+  for (const game of games) {
+    const key = getGameIdentity(game);
+    const existing = uniqueGames.get(key);
+
+    if (!existing) {
+      uniqueGames.set(key, game);
+      continue;
+    }
+
+    const existingInstalls = getInstallCount(existing);
+    const incomingInstalls = getInstallCount(game);
+
+    uniqueGames.set(key, {
+      ...existing,
+      ...game,
+      ad_count: Math.max(Number(existing.ad_count) || 0, Number(game.ad_count) || 0),
+      historical_ad_count: Math.max(
+        Number(existing.historical_ad_count ?? existing.ad_count) || 0,
+        Number(game.historical_ad_count ?? game.ad_count) || 0
+      ),
+      min_installs: Math.max(existingInstalls, incomingInstalls),
+      installs: incomingInstalls >= existingInstalls ? game.installs : existing.installs,
+    });
+  }
+
+  return Array.from(uniqueGames.values());
+}
+
 function hasRecentGame(games) {
   if (!games || games.length === 0) return false;
   const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
@@ -160,51 +199,88 @@ function processHistoryData(rawHistory) {
 
 const DashboardTelemetry = memo(function DashboardTelemetry({ historyData, isDarkMode }) {
   return (
-    <motion.div variants={FADE_UP} className="w-full bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl shadow-xl p-4 md:p-6 h-[300px] md:h-[400px] flex flex-col">
-      <div className="flex justify-between items-start mb-4 md:mb-6">
-        <div>
-          <h2 className="font-label-caps text-xs md:text-sm font-bold uppercase tracking-wider text-text-main">Game Discovery Telemetry</h2>
-          <p className="font-body-xs text-[10px] md:text-xs text-text-muted mt-0.5">Total unique games discovered per competitor over time</p>
+    <motion.section
+      variants={FADE_UP}
+      className="w-full bg-surface-solid border border-border-subtle rounded-[24px] shadow-sm p-4 md:p-6 h-[340px] md:h-[420px] flex flex-col overflow-hidden"
+    >
+      <div className="flex items-start justify-between gap-4 mb-4 md:mb-6">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-electric-blue text-[21px]">monitoring</span>
+            <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Game Discovery Telemetry</h2>
+          </div>
+          <p className="text-[11px] md:text-xs text-text-muted mt-1 ml-0 md:ml-[29px]">Total unique games discovered per competitor over time</p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5 font-label-caps text-[10px] text-text-muted"><span className="w-1.5 h-1.5 rounded-full bg-electric-blue animate-pulse"></span> Active Trend</span>
+        <div className="flex items-center gap-2 rounded-full bg-input-bg border border-border-subtle px-3 py-1.5 text-[10px] md:text-xs text-text-muted flex-shrink-0">
+          <span className="w-2 h-2 rounded-full bg-electric-blue"></span>
+          Live data
         </div>
       </div>
 
       <div className="flex-1 w-full min-h-0">
         {historyData.data.length > 0 ? (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={historyData.data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+            <AreaChart data={historyData.data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
               <defs>
                 {historyData.lines.map((competitorName, index) => (
                   <linearGradient key={competitorName} id={`color${index}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0.3}/>
+                    <stop offset="0%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0.18}/>
                     <stop offset="95%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0}/>
                   </linearGradient>
                 ))}
               </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#334155' : '#e2e8f0'} />
-              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: isDarkMode ? '#94a3b8' : '#64748b', fontSize: 10, fontFamily: 'Inter' }} dy={10} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: isDarkMode ? '#94a3b8' : '#64748b', fontSize: 10, fontFamily: 'Inter' }} />
+              <CartesianGrid strokeDasharray="2 5" vertical={false} stroke={isDarkMode ? '#3c4043' : '#e5e7eb'} />
+              <XAxis
+                dataKey="date"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: isDarkMode ? '#9aa0a6' : '#6b7280', fontSize: 10, fontFamily: 'Inter, sans-serif' }}
+                dy={10}
+              />
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: isDarkMode ? '#9aa0a6' : '#6b7280', fontSize: 10, fontFamily: 'Inter, sans-serif' }}
+              />
               <Tooltip
                 itemSorter={(item) => -Number(item.value || 0)}
-                contentStyle={{ backgroundColor: isDarkMode ? '#1e293b' : '#ffffff', borderColor: isDarkMode ? '#334155' : '#e2e8f0', borderRadius: '12px', color: isDarkMode ? '#f8fafc' : '#0f172a', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
-                itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
-                labelStyle={{ color: isDarkMode ? '#94a3b8' : '#64748b', marginBottom: '4px', fontSize: '10px' }}
+                cursor={{ stroke: isDarkMode ? '#5f6368' : '#d1d5db', strokeDasharray: '4 4' }}
+                contentStyle={{
+                  backgroundColor: isDarkMode ? '#303134' : '#ffffff',
+                  border: `1px solid ${isDarkMode ? '#5f6368' : '#e5e7eb'}`,
+                  borderRadius: '14px',
+                  color: isDarkMode ? '#e8eaed' : '#202124',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+                  padding: '10px 12px',
+                }}
+                itemStyle={{ fontSize: '12px', fontWeight: 600 }}
+                labelStyle={{ color: isDarkMode ? '#bdc1c6' : '#5f6368', marginBottom: '6px', fontSize: '11px' }}
               />
               {historyData.lines.map((competitorName, index) => (
-                <Area key={competitorName} connectNulls={true} type="monotone" dataKey={competitorName} stroke={CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={3} fillOpacity={1} fill={`url(#color${index})`} activeDot={{ r: 6, strokeWidth: 0 }} />
+                <Area
+                  key={competitorName}
+                  connectNulls
+                  type="monotone"
+                  dataKey={competitorName}
+                  stroke={CHART_COLORS[index % CHART_COLORS.length]}
+                  strokeWidth={2.5}
+                  fillOpacity={1}
+                  fill={`url(#color${index})`}
+                  activeDot={{ r: 4, strokeWidth: 2, stroke: isDarkMode ? '#202124' : '#ffffff' }}
+                />
               ))}
             </AreaChart>
           </ResponsiveContainer>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-text-muted">
-            <span className="material-symbols-outlined text-3xl md:text-4xl mb-2 opacity-50">show_chart</span>
-            <p className="font-body-sm text-xs">Run scans to build data.</p>
+            <div className="w-12 h-12 rounded-full bg-input-bg flex items-center justify-center mb-3">
+              <span className="material-symbols-outlined text-2xl">show_chart</span>
+            </div>
+            <p className="text-xs">Run scans to build telemetry.</p>
           </div>
         )}
       </div>
-    </motion.div>
+    </motion.section>
   );
 });
 
@@ -217,26 +293,47 @@ const TrendingTargets = memo(function TrendingTargets({
   latestScanTargetName,
 }) {
   return (
-    <div className="xl:col-span-7 bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl shadow-xl flex flex-col h-[500px] md:h-[600px] overflow-hidden">
-      <div className="p-4 md:p-6 pb-4 bg-surface-solid border-b border-border-subtle flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h2 className="font-label-caps text-xs md:text-sm font-bold uppercase tracking-wider text-text-main">Trending Targets</h2>
-          <p className="font-body-xs text-[10px] md:text-xs text-text-muted mt-0.5">{viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-bold">● LATEST</span>}Ranked by velocity</p>
+    <section className="xl:col-span-7 bg-surface-solid border border-border-subtle rounded-[24px] shadow-sm flex flex-col h-[500px] md:h-[600px] overflow-hidden">
+      <div className="p-4 md:p-5 border-b border-border-subtle flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-electric-blue text-[21px]">trending_up</span>
+            <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Trending Targets</h2>
+          </div>
+          <p className="text-[10px] md:text-xs text-text-muted mt-1 md:ml-[29px]">
+            {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">● Latest</span>}
+            Ranked by activity
+          </p>
         </div>
-        <div className="flex bg-input-bg p-1 rounded-xl border border-border-subtle w-full sm:w-auto mt-2 sm:mt-0">
-          {[ { id: 'ads', label: 'AD PUSH' }, { id: 'installs', label: 'INSTALLS' }, { id: 'newest', label: 'NEWEST' }].map((btn) => (
-            <button key={btn.id} onClick={() => onSort(btn.id)} className={cn("flex-1 px-2 md:px-3 py-1 md:py-1.5 text-[10px] md:text-xs font-label-caps uppercase font-bold border shadow-sm transition-all rounded-lg", trendingSort === btn.id ? "bg-primary border-border-subtle text-white shadow-[0_0_10px_rgba(59,130,246,0.3)]" : "bg-transparent border-transparent text-text-muted hover:text-text-main")}>{btn.label}</button>
+
+        <div className="flex bg-input-bg rounded-full p-1 border border-border-subtle">
+          {[{ id: 'ads', label: 'Ad push' }, { id: 'installs', label: 'Installs' }, { id: 'newest', label: 'Newest' }].map((btn) => (
+            <button
+              key={btn.id}
+              onClick={() => onSort(btn.id)}
+              className={cn(
+                "px-3 md:px-4 py-1.5 rounded-full text-[10px] md:text-xs font-medium transition-colors",
+                trendingSort === btn.id
+                  ? "bg-primary-container text-on-primary-container shadow-sm"
+                  : "text-text-muted hover:text-text-main hover:bg-surface-glass"
+              )}
+            >
+              {btn.label}
+            </button>
           ))}
         </div>
       </div>
-      <motion.div layoutScroll className="flex-1 p-3 md:p-4 space-y-2.5 overflow-y-auto custom-scrollbar">
+
+      <motion.div layoutScroll className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-border-subtle">
         {sortedTrending.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center text-text-muted opacity-50 p-6">
-            <span className="material-symbols-outlined text-4xl mb-2">radar</span>
-            <span className="font-label-caps uppercase tracking-widest text-xs">
+          <div className="flex flex-col items-center justify-center h-full text-center text-text-muted p-6">
+            <div className="w-12 h-12 rounded-full bg-input-bg flex items-center justify-center mb-3">
+              <span className="material-symbols-outlined text-2xl">radar</span>
+            </div>
+            <span className="text-xs font-medium">
               {viewMode === 'latest'
                 ? (latestScanTargetName ? `No ads found for "${latestScanTargetName}".` : "No active scan.")
-                : "No data."}
+                : "No data yet."}
             </span>
           </div>
         ) : (
@@ -244,35 +341,51 @@ const TrendingTargets = memo(function TrendingTargets({
             {sortedTrending.map((game) => {
               const gameKey = getGameIdentity(game);
               return (
-                <motion.div
+                <motion.button
+                  type="button"
                   key={gameKey}
                   layout="position"
                   transition={{ layout: { type: "spring", stiffness: 500, damping: 42, mass: 0.65 } }}
-                  whileHover={{ y: -2 }}
                   onClick={() => onGameClick(game)}
-                  className="flex items-center p-2.5 md:p-4 rounded-xl bg-surface-solid border border-border-subtle shadow-sm hover:shadow-[0_4px_20px_rgba(0,0,0,0.1)] hover:border-electric-blue/30 cursor-pointer transition-[box-shadow,border-color] group"
+                  className="w-full flex items-center gap-3 md:gap-4 px-4 md:px-5 py-3.5 text-left hover:bg-input-bg/60 focus-visible:bg-input-bg/60 focus-visible:outline-none transition-colors group"
                 >
-                  <div className="w-11 h-11 md:w-14 md:h-14 rounded-xl overflow-hidden bg-input-bg border border-border-subtle shadow-sm flex items-center justify-center flex-shrink-0 mr-3 md:mr-4 group-hover:shadow-[0_0_15px_rgba(59,130,246,0.2)] transition-shadow">
-                    {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted">sports_esports</span>}
+                  <div className="w-11 h-11 md:w-12 md:h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0">
+                    {game.icon ? (
+                      <img loading="lazy" decoding="async" src={game.icon} alt={game.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="material-symbols-outlined text-text-muted">sports_esports</span>
+                    )}
                   </div>
-                  <div className="flex-1 min-w-0 pr-2">
-                    <h3 className="font-body-sm md:font-body-md font-semibold text-text-main truncate group-hover:text-primary transition-colors">{game.title}</h3>
-                    <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">{game.publisher_name}</p>
+
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
+                    <p className="text-[10px] md:text-xs text-text-muted truncate mt-0.5">{game.publisher_name}</p>
                   </div>
-                  <div className="flex flex-col items-end gap-1 md:gap-2 ml-auto flex-shrink-0">
-                    {game.ad_count >= 1 && <div className="bg-urgent-red/10 text-urgent-red border border-urgent-red/20 shadow-sm rounded-md px-1.5 md:px-3 py-0.5 md:py-1 font-label-caps text-[9px] md:text-xs flex items-center font-bold whitespace-nowrap">+{game.ad_count} Ads</div>}
+
+                  <div className="flex flex-col items-end gap-1.5 ml-auto flex-shrink-0">
+                    {game.ad_count >= 1 && (
+                      <span className="rounded-full bg-electric-blue/10 text-electric-blue px-2.5 py-1 text-[9px] md:text-[10px] font-medium whitespace-nowrap border border-electric-blue/15">
+                        {viewMode === "latest" ? `${game.ad_count} ads` : `${game.ad_count} detections`}
+                      </span>
+                    )}
                     <div className="flex items-center gap-1.5">
-                      {game.installs && game.installs !== "0+" && <span className="font-mono text-[9px] md:text-[10px] font-semibold text-emerald-metric bg-emerald-metric/10 border border-emerald-metric/20 px-1.5 py-0.5 rounded shadow-sm">{game.installs}</span>}
-                      {game.released && game.released !== "Unknown" && <span className="font-label-caps text-[9px] md:text-[10px] font-medium text-text-muted bg-surface-glass border border-border-subtle px-1.5 py-0.5 rounded uppercase">{getAgeText(game.released)}</span>}
+                      {game.installs && game.installs !== "0+" && (
+                        <span className="text-[9px] md:text-[10px] font-semibold text-emerald-metric bg-emerald-metric/10 px-2 py-0.5 rounded-full">{game.installs}</span>
+                      )}
+                      {game.released && game.released !== "Unknown" && (
+                        <span className="text-[9px] md:text-[10px] text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{getAgeText(game.released)}</span>
+                      )}
                     </div>
                   </div>
-                </motion.div>
+
+                  <span className="material-symbols-outlined text-text-muted text-[18px] opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block">chevron_right</span>
+                </motion.button>
               );
             })}
           </LayoutGroup>
         )}
       </motion.div>
-    </div>
+    </section>
   );
 });
 
@@ -285,62 +398,120 @@ const LiveDirectory = memo(function LiveDirectory({
   onGameClick,
   onNukeCompetitorData,
   onNukePublisherData,
+  onDeleteGame,
+  isScanning,
 }) {
   return (
-    <div className="xl:col-span-5 bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl shadow-xl flex flex-col h-[400px] md:h-[600px] overflow-hidden">
-      <div className="p-4 md:p-6 pb-4 bg-surface-solid border-b border-border-subtle">
-        <h2 className="font-label-caps text-xs md:text-sm font-bold uppercase tracking-wider text-text-main">Live Directory</h2>
-        <p className="font-body-xs text-[10px] md:text-xs text-text-muted mt-0.5">{viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-bold">● LATEST</span>}Hierarchy View</p>
+    <section className="xl:col-span-5 bg-surface-solid border border-border-subtle rounded-[24px] shadow-sm flex flex-col h-[430px] md:h-[600px] overflow-hidden">
+      <div className="p-4 md:p-5 border-b border-border-subtle">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-electric-blue text-[21px]">folder_open</span>
+          <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Live Directory</h2>
+        </div>
+        <p className="text-[10px] md:text-xs text-text-muted mt-1 md:ml-[29px]">
+          {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">● Latest</span>}
+          Hierarchy view
+        </p>
       </div>
-      <div className="flex-1 p-4 md:p-6 overflow-y-auto custom-scrollbar bg-surface-solid">
+
+      <div className="flex-1 p-3 md:p-4 overflow-y-auto custom-scrollbar">
         {visibleCompetitorTree.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center text-text-muted opacity-50 p-6">
-            <span className="material-symbols-outlined text-4xl mb-2">account_tree</span>
-            <span className="font-label-caps uppercase tracking-widest text-xs">No data.</span>
+          <div className="flex flex-col items-center justify-center h-full text-center text-text-muted p-6">
+            <div className="w-12 h-12 rounded-full bg-input-bg flex items-center justify-center mb-3">
+              <span className="material-symbols-outlined text-2xl">account_tree</span>
+            </div>
+            <span className="text-xs font-medium">No directory data.</span>
           </div>
         ) : visibleCompetitorTree.map((comp) => (
-          <div key={comp.id} className="mb-6 font-mono text-xs space-y-2">
-            <div className="flex items-center justify-between bg-primary/10 px-3 py-2 rounded-lg border border-border-subtle cursor-pointer hover:bg-primary/20 transition-colors" onClick={() => onToggleNode(`comp_${comp.id}`)}>
-              <div className="flex items-center space-x-2">
-                <span className="material-symbols-outlined text-electric-blue text-[16px] transition-transform" style={{ transform: expandedNodes[`comp_${comp.id}`] === false ? 'rotate(-90deg)' : 'rotate(0deg)' }}>expand_more</span>
-                <span className="material-symbols-outlined text-electric-blue text-[14px]">corporate_fare</span>
-                <span className="font-bold text-text-main uppercase text-[11px] md:text-xs">{comp.name}</span>
+          <div key={comp.id} className="mb-2 text-xs">
+            <div
+              className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-2xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] transition-colors cursor-pointer group"
+              onClick={() => onToggleNode(`comp_${comp.id}`)}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span
+                  className="material-symbols-outlined text-text-muted text-[18px] transition-transform"
+                  style={{ transform: expandedNodes[`comp_${comp.id}`] === false ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+                >
+                  expand_more
+                </span>
+                <div className="w-8 h-8 rounded-xl bg-primary-container flex items-center justify-center text-on-primary-container flex-shrink-0">
+                  <span className="material-symbols-outlined text-[18px]">domain</span>
+                </div>
+                <span className="font-semibold text-text-main truncate">{comp.name}</span>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-surface-glass text-text-muted border border-border-subtle uppercase font-semibold">Group</span>
+
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <span className="text-[9px] px-2 py-1 rounded-full bg-input-bg text-text-muted font-medium">Group</span>
                 {isAdmin && (
-                  <button onClick={(e) => onNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1 rounded transition-colors" title="Delete ALL Group Data"><span className="material-symbols-outlined text-[14px]">delete</span></button>
+                  <button
+                    onClick={(e) => onNukeCompetitorData(e, comp.id, comp.name)}
+                    className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                    title="Delete all group data"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">delete</span>
+                  </button>
                 )}
               </div>
             </div>
 
             {expandedNodes[`comp_${comp.id}`] !== false && (
-              <div className="pl-4 space-y-2.5 relative border-l border-border-subtle ml-2 pt-1">
+              <div className="ml-6 pl-3 border-l border-border-subtle space-y-1 py-1">
                 {comp.accounts && comp.accounts.map((acc) => (
-                  <div key={acc.id} className="space-y-1.5">
-                    <div className="flex items-center justify-between bg-surface-glass px-2.5 py-1.5 rounded-lg border border-border-subtle cursor-pointer hover:border-electric-blue/50 transition-colors" onClick={() => onToggleNode(`pub_${acc.id}`)}>
-                      <div className="flex items-center space-x-1.5">
-                        <span className="material-symbols-outlined text-electric-blue text-[14px] transition-transform" style={{ transform: expandedNodes[`pub_${acc.id}`] === false ? 'rotate(-90deg)' : 'rotate(0deg)' }}>expand_more</span>
-                        <span className="text-electric-blue text-xs">📁</span>
-                        <span className="text-text-main text-[10px] md:text-[11px] font-medium truncate max-w-[150px] md:max-w-[200px]">{acc.publisher_name}</span>
+                  <div key={acc.id}>
+                    <div
+                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] transition-colors cursor-pointer group/pub"
+                      onClick={() => onToggleNode(`pub_${acc.id}`)}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="material-symbols-outlined text-text-muted text-[16px] transition-transform"
+                          style={{ transform: expandedNodes[`pub_${acc.id}`] === false ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+                        >
+                          expand_more
+                        </span>
+                        <span className="material-symbols-outlined text-[#fbbc04] text-[18px] flex-shrink-0">folder</span>
+                        <span className="text-text-main text-[10px] md:text-xs font-medium truncate">{acc.publisher_name}</span>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9px] px-1 py-0.5 rounded bg-surface-solid text-electric-blue font-semibold border border-electric-blue/30">Pub</span>
+
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <span className="text-[9px] px-2 py-1 rounded-full bg-electric-blue/10 text-electric-blue font-medium">Pub</span>
                         {isAdmin && (
-                          <button onClick={(e) => onNukePublisherData(e, acc.id, acc.publisher_name)} className="text-text-muted hover:text-urgent-red p-1 rounded transition-colors" title="Delete Publisher Data"><span className="material-symbols-outlined text-[14px]">delete</span></button>
+                          <button
+                            onClick={(e) => onNukePublisherData(e, acc.id, acc.publisher_name)}
+                            className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover/pub:opacity-100 focus:opacity-100 transition-all"
+                            title="Delete publisher data"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">delete</span>
+                          </button>
                         )}
                       </div>
                     </div>
 
                     {expandedNodes[`pub_${acc.id}`] !== false && (
-                      <div className="pl-4 ml-2 border-l border-border-subtle space-y-1">
+                      <div className="ml-7 pl-3 border-l border-border-subtle space-y-0.5 py-1">
                         {acc.games && acc.games.map((game) => (
-                          <div key={getGameIdentity(game)} onClick={() => onGameClick(game)} className="bg-surface-solid p-2 rounded-lg border border-border-subtle text-[10px] space-y-0.5 cursor-pointer hover:border-electric-blue/50 transition-colors">
-                            <div className="flex items-center space-x-1 text-text-main">
-                              <span>📱</span>
-                              <span className="font-semibold truncate">{game.title}</span>
+                          <div
+                            key={getGameIdentity(game)}
+                            onClick={() => onGameClick(game)}
+                            className="group/game flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] cursor-pointer transition-colors"
+                          >
+                            <span className="material-symbols-outlined text-text-muted text-[16px] flex-shrink-0">sports_esports</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
+                              <div className="text-[9px] text-text-muted truncate">{game.package_name}</div>
                             </div>
-                            <div className="text-[9px] text-text-muted truncate pl-4">{game.package_name}</div>
+                            {isAdmin && (
+                              <button
+                                onClick={(e) => onDeleteGame(e, game)}
+                                disabled={isScanning}
+                                className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover/game:opacity-100 focus:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+                                title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
+                                aria-label={`Delete ${game.title || game.package_name || "game"}`}
+                              >
+                                <span className="material-symbols-outlined text-[14px]">delete</span>
+                              </button>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -352,7 +523,7 @@ const LiveDirectory = memo(function LiveDirectory({
           </div>
         ))}
       </div>
-    </div>
+    </section>
   );
 });
 
@@ -376,6 +547,7 @@ function App() {
 
   const [directorySearch, setDirectorySearch] = useState("");
   const [directoryFilter, setDirectoryFilter] = useState("all"); 
+  const [directoryGameSort, setDirectoryGameSort] = useState("activity");
   const [pubSort, setPubSort] = useState("installs"); 
   const [pubFilterNew, setPubFilterNew] = useState(false); 
   const [pubFilterComp, setPubFilterComp] = useState("all");
@@ -385,6 +557,12 @@ function App() {
   const [viewMode, setViewMode] = useState("all"); 
   const [latestScanPackages, setLatestScanPackages] = useState(() => {
     try { return JSON.parse(localStorage.getItem("atlas_latest_packages")) || []; } catch { return []; }
+  });
+  const [latestScanAdCounts, setLatestScanAdCounts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("atlas_latest_ad_counts")) || {}; } catch { return {}; }
+  });
+  const [latestScanAdCountsByCompetitor, setLatestScanAdCountsByCompetitor] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("atlas_latest_ad_counts_by_competitor")) || {}; } catch { return {}; }
   });
   const [latestScanTargetName, setLatestScanTargetName] = useState(() => localStorage.getItem("atlas_latest_target_name") || "");
   const [latestScanCompId, setLatestScanCompId] = useState(() => localStorage.getItem("atlas_latest_comp_id") || null);
@@ -545,6 +723,16 @@ function App() {
       logs: Array.isArray(status.logs) ? status.logs.slice(-5) : prev.logs
     }));
 
+    if (status.adCounts && typeof status.adCounts === "object") {
+      setLatestScanAdCounts(status.adCounts);
+      localStorage.setItem("atlas_latest_ad_counts", JSON.stringify(status.adCounts));
+    }
+
+    if (status.adCountsByCompetitor && typeof status.adCountsByCompetitor === "object") {
+      setLatestScanAdCountsByCompetitor(status.adCountsByCompetitor);
+      localStorage.setItem("atlas_latest_ad_counts_by_competitor", JSON.stringify(status.adCountsByCompetitor));
+    }
+
     if (status.running || state === "starting" || state === "running" || state === "cancelling") {
       setIsScanning(true);
       setViewMode("latest");
@@ -676,21 +864,115 @@ function App() {
     }
   }, [isAdmin, loadAllData]);
 
+  const handleDeleteGame = useCallback(async (e, game) => {
+    e?.stopPropagation?.();
+    if (!isAdmin || !game?.id) return;
+
+    if (isScanning) {
+      alert("Wait for the active scan to finish before deleting a game.");
+      return;
+    }
+
+    const gameLabel = game.title || game.package_name || "this game";
+    if (!window.confirm(`⚠️ Permanently delete ${gameLabel} from Atlas?\n\nThis removes the game, its publisher links, and its stored ad history. The publisher and competitor themselves will remain.`)) {
+      return;
+    }
+
+    try {
+      const deleted = await fetchJson(`${API_BASE}/api/games/${game.id}/data`, { method: "DELETE" });
+      const packageName = deleted?.package_name || game.package_name;
+
+      if (packageName) {
+        setLatestScanPackages(prev => {
+          const next = (prev || []).filter(pkg => pkg !== packageName);
+          localStorage.setItem("atlas_latest_packages", JSON.stringify(next));
+          return next;
+        });
+
+        setLatestScanAdCounts(prev => {
+          const next = { ...(prev || {}) };
+          delete next[packageName];
+          localStorage.setItem("atlas_latest_ad_counts", JSON.stringify(next));
+          return next;
+        });
+
+        setLatestScanAdCountsByCompetitor(prev => {
+          const next = {};
+          for (const [competitorId, counts] of Object.entries(prev || {})) {
+            const nextCounts = { ...(counts || {}) };
+            delete nextCounts[packageName];
+            if (Object.keys(nextCounts).length > 0) next[competitorId] = nextCounts;
+          }
+          localStorage.setItem("atlas_latest_ad_counts_by_competitor", JSON.stringify(next));
+          return next;
+        });
+      }
+
+      setSelectedGame(prev => {
+        const sameGame = prev && (prev.id === game.id || (packageName && prev.package_name === packageName));
+        if (sameGame) {
+          setIsDrawerOpen(false);
+          return null;
+        }
+        return prev;
+      });
+
+      await loadAllData();
+    } catch (err) {
+      alert(err?.message || "Failed to delete game.");
+    }
+  }, [isAdmin, isScanning, loadAllData]);
+
+  const getLatestScanAdCount = useCallback((game) => {
+    if (!game?.package_name) return 0;
+
+    const competitorKey = game.competitor_id !== undefined && game.competitor_id !== null
+      ? String(game.competitor_id)
+      : null;
+
+    if (competitorKey) {
+      const competitorCounts = latestScanAdCountsByCompetitor?.[competitorKey];
+      if (competitorCounts && competitorCounts[game.package_name] !== undefined) {
+        return Number(competitorCounts[game.package_name]) || 0;
+      }
+    }
+
+    return Number(latestScanAdCounts?.[game.package_name]) || 0;
+  }, [latestScanAdCounts, latestScanAdCountsByCompetitor]);
+
+  const withLatestScanAdCount = useCallback((game) => {
+    if (viewMode !== "latest") return game;
+
+    return {
+      ...game,
+      historical_ad_count: game.ad_count,
+      ad_count: getLatestScanAdCount(game)
+    };
+  }, [viewMode, getLatestScanAdCount]);
+
   const isFromLatestScan = (game) => {
     if (viewMode === "all") return true;
     if (!hasLatestScan) return false;
-    
+
+    const competitorKey = game?.competitor_id !== undefined && game?.competitor_id !== null
+      ? String(game.competitor_id)
+      : null;
+
+    if (competitorKey && latestScanAdCountsByCompetitor?.[competitorKey]) {
+      return Number(latestScanAdCountsByCompetitor[competitorKey]?.[game.package_name]) > 0;
+    }
+
     if (latestScanPackages && latestScanPackages.length > 0) {
       return latestScanPackages.includes(game.package_name);
     }
-    
+
     if (latestScanCompId) {
       const comp = competitorTree.find(c => c.id.toString() === latestScanCompId.toString());
       if (comp && comp.accounts) {
         return comp.accounts.some(acc => (acc.games || []).some(g => g.package_name === game.package_name));
       }
     }
-    
+
     if (latestScanTargetName) {
       const targetLower = latestScanTargetName.toLowerCase();
       const pubMatch = (game.publisher_name || "").toLowerCase().includes(targetLower);
@@ -698,33 +980,57 @@ function App() {
       const pkgMatch = (game.package_name || "").toLowerCase().includes(targetLower);
       return pubMatch || compMatch || pkgMatch;
     }
-    
+
     return false;
   };
 
   const visibleTrending = useMemo(() => {
-    return trending.filter(isFromLatestScan);
-  }, [trending, viewMode, hasLatestScan, latestScanPackages, latestScanCompId, latestScanTargetName]);
+    const visibleGames = trending
+      .filter(isFromLatestScan)
+      .map(withLatestScanAdCount);
+
+    // Keep the UI resilient even if a future backend join or stale payload
+    // returns the same package more than once.
+    return dedupeGames(visibleGames);
+  }, [trending, viewMode, hasLatestScan, latestScanPackages, latestScanCompId, latestScanTargetName, latestScanAdCountsByCompetitor, withLatestScanAdCount]);
 
   const visibleCompetitorTree = useMemo(() => {
     return competitorTree.map(comp => {
       if (viewMode === "all") return comp;
-      const isTargetComp = latestScanCompId ? comp.id.toString() === latestScanCompId.toString() : 
-        (latestScanTargetName ? comp.name.toLowerCase().includes(latestScanTargetName.toLowerCase()) : false);
+
+      const isTargetComp = latestScanCompId
+        ? comp.id.toString() === latestScanCompId.toString()
+        : (latestScanTargetName ? comp.name.toLowerCase().includes(latestScanTargetName.toLowerCase()) : false);
 
       const visibleAccounts = (comp.accounts || []).map(acc => {
-        const visibleGames = (acc.games || []).filter(isFromLatestScan);
+        const taggedGames = (acc.games || []).map(game => ({
+          ...game,
+          competitor_id: comp.id,
+          competitor_name: comp.name
+        }));
+
+        const visibleGames = taggedGames
+          .filter(isFromLatestScan)
+          .map(withLatestScanAdCount);
+
         return { ...acc, games: visibleGames };
       }).filter(acc => acc.games.length > 0 || isTargetComp);
 
       return { ...comp, accounts: visibleAccounts };
     }).filter(comp => {
       if (viewMode === "all") return true;
+
+      // When exact per-competitor counts are available (the new scan model),
+      // keep every competitor that actually contributed at least one package.
+      if (latestScanAdCountsByCompetitor?.[String(comp.id)]) {
+        return Object.keys(latestScanAdCountsByCompetitor[String(comp.id)] || {}).length > 0;
+      }
+
       if (latestScanCompId) return comp.id.toString() === latestScanCompId.toString();
       if (latestScanTargetName) return comp.name.toLowerCase().includes(latestScanTargetName.toLowerCase());
       return comp.accounts.length > 0;
     });
-  }, [competitorTree, viewMode, latestScanCompId, latestScanTargetName, hasLatestScan, latestScanPackages]);
+  }, [competitorTree, viewMode, latestScanCompId, latestScanTargetName, hasLatestScan, latestScanPackages, latestScanAdCountsByCompetitor, withLatestScanAdCount]);
 
   const displayStats = useMemo(() => {
     return viewMode === "all" ? stats : {
@@ -825,6 +1131,34 @@ function App() {
     });
   }, [activeStatPanel, deferredStatPanelSearch, statCompetitors, statPublishers, statGames]);
 
+  const globalSearchResults = useMemo(() => {
+    const query = directorySearch.trim().toLowerCase();
+    if (query.length < 2) return { games: [], publishers: [], competitors: [] };
+
+    const games = statGames.filter((game) =>
+      (game.title || "").toLowerCase().includes(query) ||
+      (game.publisher_name || "").toLowerCase().includes(query) ||
+      (game.package_name || "").toLowerCase().includes(query)
+    ).slice(0, 5);
+
+    const publishers = statPublishers.filter((publisher) =>
+      (publisher.publisher_name || "").toLowerCase().includes(query) ||
+      (publisher.competitorName || "").toLowerCase().includes(query)
+    ).slice(0, 4);
+
+    const competitors = statCompetitors.filter((competitor) =>
+      (competitor.name || "").toLowerCase().includes(query) ||
+      (competitor.ads_id || "").toLowerCase().includes(query)
+    ).slice(0, 4);
+
+    return { games, publishers, competitors };
+  }, [directorySearch, statGames, statPublishers, statCompetitors]);
+
+  const globalSearchResultCount =
+    globalSearchResults.games.length +
+    globalSearchResults.publishers.length +
+    globalSearchResults.competitors.length;
+
   const sortedTrending = useMemo(() => {
     const uniqueGames = new Map();
 
@@ -878,6 +1212,39 @@ function App() {
       (g.title || "").toLowerCase().includes(searchLower) || (g.publisher_name || "").toLowerCase().includes(searchLower) || (g.package_name || "").toLowerCase().includes(searchLower)
     );
   }, [visibleTrending, searchLower]);
+
+  const sortedDirectoryGames = useMemo(() => {
+    const games = [...filteredGames];
+
+    const getReleaseTime = (game) => {
+      if (!game?.released || game.released === "Unknown") return 0;
+      const parsed = new Date(game.released).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    games.sort((a, b) => {
+      let difference = 0;
+
+      if (directoryGameSort === "activity") {
+        // In Latest Scan mode ad_count has already been replaced with the exact
+        // per-scan count. In All Time mode it is the historical detection count.
+        difference = (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0);
+      } else if (directoryGameSort === "installs") {
+        difference = getInstallCount(b) - getInstallCount(a);
+      } else if (directoryGameSort === "newest") {
+        difference = getReleaseTime(b) - getReleaseTime(a);
+      } else if (directoryGameSort === "rating") {
+        difference = (Number(b.rating) || 0) - (Number(a.rating) || 0);
+      } else if (directoryGameSort === "az") {
+        return (a.title || a.package_name || "").localeCompare(b.title || b.package_name || "");
+      }
+
+      if (difference !== 0) return difference;
+      return (a.title || a.package_name || "").localeCompare(b.title || b.package_name || "");
+    });
+
+    return games;
+  }, [filteredGames, directoryGameSort]);
 
   const filteredCompetitors = useMemo(() => {
     return visibleCompetitorTree.filter(c => 
@@ -940,20 +1307,6 @@ function App() {
       console.error("List creation error:", err);
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  const handleToggleList = async (id, currentStatus) => {
-    if (!isAdmin) return;
-    try {
-      await fetchJson(`${API_BASE}/api/lists/${id}/toggle`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ is_active: currentStatus === 1 ? 0 : 1 })
-      });
-      loadAllData();
-    } catch (err) {
-      console.error("List toggle error:", err);
     }
   };
 
@@ -1071,8 +1424,14 @@ function App() {
     setLatestScanTargetName(targetDisplayName);
     setLatestScanCompId(targetCompId);
     setLatestScanPackages([]);
+    setLatestScanAdCounts({});
+    setLatestScanAdCountsByCompetitor({});
     setHasLatestScan(false);
     localStorage.setItem("atlas_latest_target_name", targetDisplayName || "");
+    localStorage.removeItem("atlas_latest_packages");
+    localStorage.removeItem("atlas_latest_ad_counts");
+    localStorage.removeItem("atlas_latest_ad_counts_by_competitor");
+    localStorage.setItem("atlas_has_latest_scan", "0");
     if (targetCompId) localStorage.setItem("atlas_latest_comp_id", targetCompId);
     else localStorage.removeItem("atlas_latest_comp_id");
 
@@ -1140,10 +1499,14 @@ function App() {
   const handleReset = () => {
     if (!window.confirm("Clear the 'Latest Scan' view? This empties the screen until your next scan. (All-time database records remain safe).")) return;
     setLatestScanPackages([]);
+    setLatestScanAdCounts({});
+    setLatestScanAdCountsByCompetitor({});
     setLatestScanTargetName("");
     setLatestScanCompId(null);
     setHasLatestScan(false);
     localStorage.removeItem("atlas_latest_packages");
+    localStorage.removeItem("atlas_latest_ad_counts");
+    localStorage.removeItem("atlas_latest_ad_counts_by_competitor");
     localStorage.removeItem("atlas_has_latest_scan");
     localStorage.removeItem("atlas_latest_target_name");
     localStorage.removeItem("atlas_latest_comp_id");
@@ -1171,6 +1534,14 @@ function App() {
     setIsDrawerOpen(true);
   }, []);
 
+  const openDirectoryFromSearch = useCallback((filter, value) => {
+    if (value) setDirectorySearch(value);
+    setDirectoryFilter(filter);
+    setActiveTab("directory");
+    setActiveDropdown(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
   const getTargetSourceName = () => {
     if (selectedSource === "manual") return "📝 Manual Entry";
     if (selectedSource.startsWith("comp_")) { const comp = savedCompetitors.find(c => `comp_${c.id}` === selectedSource); return comp ? `👤 ${comp.name}` : "Saved Competitor"; }
@@ -1191,55 +1562,64 @@ function App() {
   // FULL-SCREEN SECURITY GATE FOR UNAUTHENTICATED USERS
   if (!authToken || !currentUser) {
     return (
-      <div className="bg-bg-base font-body-md text-text-main min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-electric-blue/10 blur-[130px] pointer-events-none"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-primary/10 blur-[120px] pointer-events-none"></div>
-        
+      <div className="min-h-screen bg-[#f8fafd] dark:bg-[#202124] text-[#202124] dark:text-[#e8eaed] flex items-center justify-center p-5">
         <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 15 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          transition={{ duration: 0.25 }}
-          className="relative z-10 w-full max-w-sm bg-surface-solid border border-border-subtle rounded-3xl p-8 shadow-2xl space-y-6"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2 }}
+          className="w-full max-w-[420px] bg-white dark:bg-[#292a2d] border border-[#e0e3e7] dark:border-[#3c4043] rounded-[24px] px-7 py-8 sm:px-9 sm:py-10 shadow-sm"
         >
-          <div className="flex flex-col items-center text-center space-y-3">
-            <div className="w-16 h-16 rounded-2xl bg-electric-blue/10 border border-electric-blue/30 flex items-center justify-center text-electric-blue shadow-inner">
-              <span className="material-symbols-outlined text-[32px]">shield_lock</span>
-            </div>
-            <div className="space-y-1">
-              <h1 className="font-headline-lg text-2xl font-bold text-text-main uppercase tracking-tight">Atlas Intelligence</h1>
-              <p className="text-xs text-text-muted">Sign in with your workspace credentials.</p>
+          <div className="flex items-center gap-3 mb-8">
+            <img src="/atlas-logo.png" alt="Atlas" className="h-10 w-10 object-contain rounded-xl" />
+            <div>
+              <div className="text-xl font-semibold tracking-tight">Atlas</div>
+              <div className="text-xs text-[#5f6368] dark:text-[#9aa0a6]">Competitive intelligence workspace</div>
             </div>
           </div>
 
-          <form onSubmit={handleLoginSubmit} className="space-y-3">
-            <input
-              type="text"
-              autoFocus
-              value={usernameInput}
-              onChange={(e) => {
-                setUsernameInput(e.target.value);
-                setLoginError("");
-              }}
-              placeholder="Username"
-              className="w-full bg-input-bg border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-body-sm shadow-inner"
-            />
-            <input
-              type="password"
-              value={passwordInput}
-              onChange={(e) => {
-                setPasswordInput(e.target.value);
-                setLoginError("");
-              }}
-              placeholder="Password"
-              className="w-full bg-input-bg border border-border-subtle rounded-xl px-4 py-3 text-sm text-text-main outline-none focus:ring-2 focus:ring-electric-blue/50 font-body-sm shadow-inner"
-            />
-            {loginError && <p className="text-urgent-red text-xs text-center font-semibold">{loginError}</p>}
-            <button
-              type="submit"
-              className="w-full py-3.5 bg-electric-blue hover:bg-blue-600 text-white font-label-caps text-xs uppercase tracking-wider font-bold rounded-xl shadow-lg transition-all active:scale-[0.98]"
-            >
-              Sign In
-            </button>
+          <div className="mb-6">
+            <h1 className="text-2xl font-medium tracking-tight">Sign in to Atlas</h1>
+            <p className="text-sm text-[#5f6368] dark:text-[#9aa0a6] mt-1.5">Use your workspace credentials to continue.</p>
+          </div>
+
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-[#5f6368] dark:text-[#bdc1c6]">Username</label>
+              <input
+                type="text"
+                autoFocus
+                autoComplete="username"
+                value={usernameInput}
+                onChange={(e) => { setUsernameInput(e.target.value); setLoginError(""); }}
+                className="w-full h-12 bg-transparent border border-[#c7cacf] dark:border-[#5f6368] rounded-xl px-3.5 text-sm outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition-colors"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-[#5f6368] dark:text-[#bdc1c6]">Password</label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={passwordInput}
+                onChange={(e) => { setPasswordInput(e.target.value); setLoginError(""); }}
+                className="w-full h-12 bg-transparent border border-[#c7cacf] dark:border-[#5f6368] rounded-xl px-3.5 text-sm outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition-colors"
+              />
+            </div>
+
+            {loginError && (
+              <div className="flex items-start gap-2 text-[#d93025] dark:text-[#f28b82] text-xs bg-[#fce8e6] dark:bg-[#5c2b29]/40 rounded-xl px-3 py-2.5">
+                <span className="material-symbols-outlined text-[17px] flex-shrink-0">error</span>
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="submit"
+                className="h-10 px-6 rounded-full bg-[#1a73e8] hover:bg-[#1765cc] text-white text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]/40"
+              >
+                Sign in
+              </button>
+            </div>
           </form>
         </motion.div>
       </div>
@@ -1247,91 +1627,270 @@ function App() {
   }
 
   return (
-    <div className="bg-bg-base font-body-md text-text-main min-h-screen relative transition-colors duration-400 z-10 overflow-x-hidden pb-20 md:pb-0">
-      
-      <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-electric-blue/5 blur-[120px] pointer-events-none"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[30%] h-[30%] rounded-full bg-primary/5 blur-[100px] pointer-events-none"></div>
-      </div>
+    <div className="atlas-google-shell bg-bg-base text-text-main min-h-screen relative transition-colors duration-300 overflow-x-hidden pb-24 md:pb-0">
+      <style>{`
+        .atlas-google-shell {
+          font-family: Roboto, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: #f8fafd;
+          color-scheme: light;
+        }
+        .atlas-google-shell button,
+        .atlas-google-shell input,
+        .atlas-google-shell textarea { font: inherit; }
+        html:not(.dark) .atlas-google-shell .bg-surface-solid { background-color: #ffffff; }
+        html:not(.dark) .atlas-google-shell .bg-surface-glass { background-color: rgba(255,255,255,.96); }
+        html:not(.dark) .atlas-google-shell .bg-input-bg { background-color: #f1f3f4; }
+        html:not(.dark) .atlas-google-shell .border-border-subtle { border-color: #e0e3e7; }
+        html:not(.dark) .atlas-google-shell .text-text-main { color: #202124; }
+        html:not(.dark) .atlas-google-shell .text-text-muted { color: #5f6368; }
 
-      {/* TOP HEADER */}
-      <header className="fixed top-0 left-0 right-0 h-16 md:h-20 bg-surface-glass backdrop-blur-xl z-30 px-4 md:px-6 lg:px-8 flex items-center justify-between border-b border-border-subtle transition-colors duration-400">
-        <div className="flex items-center gap-6 lg:gap-8">
-          {/* CLICKABLE LOGO: Navigates to Dashboard & scrolls to top */}
-          <div 
-            onClick={() => {
-              setActiveTab("dashboard");
-              window.scrollTo({ top: 0, behavior: "smooth" });
-            }}
-            className="flex items-center gap-3 cursor-pointer group select-none"
+        .dark .atlas-google-shell { background: #202124; color-scheme: dark; }
+        .dark .atlas-google-shell .bg-bg-base { background-color: #202124; }
+        .dark .atlas-google-shell .bg-surface-solid { background-color: #292a2d; }
+        .dark .atlas-google-shell .bg-surface-glass { background-color: rgba(41,42,45,.96); }
+        .dark .atlas-google-shell .bg-input-bg { background-color: #303134; }
+        .dark .atlas-google-shell .border-border-subtle { border-color: #3c4043; }
+        .dark .atlas-google-shell .text-text-main { color: #e8eaed; }
+        .dark .atlas-google-shell .text-text-muted { color: #9aa0a6; }
+        .dark .atlas-google-shell .bg-primary-container { background-color: #3c4658; }
+        .dark .atlas-google-shell .text-on-primary-container { color: #d7e3ff; }
+        .dark .atlas-google-shell input::placeholder,
+        .dark .atlas-google-shell textarea::placeholder { color: #80868b; }
+
+        .atlas-google-shell ::selection { background: rgba(26,115,232,.22); }
+      `}</style>
+
+      {/* GOOGLE-INSPIRED APP BAR */}
+      <header className="fixed top-0 left-0 right-0 h-16 z-50 bg-bg-base/95 backdrop-blur-xl border-b border-border-subtle flex items-center px-3 sm:px-4 gap-3">
+        <div className="flex items-center gap-2 min-w-0 sm:w-[180px]">
+          <button
+            type="button"
+            onClick={() => { setActiveTab("dashboard"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+            className="flex items-center gap-2.5 min-w-0 group rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-electric-blue/30"
             title="Return to Dashboard"
           >
-            <img 
-              src="/atlas-logo.png" 
-              alt="Atlas Logo" 
-              className="h-8 w-8 object-contain rounded-md shadow-sm group-hover:scale-105 transition-transform" 
-            />
-            <span className="font-headline-lg text-lg tracking-tight text-text-main uppercase font-bold hidden sm:block group-hover:text-electric-blue transition-colors">
-              Atlas
-            </span>
-          </div>
-          
-          <nav className="hidden md:flex items-center gap-1.5">
-            {[
-              { id: "dashboard", icon: "dashboard", label: "Dashboard" },
-              { id: "directory", icon: "folder_shared", label: "Directory" },
-              { id: "automated", icon: "radar", label: "Targets" },
-              ...(isAdmin ? [{ id: "settings", icon: "tune", label: "Settings" }] : [])
-            ].map((tab) => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)} className="relative flex items-center gap-2 px-3.5 py-2 rounded-xl group transition-all">
-                {activeTab === tab.id && <motion.div layoutId="header-active" className="absolute inset-0 bg-primary-container rounded-xl z-0" transition={{ type: "spring", stiffness: 300, damping: 30 }} />}
-                <span className={cn("material-symbols-outlined z-10 transition-colors text-[18px]", activeTab === tab.id ? "text-on-primary-container" : "text-text-muted group-hover:text-text-main")} style={{ fontVariationSettings: "'wght' 500" }}>{tab.icon}</span>
-                <span className={cn("font-label-caps text-[11px] tracking-wider z-10 uppercase transition-colors", activeTab === tab.id ? "text-on-primary-container font-bold" : "text-text-muted group-hover:text-text-main font-semibold")}>{tab.label}</span>
-              </button>
-            ))}
-          </nav>
+            <img src="/atlas-logo.png" alt="Atlas Logo" className="h-8 w-8 object-contain rounded-lg" />
+            <span className="text-xl font-medium tracking-tight text-text-main hidden sm:block">Atlas</span>
+          </button>
         </div>
-        
-        <div className="flex items-center gap-3 md:gap-4">
-          <div className="hidden lg:flex items-center gap-2 bg-surface-solid border border-border-subtle rounded-lg px-3 py-1.5 shadow-sm">
-            <div className={cn("h-2 w-2 rounded-full animate-pulse", isNodeOnline ? "bg-emerald-metric" : "bg-urgent-red")}></div>
-            <span className="font-mono text-[10px] text-text-muted uppercase tracking-widest font-bold">{isNodeOnline ? "System: Online" : "System: Offline"}</span>
-          </div>
 
-          <div className="flex bg-surface-solid p-1 rounded-xl border border-border-subtle shadow-sm hidden sm:flex">
-            <button onClick={() => setViewMode("all")} className={cn("px-4 py-1.5 text-[10px] font-label-caps uppercase tracking-wider rounded-lg transition-all", viewMode === "all" ? "bg-electric-blue text-white shadow-[0_0_10px_rgba(59,130,246,0.4)]" : "text-text-muted hover:text-text-main hover:bg-surface-glass")}>All Time</button>
-            <button onClick={() => setViewMode("latest")} className={cn("px-4 py-1.5 text-[10px] font-label-caps uppercase tracking-wider rounded-lg transition-all flex items-center gap-1.5", viewMode === "latest" ? "bg-emerald-metric text-white shadow-[0_0_10px_rgba(16,185,129,0.4)]" : "text-text-muted hover:text-text-main hover:bg-surface-glass")}>
-              {viewMode === "latest" && <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>}
-              Latest Scan
+        <div className="flex-1 flex justify-center min-w-0">
+          <div className="hidden sm:block relative w-full max-w-[640px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center h-11 rounded-full bg-input-bg border border-transparent focus-within:border-electric-blue/30 focus-within:bg-surface-solid transition-colors px-4 gap-3">
+              <span className="material-symbols-outlined text-text-muted text-[20px]">search</span>
+              <input
+                value={directorySearch}
+                onFocus={() => { if (directorySearch.trim().length >= 2) setActiveDropdown("globalSearch"); }}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setDirectorySearch(value);
+                  setActiveDropdown(value.trim().length >= 2 ? "globalSearch" : null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setActiveTab('directory');
+                    setDirectoryFilter('all');
+                    setActiveDropdown(null);
+                  }
+                  if (e.key === 'Escape') setActiveDropdown(null);
+                }}
+                placeholder="Search games, publishers, competitors, packages..."
+                className="flex-1 min-w-0 bg-transparent outline-none text-sm text-text-main placeholder:text-text-muted/80"
+              />
+              {directorySearch ? (
+                <button type="button" onClick={() => { setDirectorySearch(""); setActiveDropdown(null); }} className="w-7 h-7 rounded-full hover:bg-surface-glass flex items-center justify-center text-text-muted" aria-label="Clear search">
+                  <span className="material-symbols-outlined text-[17px]">close</span>
+                </button>
+              ) : (
+                <span className="hidden lg:inline-flex items-center rounded-md border border-border-subtle px-1.5 py-0.5 text-[9px] text-text-muted font-mono">Enter</span>
+              )}
+            </div>
+
+            <AnimatePresence>
+              {activeDropdown === "globalSearch" && directorySearch.trim().length >= 2 && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4, scale: 0.99 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -4, scale: 0.99 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute top-[52px] left-0 right-0 bg-surface-solid border border-border-subtle rounded-[20px] shadow-xl overflow-hidden z-[70]"
+                >
+                  {globalSearchResultCount === 0 ? (
+                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for “{directorySearch.trim()}”.</div>
+                  ) : (
+                    <div className="max-h-[430px] overflow-y-auto custom-scrollbar py-2">
+                      {globalSearchResults.games.length > 0 && (
+                        <div className="py-1">
+                          <div className="px-4 py-1.5 text-[10px] font-medium text-text-muted">Games</div>
+                          {globalSearchResults.games.map((game) => (
+                            <button
+                              type="button"
+                              key={`search-game-${getGameIdentity(game)}`}
+                              onClick={() => { setActiveDropdown(null); handleGameClick(game); }}
+                              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
+                            >
+                              <div className="w-9 h-9 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0 flex items-center justify-center">
+                                {game.icon ? <img src={game.icon} alt="" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted text-[18px]">sports_esports</span>}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-medium text-text-main truncate">{game.title || game.package_name}</div>
+                                <div className="text-[10px] text-text-muted truncate">{game.publisher_name || game.package_name}</div>
+                              </div>
+                              <span className="material-symbols-outlined text-text-muted text-[18px]">chevron_right</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {globalSearchResults.publishers.length > 0 && (
+                        <div className="py-1 border-t border-border-subtle">
+                          <div className="px-4 py-1.5 text-[10px] font-medium text-text-muted">Publishers</div>
+                          {globalSearchResults.publishers.map((publisher, index) => (
+                            <button
+                              type="button"
+                              key={`search-pub-${publisher.competitorId}-${publisher.id ?? publisher.publisher_name}-${index}`}
+                              onClick={() => openDirectoryFromSearch("publishers", publisher.publisher_name)}
+                              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
+                            >
+                              <span className="material-symbols-outlined text-text-muted text-[20px]">business</span>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-medium text-text-main truncate">{publisher.publisher_name}</div>
+                                <div className="text-[10px] text-text-muted truncate">{publisher.competitorName || "Publisher"}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {globalSearchResults.competitors.length > 0 && (
+                        <div className="py-1 border-t border-border-subtle">
+                          <div className="px-4 py-1.5 text-[10px] font-medium text-text-muted">Competitors</div>
+                          {globalSearchResults.competitors.map((competitor) => (
+                            <button
+                              type="button"
+                              key={`search-comp-${competitor.id ?? competitor.name}`}
+                              onClick={() => openDirectoryFromSearch("competitors", competitor.name)}
+                              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
+                            >
+                              <span className="material-symbols-outlined text-text-muted text-[20px]">domain</span>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-medium text-text-main truncate">{competitor.name}</div>
+                                <div className="text-[10px] text-text-muted truncate">{competitor.ads_id || "Competitor"}</div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => openDirectoryFromSearch("all", directorySearch.trim())}
+                        className="w-full border-t border-border-subtle px-4 py-3 text-left text-xs font-medium text-electric-blue hover:bg-input-bg transition-colors flex items-center justify-between"
+                      >
+                        View all results in Directory
+                        <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+                      </button>
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        <div className="relative flex items-center justify-end gap-1 sm:gap-2 sm:w-[330px]" onClick={(e) => e.stopPropagation()}>
+          <div className="hidden lg:flex items-center bg-input-bg rounded-full p-1 border border-border-subtle">
+            <button type="button" onClick={() => setViewMode("all")} className={cn("px-3.5 py-1.5 rounded-full text-[10px] font-medium transition-colors", viewMode === "all" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main")}>All time</button>
+            <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3.5 py-1.5 rounded-full text-[10px] font-medium transition-colors flex items-center gap-1.5", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main")}>
+              <span className={cn("w-1.5 h-1.5 rounded-full", viewMode === "latest" ? "bg-emerald-metric" : "bg-text-muted/50")}></span>Latest
             </button>
           </div>
 
-          <div className="hidden sm:flex items-center">
-            <span className={cn(
-              "font-mono text-[10px] font-bold px-2 py-1 rounded-lg border uppercase shadow-sm tracking-wider",
-              isAdmin ? "bg-electric-blue/10 text-electric-blue border-electric-blue/30" : "bg-surface-solid text-text-muted border-border-subtle"
-            )}>
-              {currentUser?.username}
-            </span>
-          </div>
-
-          <button onClick={() => setIsGuideOpen(true)} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-main hover:bg-surface-glass transition-all shadow-sm border border-border-subtle" title="How Atlas Works">
-            <span className="material-symbols-outlined text-[18px] md:text-[20px]" style={{ fontVariationSettings: "'wght' 500" }}>help</span>
-          </button>
-          
-          <button onClick={() => setIsDarkMode(!isDarkMode)} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-main hover:bg-surface-glass transition-all shadow-sm border border-border-subtle" title="Toggle Theme">
-            <span className="material-symbols-outlined text-[18px] md:text-[20px]" style={{ fontVariationSettings: "'wght' 500" }}>{isDarkMode ? "light_mode" : "dark_mode"}</span>
+          <button type="button" onClick={() => setIsGuideOpen(true)} className="w-10 h-10 rounded-full hover:bg-input-bg flex items-center justify-center text-text-muted hover:text-text-main transition-colors" title="How Atlas works">
+            <span className="material-symbols-outlined text-[20px]">help</span>
           </button>
 
-          <button onClick={handleLogout} className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-surface-solid flex items-center justify-center text-text-muted hover:text-urgent-red transition-all shadow-sm border border-border-subtle" title="Sign Out">
-            <span className="material-symbols-outlined text-[18px] md:text-[20px]">logout</span>
+          <button
+            type="button"
+            onClick={() => setActiveDropdown(activeDropdown === "account" ? null : "account")}
+            className="w-9 h-9 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center text-sm font-semibold ml-1 ring-1 ring-transparent focus-visible:ring-electric-blue/40"
+            title={`${currentUser?.username || "User"} account`}
+            aria-expanded={activeDropdown === "account"}
+          >
+            {String(currentUser?.username || "A").slice(0, 1).toUpperCase()}
           </button>
+
+          <AnimatePresence>
+            {activeDropdown === "account" && (
+              <motion.div
+                initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                transition={{ duration: 0.12 }}
+                className="absolute top-12 right-0 w-64 bg-surface-solid border border-border-subtle rounded-[20px] shadow-xl overflow-hidden z-[70]"
+              >
+                <div className="px-4 py-4 border-b border-border-subtle">
+                  <div className="text-sm font-medium text-text-main truncate">{currentUser?.username || "Atlas user"}</div>
+                  <div className="text-[11px] text-text-muted mt-0.5">{isAdmin ? "Administrator" : "View-only access"}</div>
+                </div>
+                <div className="p-2">
+                  <button type="button" onClick={() => { setIsDarkMode(!isDarkMode); setActiveDropdown(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-input-bg text-left transition-colors">
+                    <span className="material-symbols-outlined text-text-muted text-[19px]">{isDarkMode ? "light_mode" : "dark_mode"}</span>
+                    <span className="text-sm text-text-main">{isDarkMode ? "Light theme" : "Dark theme"}</span>
+                  </button>
+                  {isAdmin && (
+                    <button type="button" onClick={() => { setActiveTab("settings"); setActiveDropdown(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-input-bg text-left transition-colors">
+                      <span className="material-symbols-outlined text-text-muted text-[19px]">settings</span>
+                      <span className="text-sm text-text-main">Settings</span>
+                    </button>
+                  )}
+                  <button type="button" onClick={handleLogout} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-input-bg text-left transition-colors">
+                    <span className="material-symbols-outlined text-text-muted text-[19px]">logout</span>
+                    <span className="text-sm text-text-main">Sign out</span>
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </header>
 
-      {/* FULL-WIDTH VIEWPORT */}
-      <div className="relative z-10 w-full max-w-[1600px] mx-auto">
-        <main className="relative pt-20 md:pt-28 min-h-screen px-3 sm:px-6 lg:px-8 py-8 pb-32">
+      {/* MATERIAL NAVIGATION RAIL */}
+      <aside className="hidden md:flex fixed left-0 top-16 bottom-0 z-40 w-[88px] bg-bg-base border-r border-border-subtle flex-col items-center py-3">
+        <nav className="w-full flex flex-col items-center gap-1 px-2">
+          {[
+            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+            { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "automated", icon: "track_changes", label: "Targets" },
+            ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className="w-full flex flex-col items-center gap-1 py-2.5 group"
+            >
+              <span className={cn(
+                "w-14 h-8 rounded-full flex items-center justify-center transition-colors",
+                activeTab === tab.id ? "bg-primary-container text-on-primary-container" : "text-text-muted group-hover:bg-input-bg group-hover:text-text-main"
+              )}>
+                <span className="material-symbols-outlined text-[21px]">{tab.icon}</span>
+              </span>
+              <span className={cn("text-[9px] font-medium", activeTab === tab.id ? "text-text-main" : "text-text-muted")}>{tab.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <div className="mt-auto w-full px-2 pb-2">
+          <div className="flex flex-col items-center gap-1.5 py-2 rounded-2xl text-center">
+            <span className={cn("w-2 h-2 rounded-full", isNodeOnline ? "bg-emerald-metric" : "bg-urgent-red")}></span>
+            <span className="text-[8px] text-text-muted leading-tight">{isNodeOnline ? "System online" : "System offline"}</span>
+          </div>
+        </div>
+      </aside>
+
+      <div className="relative z-10 w-full md:pl-[88px]">
+        <main className="relative min-h-screen px-3 sm:px-5 lg:px-7 pt-24 md:pt-24 pb-32 w-full max-w-[1500px] mx-auto">
           
           {!isNodeOnline && (
             <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6 w-full bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-center gap-2 text-amber-500 font-mono text-[10px] md:text-xs shadow-sm z-40 relative">
@@ -1342,19 +1901,29 @@ function App() {
           )}
 
           {activeTab === "dashboard" && (
-            <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8">
-              
-              <motion.div variants={FADE_UP} className={cn("w-full bg-surface-glass backdrop-blur-xl rounded-2xl p-4 md:p-6 shadow-xl border border-border-subtle z-40 transition-all", isScanning && "ring-1 ring-electric-blue/50 opacity-75")}>
+            <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-5 md:gap-6">
+              <motion.div variants={FADE_UP} className="flex items-end justify-between gap-4 px-1">
+                <div>
+                  <h1 className="text-xl md:text-2xl font-medium text-text-main tracking-tight">Dashboard</h1>
+                  <p className="text-xs md:text-sm text-text-muted mt-1">Competitive game intelligence at a glance.</p>
+                </div>
+                <div className="lg:hidden flex items-center bg-input-bg rounded-full p-1 border border-border-subtle">
+                  <button type="button" onClick={() => setViewMode("all")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "all" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>All time</button>
+                  <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>Latest</button>
+                </div>
+              </motion.div>
+
+              <motion.div variants={FADE_UP} className={cn("w-full bg-surface-solid rounded-[24px] p-3 md:p-4 shadow-sm border border-border-subtle z-40 transition-all", isScanning && "ring-1 ring-electric-blue/40 opacity-80")}>
                 <div className="flex flex-col md:flex-row flex-wrap items-end gap-3 md:gap-4 w-full">
                   <div className="flex-[2] min-w-full md:min-w-[200px] space-y-1.5 md:space-y-2">
-                    <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest pl-1 block">Target Competitor / ID</label>
+                    <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Target Competitor / ID</label>
                     <div className="relative">
                       <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">my_location</span>
                       <input 
                         value={selectedSource === "manual" ? scanQuery : "Auto-Target Selected"} 
                         onChange={(e) => setScanQuery(e.target.value)} 
                         disabled={!isAdmin || selectedSource !== "manual" || isScanning}
-                        className="w-full bg-input-bg text-text-main border border-border-subtle font-mono font-semibold rounded-xl py-3 pl-10 pr-4 outline-none transition-all shadow-sm focus:ring-2 focus:ring-electric-blue/50 disabled:opacity-50" 
+                        className="w-full h-[48px] bg-input-bg text-text-main border border-border-subtle font-medium rounded-full py-3 pl-10 pr-4 outline-none transition-all focus:ring-2 focus:ring-electric-blue/30 disabled:opacity-50" 
                         placeholder={isAdmin ? "e.g. Voodoo or ID: 12345" : "Scan input restricted to Admin"} 
                         type="text" 
                       />
@@ -1364,7 +1933,7 @@ function App() {
                   <div className="grid grid-cols-2 md:flex flex-[3] gap-4 w-full">
                     {/* DUAL COLUMN SEARCHABLE DROPDOWN */}
                     <div className="flex-[1.5] min-w-[140px] space-y-2 relative">
-                      <label className="font-label-caps text-[10px] md:text-xs text-text-muted uppercase tracking-widest pl-1 block truncate">Target Source</label>
+                      <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Target Source</label>
                       <div onClick={(e) => { 
                             if(!isScanning && isAdmin) { 
                               e.stopPropagation(); 
@@ -1372,7 +1941,7 @@ function App() {
                               setActiveDropdown(activeDropdown === 'source' ? null : 'source'); 
                             } 
                           }}
-                        className={cn("w-full bg-input-bg text-text-main border border-border-subtle font-body-md rounded-xl py-3 px-3 md:pl-10 md:pr-4 outline-none transition-all shadow-sm cursor-pointer flex items-center justify-between select-none hover:border-text-muted/50", activeDropdown === 'source' && 'ring-2 ring-electric-blue/20', (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed")}
+                        className={cn("w-full h-[48px] bg-input-bg text-text-main border border-border-subtle rounded-full py-3 px-3 md:pl-10 md:pr-4 outline-none transition-all cursor-pointer flex items-center justify-between select-none hover:border-text-muted/50", activeDropdown === 'source' && 'ring-2 ring-electric-blue/20', (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed")}
                       >
                         <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">list_alt</span>
                         <span className="truncate font-semibold text-xs md:text-sm">{getTargetSourceName()}</span>
@@ -1430,7 +1999,7 @@ function App() {
                     </div>
 
                     <div className="flex-[1.5] min-w-[180px] space-y-2 relative">
-                      <label className="font-label-caps text-[10px] md:text-xs text-text-muted uppercase tracking-widest pl-1 block truncate">Email Report</label>
+                      <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Email Report</label>
                       <motion.div
                         layout
                         transition={{ type: "spring", stiffness: 320, damping: 30 }}
@@ -1441,7 +2010,7 @@ function App() {
                           }
                         }}
                         className={cn(
-                          "w-full h-[46px] md:h-[50px] bg-input-bg text-text-main border border-border-subtle font-body-md rounded-xl px-3 md:pl-10 md:pr-3 outline-none shadow-sm cursor-pointer flex items-center gap-2 select-none transition-[border-color,box-shadow,opacity]",
+                          "w-full h-[48px] bg-input-bg text-text-main border border-border-subtle rounded-full px-3 md:pl-10 md:pr-3 outline-none cursor-pointer flex items-center gap-2 select-none transition-[border-color,box-shadow,opacity]",
                           activeDropdown === 'email' && 'ring-2 ring-electric-blue/20',
                           selectedEmailList === 'custom' && EMAIL_REGEX.test(customReportEmail.trim()) && 'border-emerald-metric/40',
                           (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed"
@@ -1570,13 +2139,13 @@ function App() {
                   </div>
                   
                   <div className="flex-1 min-w-full md:min-w-[120px] space-y-1.5 md:space-y-2 relative">
-                    <label className="font-label-caps text-[10px] md:text-xs text-text-muted uppercase tracking-widest pl-1 block">Ad Limit</label>
-                    <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-xl shadow-sm transition-all h-[46px] md:h-[50px]", (!isAdmin || isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
+                    <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Ad Limit</label>
+                    <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-full transition-all h-[48px]", (!isAdmin || isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
                       <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit(Math.max(1, scanLimit - 10))} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">remove</span></button>
                       <input disabled={!isAdmin || isMaxAds || isScanning} value={isMaxAds ? "ALL" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-mono font-semibold outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
                       <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit((scanLimit || 0) + 10)} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">add</span></button>
                       <div className="w-px h-full bg-border-subtle"></div>
-                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(isAdmin && !isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-xl transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
+                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(isAdmin && !isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-full transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
                     </div>
                     <AnimatePresence>
                       {activeDropdown === 'limit' && isAdmin && !isMaxAds && (
@@ -1590,19 +2159,19 @@ function App() {
                   <div className="flex gap-2 items-center flex-shrink-0 w-full xl:w-auto mt-2 xl:mt-0">
                     {isAdmin ? (
                       <>
-                        <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[46px] md:h-[50px] px-4 rounded-xl font-semibold tracking-widest text-sm uppercase transition-all flex items-center justify-center gap-2 border border-border-subtle shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-urgent-red text-white border-urgent-red' : 'bg-surface-solid text-text-main')} title="Scan every single ad. No limits."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> MAX</button>
+                        <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[48px] px-4 rounded-full font-medium text-sm transition-all flex items-center justify-center gap-2 border border-border-subtle disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-urgent-red text-white border-urgent-red' : 'bg-surface-solid text-text-main')} title="Scan every single ad. No limits."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> MAX</button>
                         
                         {isScanning ? (
-                          <button onClick={handleCancelScan} className="h-[46px] md:h-[50px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-label-caps uppercase tracking-wider font-semibold px-6 rounded-xl border border-urgent-red/30 shadow-[0_0_15px_rgba(239,68,68,0.3)] flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
+                          <button onClick={handleCancelScan} className="h-[48px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-medium px-6 rounded-full border border-urgent-red/20 flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
                             <span className="material-symbols-outlined text-[20px]">cancel</span> Cancel
                           </button>
                         ) : (
-                          <button onClick={handleRunScan} className="h-[46px] md:h-[50px] flex-1 md:flex-none bg-electric-blue text-white font-label-caps uppercase tracking-wider font-semibold px-6 rounded-xl border border-border-subtle shadow-[0_0_15px_rgba(59,130,246,0.4)] hover:shadow-[0_0_25px_rgba(59,130,246,0.6)] hover:-translate-y-0.5 transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
+                          <button onClick={handleRunScan} className="h-[48px] flex-1 md:flex-none bg-[#8ab4f8] text-[#202124] font-medium px-7 rounded-full shadow-sm hover:shadow-md transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
                             <span className="material-symbols-outlined text-[20px]">data_usage</span> Scan
                           </button>
                         )}
 
-                        <button onClick={handleReset} disabled={isScanning} title="Clear Latest Scan View" className="h-[46px] md:h-[50px] bg-surface-solid text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle shadow-sm hover:shadow-md font-label-caps text-xs uppercase tracking-widest px-4 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <button onClick={handleReset} disabled={isScanning} title="Clear Latest Scan View" className="h-[48px] w-[48px] bg-input-bg text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle rounded-full transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed">
                           <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
                         </button>
                       </>
@@ -1615,55 +2184,50 @@ function App() {
                 </div>
               </motion.div>
 
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-4 md:gap-6">
+              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
                 {[
-                  { label: "Last Scan", value: lastScanTime, icon: "schedule", color: "text-primary", glow: "bg-primary" },
-                  { id: "competitors", label: "Competitors", value: displayStats.competitors, icon: "corporate_fare", color: "text-secondary", glow: "bg-secondary" },
-                  { id: "publishers", label: "Publishers", value: displayStats.accounts, icon: "account_box", color: "text-tertiary-container", glow: "bg-tertiary-container" },
-                  { id: "games", label: "Games", value: displayStats.games, icon: "sports_esports", color: "text-electric-blue", glow: "bg-electric-blue" }
+                  { label: "Last scan", value: lastScanTime, icon: "schedule", tone: "text-[#8ab4f8]", iconBg: "bg-[#8ab4f8]/10", note: "Most recent run" },
+                  { id: "competitors", label: "Competitors", value: displayStats.competitors, icon: "groups", tone: "text-[#81c995]", iconBg: "bg-[#81c995]/10", note: viewMode === "latest" ? "In latest scan" : "Tracked groups" },
+                  { id: "publishers", label: "Publishers", value: displayStats.accounts, icon: "business_center", tone: "text-[#fdd663]", iconBg: "bg-[#fdd663]/10", note: viewMode === "latest" ? "In latest scan" : "Discovered accounts" },
+                  { id: "games", label: "Games", value: displayStats.games, icon: "sports_esports", tone: "text-[#8ab4f8]", iconBg: "bg-[#8ab4f8]/10", note: viewMode === "latest" ? "In latest scan" : "Unique titles" }
                 ].map((stat) => {
                   const isExpandable = Boolean(stat.id);
 
                   return (
-                    <motion.div
+                    <motion.button
+                      type="button"
                       key={stat.label}
                       variants={FADE_UP}
-                      whileHover={isExpandable ? { y: -5, scale: 1.01, transition: { duration: 0.18 } } : { y: -5, transition: { duration: 0.2 } }}
-                      whileTap={isExpandable ? { scale: 0.985 } : undefined}
+                      whileTap={isExpandable ? { scale: 0.99 } : undefined}
                       onClick={() => isExpandable && openStatPanel(stat.id)}
-                      onKeyDown={(event) => {
-                        if (isExpandable && (event.key === "Enter" || event.key === " ")) {
-                          event.preventDefault();
-                          openStatPanel(stat.id);
-                        }
-                      }}
-                      role={isExpandable ? "button" : undefined}
-                      tabIndex={isExpandable ? 0 : undefined}
-                      aria-label={isExpandable ? `Open ${stat.label} list` : undefined}
+                      disabled={!isExpandable}
                       className={cn(
-                        "bg-surface-glass backdrop-blur-xl rounded-2xl p-4 md:p-6 shadow-lg border border-border-subtle relative overflow-hidden group transition-[box-shadow,border-color] hover:shadow-xl flex flex-col justify-between outline-none",
-                        isExpandable ? "cursor-pointer hover:border-electric-blue/30 focus-visible:ring-2 focus-visible:ring-electric-blue/50" : "cursor-default"
+                        "bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between transition-colors outline-none",
+                        isExpandable ? "cursor-pointer hover:bg-input-bg/45 focus-visible:ring-2 focus-visible:ring-electric-blue/40" : "cursor-default"
                       )}
                     >
-                      <div className={cn("absolute -right-8 -top-8 w-32 h-32 rounded-full blur-[50px] transition-all duration-500 opacity-20 group-hover:opacity-40", stat.glow)}></div>
-                      <div className="flex items-center justify-between gap-3 relative z-10">
-                        <div className="flex items-center gap-2 md:gap-3 mb-2 md:mb-4 min-w-0">
-                          <div className={cn("w-7 h-7 md:w-10 md:h-10 rounded-lg md:rounded-xl bg-surface-solid shadow-sm border border-border-subtle flex items-center justify-center flex-shrink-0", stat.color)}><span className="material-symbols-outlined text-[16px] md:text-[24px]">{stat.icon}</span></div>
-                          <span className="font-label-caps text-text-muted uppercase tracking-widest text-[9px] md:text-[11px] font-bold truncate">{stat.label}</span>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", stat.iconBg, stat.tone)}>
+                          <span className="material-symbols-outlined text-[20px]">{stat.icon}</span>
                         </div>
-                        {isExpandable && (
-                          <span className="material-symbols-outlined text-[17px] md:text-[19px] text-text-muted group-hover:text-electric-blue group-hover:translate-x-0.5 transition-all mb-2 md:mb-4">arrow_outward</span>
-                        )}
+                        {isExpandable && <span className="material-symbols-outlined text-[18px] text-text-muted">chevron_right</span>}
                       </div>
-                      <div className={cn("font-mono text-2xl md:text-3xl font-black relative z-10", stat.color)}>{stat.value}</div>
-                    </motion.div>
+
+                      <div className="mt-5">
+                        <p className="text-[10px] md:text-[11px] text-text-muted font-medium">{stat.label}</p>
+                        <div className="flex items-end justify-between gap-2 mt-1">
+                          <span className="text-2xl md:text-3xl font-medium text-text-main tracking-tight">{stat.value}</span>
+                          <span className="text-[9px] md:text-[10px] text-text-muted text-right hidden sm:block">{stat.note}</span>
+                        </div>
+                      </div>
+                    </motion.button>
                   );
                 })}
               </div>
 
               <DashboardTelemetry historyData={historyData} isDarkMode={isDarkMode} />
 
-              <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-6 md:gap-8 mt-2 md:mt-4">
+              <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-5">
                 <TrendingTargets
                   sortedTrending={sortedTrending}
                   trendingSort={trendingSort}
@@ -1681,6 +2245,8 @@ function App() {
                   onGameClick={handleGameClick}
                   onNukeCompetitorData={handleNukeCompetitorData}
                   onNukePublisherData={handleNukePublisherData}
+                  onDeleteGame={handleDeleteGame}
+                  isScanning={isScanning}
                 />
               </motion.div>
             </motion.div>
@@ -1691,8 +2257,8 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-6 md:gap-8">
               {/* Page Title (Scrolls away naturally) */}
               <div>
-                <h1 className="font-headline-lg text-2xl md:text-3xl text-text-main tracking-tight uppercase">
-                  Master Directory {viewMode === 'latest' && <span className="text-emerald-metric text-sm md:text-lg ml-2 font-bold tracking-widest bg-emerald-metric/10 px-2 md:px-3 py-1 rounded-lg border border-emerald-metric/20 shadow-sm">● LATEST</span>}
+                <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
+                  Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15">● Latest</span>}
                 </h1>
                 <p className="font-body-sm md:font-body-md text-text-muted mt-1">
                   Full database index of all intercepted competitors, publishers, and games.
@@ -1743,10 +2309,75 @@ function App() {
 
               {(directoryFilter === "all" || directoryFilter === "games") && filteredGames.length > 0 && (
                 <div className="space-y-4">
-                  <h3 className="font-label-caps text-xs text-text-muted uppercase tracking-widest font-bold flex items-center gap-2"><span className="material-symbols-outlined text-electric-blue text-[18px]">sports_esports</span> Mobile Games</h3>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3">
+                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
+                      <span className="material-symbols-outlined text-electric-blue text-[18px]">sports_esports</span> Mobile Games
+                    </h3>
+
+                    <div className="relative self-start sm:self-auto">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveDropdown(activeDropdown === "gameSort" ? null : "gameSort");
+                        }}
+                        className="h-9 px-3 rounded-xl bg-surface-solid border border-border-subtle text-text-main hover:bg-input-bg transition-colors flex items-center gap-2 text-[10px] md:text-xs font-medium min-w-[138px] justify-between"
+                        title="Sort directory games"
+                      >
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span className="material-symbols-outlined text-[15px] text-electric-blue">sort</span>
+                          <span className="truncate">{DIRECTORY_GAME_SORT_OPTIONS.find(option => option.id === directoryGameSort)?.label || "Ad Activity"}</span>
+                        </span>
+                        <span className="material-symbols-outlined text-[15px] text-text-muted">expand_more</span>
+                      </button>
+
+                      <AnimatePresence>
+                        {activeDropdown === "gameSort" && (
+                          <motion.div
+                            variants={dropDownAnim}
+                            initial="hidden"
+                            animate="show"
+                            exit="exit"
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute top-full right-0 mt-1 w-44 bg-surface-solid border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50 py-1"
+                          >
+                            {DIRECTORY_GAME_SORT_OPTIONS.map(option => (
+                              <button
+                                key={option.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDirectoryGameSort(option.id);
+                                  setActiveDropdown(null);
+                                }}
+                                className={cn(
+                                  "w-full text-left px-3 py-2 text-xs font-medium transition-colors",
+                                  directoryGameSort === option.id
+                                    ? "bg-electric-blue/10 text-electric-blue"
+                                    : "text-text-muted hover:text-text-main hover:bg-input-bg"
+                                )}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
-                    {filteredGames.map(game => (
-                      <motion.div whileHover={{ y: -4 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:shadow-lg transition-all cursor-pointer group flex flex-col relative">
+                    {sortedDirectoryGames.map(game => (
+                      <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
+                        {isAdmin && (
+                          <button
+                            onClick={(e) => handleDeleteGame(e, game)}
+                            disabled={isScanning}
+                            className="absolute top-3 right-3 z-20 w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 shadow-md transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                            title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
+                            aria-label={`Delete ${game.title || game.package_name || "game"}`}
+                          >
+                            <span className="material-symbols-outlined text-[17px]">delete</span>
+                          </button>
+                        )}
                         {game.header_image && (
                           <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
                             <img src={game.header_image} alt={game.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
@@ -1755,10 +2386,10 @@ function App() {
                         )}
                         <div className="p-4 md:p-5 flex-1 flex flex-col justify-between relative z-10">
                           <div className="flex gap-3 md:gap-4 items-start">
-                            <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-surface-solid border border-border-subtle overflow-hidden flex-shrink-0 shadow-sm group-hover:shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-shadow">
+                            <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-surface-solid border border-border-subtle overflow-hidden flex-shrink-0 shadow-sm">
                               {game.icon ? <img src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted flex h-full items-center justify-center">sports_esports</span>}
                             </div>
-                            <div className="min-w-0 flex-1">
+                            <div className="min-w-0 flex-1 pr-8">
                               <h4 className="font-body-sm md:font-body-md font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h4>
                               <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">{game.publisher_name}</p>
                               <p className="font-mono text-[9px] md:text-[10px] text-text-muted/70 truncate mt-0.5">{game.package_name}</p>
@@ -1766,10 +2397,10 @@ function App() {
                           </div>
                           
                           <div className="mt-3 md:mt-4 pt-3 md:pt-4 border-t border-border-subtle/50 flex items-center justify-between">
-                            <span className="font-mono text-[10px] md:text-xs font-semibold text-electric-blue drop-shadow-[0_0_2px_rgba(59,130,246,0.5)]">{game.ad_count || 1} Active Ads</span>
+                            <span className="font-mono text-[10px] md:text-xs font-medium text-electric-blue">{viewMode === "latest" ? `${game.ad_count || 0} Ads Seen` : `${game.ad_count || 0} Detections`}</span>
                             <div className="flex items-center gap-2">
-                              {game.installs && <span className="text-[9px] md:text-[10px] font-mono font-bold bg-emerald-metric/10 text-emerald-metric px-1.5 md:px-2 py-0.5 rounded shadow-sm">{game.installs}</span>}
-                              {Number(game.rating) > 0 && <span className="text-[9px] md:text-[10px] font-mono font-bold bg-tertiary-container/10 text-tertiary-container px-1.5 md:px-2 py-0.5 rounded flex items-center gap-0.5 shadow-sm">⭐ {Number(game.rating).toFixed(1)}</span>}
+                              {game.installs && <span className="text-[9px] md:text-[10px] font-mono font-bold bg-emerald-metric/10 text-emerald-metric px-1.5 md:px-2 py-0.5 rounded-full">{game.installs}</span>}
+                              {Number(game.rating) > 0 && <span className="text-[9px] md:text-[10px] font-mono font-bold bg-tertiary-container/10 text-tertiary-container px-1.5 md:px-2 py-0.5 rounded-full flex items-center gap-0.5">⭐ {Number(game.rating).toFixed(1)}</span>}
                             </div>
                           </div>
                         </div>
@@ -1782,7 +2413,7 @@ function App() {
               {(directoryFilter === "all" || directoryFilter === "publishers") && processedAccounts.length > 0 && (
                 <div className="space-y-4">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 md:gap-4">
-                    <h3 className="font-label-caps text-xs text-text-muted uppercase tracking-widest font-bold flex items-center gap-2">
+                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
                       <span className="material-symbols-outlined text-secondary text-[18px]">folder</span> Publisher Accounts
                     </h3>
                     
@@ -1851,7 +2482,7 @@ function App() {
 
               {(directoryFilter === "all" || directoryFilter === "competitors") && filteredCompetitors.length > 0 && (
                 <div className="space-y-4">
-                  <h3 className="font-label-caps text-xs text-text-muted uppercase tracking-widest font-bold flex items-center gap-2"><span className="material-symbols-outlined text-primary text-[18px]">corporate_fare</span> Competitor Entities</h3>
+                  <h3 className="text-xs text-text-muted font-medium flex items-center gap-2"><span className="material-symbols-outlined text-primary text-[18px]">corporate_fare</span> Competitor Entities</h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
                     {filteredCompetitors.map(comp => (
                       <motion.div whileHover={{ y: -2 }} key={comp.id} className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-xl p-4 md:p-5 shadow-sm flex items-center justify-between hover:shadow-md transition-all group">
@@ -1891,7 +2522,7 @@ function App() {
                 {/* FORMS (ADMIN ONLY) */}
                 {isAdmin && (
                   <motion.div variants={FADE_UP} className="lg:col-span-4 space-y-6 md:space-y-8">
-                    <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
+                    <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm relative overflow-hidden group">
                       <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-secondary/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
                       <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-secondary text-[24px]">person_add</span> Save Competitor</h2>
                       <form onSubmit={handleSaveCompetitor} className="space-y-4 relative z-10">
@@ -1901,7 +2532,7 @@ function App() {
                       </form>
                     </div>
                     
-                    <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
+                    <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm relative overflow-hidden group">
                       <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-primary/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
                       <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-primary text-[24px]">format_list_bulleted_add</span> Create Batch List</h2>
                       <form onSubmit={handleCreateList} className="space-y-4 relative z-10">
@@ -1911,7 +2542,7 @@ function App() {
                       </form>
                     </div>
 
-                    <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl relative overflow-hidden group">
+                    <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm relative overflow-hidden group">
                       <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-tertiary-container/10 blur-[40px] pointer-events-none transition-opacity opacity-50 group-hover:opacity-100"></div>
                       <h2 className="text-base font-bold text-text-main mb-5 flex items-center gap-2 uppercase tracking-wide"><span className="material-symbols-outlined text-tertiary-container text-[24px]">contact_mail</span> Add Recipient</h2>
                       <form onSubmit={handleSaveEmailList} className="space-y-4 relative z-10">
@@ -1925,7 +2556,7 @@ function App() {
 
                 {/* LISTS */}
                 <motion.div variants={FADE_UP} className={cn("space-y-6 md:space-y-8", isAdmin ? "lg:col-span-8" : "lg:col-span-12")}>
-                  <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 min-h-[250px] shadow-xl">
+                  <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 min-h-[250px] shadow-sm">
                     <h2 className="font-label-caps text-xs text-text-muted uppercase tracking-widest mb-5 font-bold flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">person</span> Saved Competitors</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {savedCompetitors.map((comp) => (
@@ -1940,34 +2571,65 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 min-h-[250px] shadow-xl">
-                    <h2 className="font-label-caps text-xs text-text-muted uppercase tracking-widest mb-5 font-bold flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">view_list</span> Batch Lists</h2>
+                  <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-5 md:p-6 min-h-[250px] shadow-sm">
+                    <div className="flex items-center gap-2 mb-5">
+                      <span className="material-symbols-outlined text-electric-blue text-[20px]">view_list</span>
+                      <div>
+                        <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Batch lists</h2>
+                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Reusable groups of advertiser IDs for multi-target scans.</p>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {targetLists.map((list) => (
-                        <motion.div whileHover={{ y: -2 }} key={list.id} className="bg-surface-solid border border-border-subtle rounded-xl p-5 flex flex-col transition-all group shadow-sm">
-                          <div className="flex justify-between items-start mb-4">
-                            <h3 className="text-base font-bold text-text-main truncate pr-4 uppercase tracking-wide">{list.name}</h3>
-                            {isAdmin ? (
-                              <button onClick={() => handleToggleList(list.id, list.is_active)} className={cn("w-12 h-6 rounded-full flex items-center px-1 transition-colors border shadow-sm flex-shrink-0", list.is_active ? "bg-emerald-metric border-emerald-metric" : "bg-surface-glass border-border-subtle")}><div className={cn("w-4 h-4 rounded-full bg-white shadow transition-transform", list.is_active ? "translate-x-6" : "translate-x-0")}></div></button>
-                            ) : (
-                              <span className={cn("text-[9px] px-2 py-0.5 rounded font-mono font-bold uppercase", list.is_active ? "bg-emerald-metric/10 text-emerald-metric border border-emerald-metric/30" : "bg-surface-glass text-text-muted")}>
-                                {list.is_active ? "Active" : "Disabled"}
-                              </span>
+                        <motion.div
+                          key={list.id}
+                          className="group bg-surface-solid border border-border-subtle rounded-2xl p-4 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.025]"
+                        >
+                          <div className="flex items-start justify-between gap-3 mb-3">
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-semibold text-text-main truncate">{list.name}</h3>
+                              <p className="text-[10px] text-text-muted mt-0.5">
+                                {(list.targets?.length || 0)} {(list.targets?.length || 0) === 1 ? "target" : "targets"}
+                              </p>
+                            </div>
+
+                            {isAdmin && (
+                              <button
+                                onClick={() => handleDeleteList(list.id)}
+                                className="w-8 h-8 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-60 group-hover:opacity-100 focus:opacity-100 transition-all flex-shrink-0"
+                                title="Delete batch list"
+                                aria-label={`Delete ${list.name}`}
+                              >
+                                <span className="material-symbols-outlined text-[17px]">delete</span>
+                              </button>
                             )}
                           </div>
-                          <div className="bg-input-bg border border-border-subtle rounded-lg p-3 h-20 overflow-y-auto font-mono text-xs text-text-muted font-semibold mb-4 shadow-inner">
-                            {list.targets.map((t, i) => (<div key={i} className="flex items-center gap-2 mb-1.5"><span className="w-1.5 h-1.5 bg-border-subtle rounded-full flex-shrink-0"></span> <span className="truncate">{t}</span></div>))}
+
+                          <div className="bg-input-bg/70 border border-border-subtle rounded-xl p-3 max-h-28 overflow-y-auto custom-scrollbar">
+                            {(list.targets || []).map((target, index) => (
+                              <div key={`${target}-${index}`} className="flex items-center gap-2 py-1 text-[10px] md:text-[11px] text-text-muted font-mono">
+                                <span className="w-1 h-1 rounded-full bg-text-muted/40 flex-shrink-0"></span>
+                                <span className="truncate">{target}</span>
+                              </div>
+                            ))}
                           </div>
-                          {isAdmin && (
-                            <button onClick={() => handleDeleteList(list.id)} className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle font-label-caps text-xs uppercase tracking-widest font-bold py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-0 group-hover:opacity-100"><span className="material-symbols-outlined text-[18px]">delete</span> Delete List</button>
-                          )}
                         </motion.div>
                       ))}
-                      {targetLists.length === 0 && <div className="col-span-full text-sm text-text-muted py-6 text-center italic border-2 border-dashed border-border-subtle rounded-xl">No batch lists created.</div>}
+
+                      {targetLists.length === 0 && (
+                        <div className="col-span-full rounded-2xl border border-dashed border-border-subtle px-5 py-8 text-center">
+                          <div className="w-10 h-10 rounded-full bg-input-bg flex items-center justify-center mx-auto mb-2 text-text-muted">
+                            <span className="material-symbols-outlined text-[20px]">playlist_add</span>
+                          </div>
+                          <p className="text-xs font-medium text-text-main">No batch lists yet</p>
+                          <p className="text-[10px] text-text-muted mt-1">Create one to scan multiple advertisers together.</p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 min-h-[250px] shadow-xl">
+                  <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 min-h-[250px] shadow-sm">
                     <h2 className="font-label-caps text-xs text-text-muted uppercase tracking-widest mb-5 font-bold flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">mail</span> Report Recipients</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {emailLists.map((list) => (
@@ -1993,41 +2655,41 @@ function App() {
           {activeTab === "settings" && isAdmin && (
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-4xl mx-auto">
               <div>
-                <h1 className="font-headline-lg text-2xl md:text-3xl text-text-main tracking-tight uppercase font-bold">System Settings</h1>
+                <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">System Settings</h1>
                 <p className="font-body-sm md:font-body-md text-text-muted mt-1">Configure Google Sheets integrations and PDF report templates.</p>
               </div>
 
               <form onSubmit={handleSaveSettings} className="space-y-4 md:space-y-6">
-                <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl space-y-6">
-                  <h3 className="text-base font-bold text-text-main uppercase tracking-wide flex items-center gap-2">
-                    <span className="material-symbols-outlined text-electric-blue drop-shadow-[0_0_8px_rgba(59,130,246,0.5)] text-[24px]">cloud_sync</span> Cloud Config
+                <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm space-y-6">
+                  <h3 className="text-base font-semibold text-text-main flex items-center gap-2">
+                    <span className="material-symbols-outlined text-electric-blue text-[22px]">cloud_sync</span> Cloud Config
                   </h3>
 
                   <div className="space-y-2">
-                    <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest block font-bold">Google Spreadsheet ID</label>
-                    <input type="text" value={settings.google_sheet_id} onChange={(e) => setSettings(s => ({ ...s, google_sheet_id: e.target.value }))} className="w-full bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 shadow-inner" placeholder="e.g. 1tQysvSfu..." />
+                    <label className="text-xs text-text-muted block font-medium">Google Spreadsheet ID</label>
+                    <input type="text" value={settings.google_sheet_id} onChange={(e) => setSettings(s => ({ ...s, google_sheet_id: e.target.value }))} className="w-full bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/40" placeholder="e.g. 1tQysvSfu..." />
                   </div>
                 </div>
 
-                <div className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-2xl p-6 shadow-xl space-y-6">
-                  <h3 className="text-base font-bold text-text-main uppercase tracking-wide flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary drop-shadow-[0_0_8px_rgba(245,158,11,0.5)] text-[24px]">description</span> PDF Template
+                <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm space-y-6">
+                  <h3 className="text-base font-semibold text-text-main flex items-center gap-2">
+                    <span className="material-symbols-outlined text-text-muted text-[22px]">description</span> PDF Template
                   </h3>
 
                   <div className="space-y-2">
-                    <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest block font-bold">Email Subject Header</label>
-                    <input type="text" value={settings.report_subject_template} onChange={(e) => setSettings(s => ({ ...s, report_subject_template: e.target.value }))} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 shadow-inner" />
+                    <label className="text-xs text-text-muted block font-medium">Email Subject Header</label>
+                    <input type="text" value={settings.report_subject_template} onChange={(e) => setSettings(s => ({ ...s, report_subject_template: e.target.value }))} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/40" />
                   </div>
 
                   <div className="space-y-2">
-                    <label className="font-label-caps text-xs text-text-muted uppercase tracking-widest block font-bold">Opening Notes</label>
-                    <textarea rows={3} value={settings.report_notes} onChange={(e) => setSettings(s => ({ ...s, report_notes: e.target.value }))} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 shadow-inner resize-none" />
+                    <label className="text-xs text-text-muted block font-medium">Opening Notes</label>
+                    <textarea rows={3} value={settings.report_notes} onChange={(e) => setSettings(s => ({ ...s, report_notes: e.target.value }))} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/40 resize-none" />
                   </div>
                 </div>
 
                 <div className="flex flex-col-reverse sm:flex-row items-center justify-between pt-2 gap-4 relative z-10">
                   {settingsStatus && <span className={cn("font-mono text-xs md:text-sm font-bold bg-surface-glass px-3 md:px-4 py-2 rounded-lg border border-border-subtle shadow-sm w-full sm:w-auto text-center", settingsStatus.includes("success") ? "text-emerald-metric" : "text-urgent-red")}>{settingsStatus}</span>}
-                  <button type="submit" disabled={isSavingSettings} className="w-full sm:w-auto bg-electric-blue text-white font-label-caps uppercase tracking-wider font-semibold py-3 px-6 md:py-3.5 md:px-8 rounded-xl shadow-[0_0_15px_rgba(59,130,246,0.4)] hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 disabled:opacity-50 text-[10px] md:text-xs">
+                  <button type="submit" disabled={isSavingSettings} className="w-full sm:w-auto bg-electric-blue text-white font-medium py-3 px-6 md:py-3.5 md:px-8 rounded-xl hover:bg-blue-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-50 text-[10px] md:text-xs">
                     <span className="material-symbols-outlined text-[18px] md:text-[20px]">{isSavingSettings ? 'sync' : 'save'}</span>
                     {isSavingSettings ? "Saving..." : "Save Config"}
                   </button>
@@ -2038,6 +2700,28 @@ function App() {
 
         </main>
       </div>
+
+      {/* MOBILE MATERIAL NAVIGATION BAR */}
+      <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-bg-base/95 backdrop-blur-xl border-t border-border-subtle px-2 pb-[env(safe-area-inset-bottom)]">
+        <div className="h-[72px] flex items-center justify-around">
+          {[
+            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+            { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "automated", icon: "track_changes", label: "Targets" },
+            ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
+          ].map((tab) => (
+            <button key={`mobile-${tab.id}`} type="button" onClick={() => setActiveTab(tab.id)} className="flex flex-col items-center gap-1 min-w-[64px]">
+              <span className={cn(
+                "w-14 h-8 rounded-full flex items-center justify-center transition-colors",
+                activeTab === tab.id ? "bg-primary-container text-on-primary-container" : "text-text-muted"
+              )}>
+                <span className="material-symbols-outlined text-[20px]">{tab.icon}</span>
+              </span>
+              <span className={cn("text-[9px] font-medium", activeTab === tab.id ? "text-text-main" : "text-text-muted")}>{tab.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
 
       {/* EXPANDABLE DASHBOARD STAT LISTS */}
       <AnimatePresence>
@@ -2140,7 +2824,7 @@ function App() {
                   {filteredStatItems.length === 0 ? (
                     <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-center text-text-muted px-6">
                       <span className="material-symbols-outlined text-4xl opacity-40 mb-2">search_off</span>
-                      <p className="font-label-caps uppercase tracking-widest text-xs font-bold">No matches found</p>
+                      <p className="text-xs font-medium font-bold">No matches found</p>
                       <p className="font-body-xs text-xs mt-1 opacity-70">Try a different search.</p>
                     </div>
                   ) : activeStatPanel === "competitors" ? (
@@ -2197,7 +2881,7 @@ function App() {
                             <p className="font-mono text-[9px] text-text-muted/70 truncate mt-1 hidden md:block">{game.package_name}</p>
                           </div>
                           <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                            {Number(game.ad_count) > 0 && <span className="font-label-caps text-[9px] md:text-[10px] font-bold text-urgent-red bg-urgent-red/10 border border-urgent-red/20 rounded-md px-2 py-0.5">+{game.ad_count} Ads</span>}
+                            {Number(game.ad_count) > 0 && <span className="font-label-caps text-[9px] md:text-[10px] font-bold text-urgent-red bg-urgent-red/10 border border-urgent-red/20 rounded-md px-2 py-0.5">{viewMode === "latest" ? `+${game.ad_count} Ads` : `${game.ad_count} Detections`}</span>}
                             <div className="flex items-center gap-1.5">
                               {getInstallCount(game) > 0 && <span className="font-mono text-[9px] md:text-[10px] font-bold text-emerald-metric bg-emerald-metric/10 border border-emerald-metric/20 rounded-md px-1.5 py-0.5">{game.installs || formatInstalls(getInstallCount(game))}</span>}
                               {getAgeText(game.released) && <span className="font-label-caps text-[9px] md:text-[10px] text-text-muted bg-surface-solid border border-border-subtle rounded-md px-1.5 py-0.5 uppercase">{getAgeText(game.released)}</span>}
@@ -2309,57 +2993,103 @@ function App() {
 
       <AnimatePresence>
         {isScanning && (
-          <motion.div 
-            initial={{ opacity: 0, y: 50, scale: 0.9 }} 
-            animate={{ opacity: 1, y: 0, scale: 1 }} 
-            exit={{ opacity: 0, y: 50, scale: 0.9 }} 
-            className="fixed bottom-20 md:bottom-6 left-4 right-4 md:left-auto md:right-6 z-[100] md:w-96 bg-surface-glass backdrop-blur-2xl border border-border-subtle rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className={cn(
+              "fixed bottom-20 md:bottom-6 left-4 right-4 md:left-auto md:right-6 z-[100] bg-surface-solid border border-border-subtle rounded-[22px] shadow-lg overflow-hidden",
+              isScanMinimized ? "md:w-[300px]" : "md:w-[370px]"
+            )}
           >
-            <div className="p-3 md:p-4 flex items-center justify-between border-b border-border-subtle bg-surface-solid/80">
-              <div className="flex items-center gap-2 md:gap-3 min-w-0">
-                <div className="w-7 h-7 md:w-8 md:h-8 rounded-lg bg-electric-blue/10 border border-electric-blue/20 flex items-center justify-center text-electric-blue flex-shrink-0 shadow-inner">
-                  <span className="material-symbols-outlined text-[16px] md:text-[18px] animate-spin">sync</span>
+            <div className="px-4 py-3.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="relative w-9 h-9 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0 overflow-hidden">
+                  <motion.span
+                    className="absolute w-7 h-7 rounded-full border border-electric-blue/55"
+                    animate={{ scale: [0.65, 1.15], opacity: [0.7, 0] }}
+                    transition={{ duration: 1.35, repeat: Infinity, ease: "easeOut" }}
+                  />
+                  <span className="w-2.5 h-2.5 rounded-full bg-electric-blue shadow-[0_0_0_3px_rgba(59,130,246,0.12)]"></span>
                 </div>
+
                 <div className="min-w-0">
-                  <h4 className="font-headline-lg text-xs md:text-sm font-bold text-text-main flex items-center gap-1.5 md:gap-2 truncate drop-shadow-sm">
-                    Deep Scan Active <span className="w-1.5 h-1.5 bg-emerald-metric rounded-full animate-pulse flex-shrink-0 shadow-sm"></span>
-                  </h4>
-                  <p className="font-mono text-[9px] md:text-[10px] text-electric-blue truncate">
-                    {scanProgress.target} ({scanProgress.targetIndex}/{scanProgress.totalTargets})
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs md:text-sm font-medium text-text-main">Scanning</h4>
+                    <div className="flex items-center gap-1" aria-label="Scan active">
+                      {[0, 1, 2].map((dot) => (
+                        <motion.span
+                          key={dot}
+                          className="w-1 h-1 rounded-full bg-electric-blue"
+                          animate={{ opacity: [0.25, 1, 0.25], y: [0, -2, 0] }}
+                          transition={{ duration: 1.05, repeat: Infinity, delay: dot * 0.14, ease: "easeInOut" }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-[10px] md:text-[11px] text-text-muted truncate mt-0.5">
+                    {scanProgress.target} · {scanProgress.targetIndex}/{scanProgress.totalTargets}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-1 text-text-muted flex-shrink-0">
+
+              <div className="flex items-center gap-0.5 flex-shrink-0">
                 {isAdmin && (
-                  <button onClick={handleCancelScan} className="p-1.5 hover:bg-urgent-red/10 text-urgent-red rounded-lg transition-colors bg-urgent-red/5" title="Abort Scan">
-                    <span className="material-symbols-outlined text-[16px] md:text-[18px]">stop_circle</span>
+                  <button
+                    onClick={handleCancelScan}
+                    className="w-8 h-8 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center transition-colors"
+                    title="Cancel scan"
+                    aria-label="Cancel scan"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">stop_circle</span>
                   </button>
                 )}
-                <button onClick={() => setIsScanMinimized(!isScanMinimized)} className="p-1.5 hover:bg-input-bg hover:text-text-main rounded-lg transition-colors bg-surface-solid" title={isScanMinimized ? "Expand" : "Minimize"}>
-                  <span className="material-symbols-outlined text-[16px] md:text-[18px]">{isScanMinimized ? 'open_in_full' : 'minimize'}</span>
+                <button
+                  onClick={() => setIsScanMinimized(!isScanMinimized)}
+                  className="w-8 h-8 rounded-full text-text-muted hover:text-text-main hover:bg-black/[0.035] dark:hover:bg-white/[0.045] flex items-center justify-center transition-colors"
+                  title={isScanMinimized ? "Expand" : "Minimize"}
+                  aria-label={isScanMinimized ? "Expand scan progress" : "Minimize scan progress"}
+                >
+                  <span className="material-symbols-outlined text-[18px]">{isScanMinimized ? "expand_content" : "minimize"}</span>
                 </button>
               </div>
             </div>
 
-            <AnimatePresence>
+            <AnimatePresence initial={false}>
               {!isScanMinimized && (
-                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="flex flex-col gap-2.5 md:gap-3 p-3 md:p-4 bg-surface-solid/30">
-                  <div className="flex justify-between items-center text-[10px] md:text-[11px]">
-                    <span className="font-body-sm text-text-muted">
-                      Ads: <span className="font-mono font-bold text-text-main">{scanProgress.currentAd}</span> / {scanProgress.totalAds} <span className="text-border-subtle/50 ml-0.5">({scanPercentage}%)</span>
-                    </span>
-                    <div className="bg-emerald-metric/10 border border-emerald-metric/20 px-2 py-0.5 rounded font-mono font-bold text-emerald-metric flex items-center gap-1 shadow-inner">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-metric animate-ping"></span> {scanProgress.timeRemaining}
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.16 }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-4 pb-4">
+                    <div className="relative h-1.5 bg-input-bg rounded-full overflow-hidden">
+                      <div
+                        className="absolute inset-y-0 left-0 bg-electric-blue rounded-full transition-[width] duration-300 ease-out"
+                        style={{ width: `${scanPercentage}%` }}
+                      ></div>
+                      <motion.div
+                        className="absolute inset-y-0 w-14 bg-gradient-to-r from-transparent via-electric-blue/55 to-transparent"
+                        animate={{ x: [-70, 390] }}
+                        transition={{ duration: 1.45, repeat: Infinity, ease: "linear" }}
+                      />
                     </div>
-                  </div>
 
-                  <div className="w-full h-1.5 md:h-2 bg-input-bg rounded-full overflow-hidden p-0.5 border border-border-subtle shadow-inner">
-                    <div className="h-full bg-electric-blue rounded-full shadow-[0_0_10px_rgba(59,130,246,0.8)] transition-all duration-300" style={{ width: `${scanPercentage}%` }}></div>
-                  </div>
+                    <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
+                      <span>
+                        <span className="text-text-main font-medium">{scanProgress.currentAd}</span> of {scanProgress.totalAds} ads
+                        <span className="ml-1.5">· {scanPercentage}%</span>
+                      </span>
+                      <span className="font-mono tabular-nums flex-shrink-0">{scanProgress.timeRemaining}</span>
+                    </div>
 
-                  <div className="bg-surface-glass border border-border-subtle rounded-lg md:rounded-xl px-2.5 md:px-3 py-1.5 md:py-2 font-mono text-[9px] md:text-[10px] text-text-muted flex items-center gap-1.5 md:gap-2 shadow-inner">
-                    <span className="material-symbols-outlined text-secondary text-[12px] md:text-[14px] flex-shrink-0">terminal</span>
-                    <span className="truncate">{scanProgress.logs[scanProgress.logs.length - 1] || "Initializing..."}</span>
+                    <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
+                      <span className="material-symbols-outlined text-[14px] flex-shrink-0">terminal</span>
+                      <span className="truncate">{scanProgress.logs[scanProgress.logs.length - 1] || "Preparing scan…"}</span>
+                    </div>
                   </div>
                 </motion.div>
               )}
@@ -2372,35 +3102,110 @@ function App() {
       <AnimatePresence>
         {isGuideOpen && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 px-safe pt-safe">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/65" onClick={() => setIsGuideOpen(false)} />
-            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="relative w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
-              <div className="p-4 md:p-6 border-b border-border-subtle flex items-center justify-between bg-surface-glass sticky top-0 z-10">
-                <h2 className="font-headline-lg text-lg md:text-xl text-text-main font-bold flex items-center gap-2"><span className="material-symbols-outlined text-electric-blue">radar</span> How Atlas Works</h2>
-                <button onClick={() => setIsGuideOpen(false)} className="w-8 h-8 rounded-full hover:bg-input-bg flex items-center justify-center transition-colors text-text-muted hover:text-text-main"><span className="material-symbols-outlined text-[20px]">close</span></button>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/55 backdrop-blur-[2px]"
+              onClick={() => setIsGuideOpen(false)}
+            />
+
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 10 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className="relative w-full max-w-2xl bg-surface-solid border border-border-subtle rounded-[28px] shadow-xl overflow-hidden flex flex-col max-h-[86vh]"
+            >
+              <div className="px-5 md:px-6 py-5 border-b border-border-subtle flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center flex-shrink-0">
+                    <span className="material-symbols-outlined text-[20px]">explore</span>
+                  </div>
+                  <div>
+                    <h2 className="text-lg md:text-xl text-text-main font-semibold tracking-tight">How Atlas works</h2>
+                    <p className="text-[11px] md:text-xs text-text-muted mt-1">A quick guide to scanning, organizing, and reviewing competitor intelligence.</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsGuideOpen(false)}
+                  className="w-9 h-9 rounded-full hover:bg-black/[0.035] dark:hover:bg-white/[0.045] flex items-center justify-center transition-colors text-text-muted hover:text-text-main flex-shrink-0"
+                  aria-label="Close guide"
+                >
+                  <span className="material-symbols-outlined text-[20px]">close</span>
+                </button>
               </div>
-              <div className="p-4 md:p-6 overflow-y-auto custom-scrollbar space-y-8">
-                <div className="space-y-2.5">
-                  <h3 className="font-label-caps text-xs text-electric-blue uppercase tracking-widest font-bold">1. The Core Premise</h3>
-                  <p className="font-body-sm text-text-muted leading-relaxed">Atlas is a competitive intelligence engine. It monitors competitor ad campaigns, reverse-engineers their Google Play bundle IDs from live creatives, and maps their publisher entity networks.</p>
-                </div>
-                <div className="space-y-2.5">
-                  <h3 className="font-label-caps text-xs text-secondary uppercase tracking-widest font-bold">2. How to Run a Scan</h3>
-                  <ul className="space-y-3 font-body-sm text-text-muted">
-                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Brand Search:</span>Enter a name (e.g., <code className="bg-input-bg border border-border-subtle rounded px-1.5 py-0.5 font-mono text-[11px] text-text-main">Voodoo</code>) to search Google's Transparency records.</li>
-                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Direct ID:</span>Paste a Google Advertiser ID (e.g., <code className="bg-input-bg border border-border-subtle rounded px-1.5 py-0.5 font-mono text-[11px] text-text-main">AR01234...</code>) for direct deep scanning.</li>
-                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Target Lists:</span>Save competitors or build Batch Lists in the Targets tab to scan them with one click.</li>
-                  </ul>
-                </div>
-                <div className="space-y-2.5">
-                  <h3 className="font-label-caps text-xs text-tertiary-container uppercase tracking-widest font-bold">3. Managing Data</h3>
-                  <ul className="space-y-3 font-body-sm text-text-muted">
-                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Live Directory:</span>Expand groups and publishers to view specific games.</li>
-                    <li className="leading-relaxed"><span className="text-text-main font-bold pr-1">• Data Cleanup:</span>Click the <span className="material-symbols-outlined text-[14px] align-middle text-text-main bg-input-bg rounded p-0.5 border border-border-subtle">delete</span> trash icon next to any Competitor or Publisher to permanently wipe their test data from the database.</li>
-                  </ul>
+
+              <div className="px-5 md:px-6 py-5 overflow-y-auto custom-scrollbar">
+                <div className="space-y-6">
+                  <section className="grid grid-cols-[36px_1fr] gap-3">
+                    <div className="w-9 h-9 rounded-full bg-input-bg text-electric-blue flex items-center justify-center text-xs font-semibold">1</div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-text-main">What Atlas does</h3>
+                      <p className="text-xs md:text-sm text-text-muted leading-6 mt-1.5">
+                        Atlas monitors competitor advertising activity, resolves Google Play package IDs from live creatives, and organizes the discovered games under their publishers and competitor groups.
+                      </p>
+                    </div>
+                  </section>
+
+                  <div className="h-px bg-border-subtle"></div>
+
+                  <section className="grid grid-cols-[36px_1fr] gap-3">
+                    <div className="w-9 h-9 rounded-full bg-input-bg text-electric-blue flex items-center justify-center text-xs font-semibold">2</div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-text-main">Run a scan</h3>
+                      <div className="mt-3 space-y-2">
+                        {[
+                          { icon: "search", title: "Brand search", text: "Enter a competitor name and Atlas will look for its Google Ads Transparency presence." },
+                          { icon: "fingerprint", title: "Advertiser ID", text: "Paste an AR advertiser ID when you already know the exact account you want to scan." },
+                          { icon: "playlist_play", title: "Batch list", text: "Choose a saved batch list to scan several advertiser IDs in sequence." },
+                        ].map((item) => (
+                          <div key={item.title} className="flex items-start gap-3 rounded-2xl border border-border-subtle p-3.5">
+                            <div className="w-8 h-8 rounded-full bg-input-bg flex items-center justify-center text-text-muted flex-shrink-0">
+                              <span className="material-symbols-outlined text-[17px]">{item.icon}</span>
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold text-text-main">{item.title}</p>
+                              <p className="text-[11px] md:text-xs text-text-muted leading-5 mt-0.5">{item.text}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  <div className="h-px bg-border-subtle"></div>
+
+                  <section className="grid grid-cols-[36px_1fr] gap-3">
+                    <div className="w-9 h-9 rounded-full bg-input-bg text-electric-blue flex items-center justify-center text-xs font-semibold">3</div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-text-main">Review and manage data</h3>
+                      <div className="mt-3 grid sm:grid-cols-2 gap-2.5">
+                        <div className="rounded-2xl border border-border-subtle p-3.5">
+                          <span className="material-symbols-outlined text-[18px] text-text-muted">account_tree</span>
+                          <p className="text-xs font-semibold text-text-main mt-2">Live Directory</p>
+                          <p className="text-[11px] text-text-muted leading-5 mt-1">Expand competitor groups and publishers to inspect the games Atlas has linked to them.</p>
+                        </div>
+                        <div className="rounded-2xl border border-border-subtle p-3.5">
+                          <span className="material-symbols-outlined text-[18px] text-text-muted">delete_sweep</span>
+                          <p className="text-xs font-semibold text-text-main mt-2">Data cleanup</p>
+                          <p className="text-[11px] text-text-muted leading-5 mt-1">Admins can remove individual games, publishers, or entire competitor groups when test data is no longer needed.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
                 </div>
               </div>
-              <div className="p-4 border-t border-border-subtle bg-surface-glass flex justify-end">
-                <button onClick={() => setIsGuideOpen(false)} className="bg-electric-blue text-white font-label-caps text-xs font-bold px-6 py-2.5 rounded-lg shadow-sm hover:shadow-md transition-all active:scale-[0.98]">Got It</button>
+
+              <div className="px-5 md:px-6 py-4 border-t border-border-subtle flex items-center justify-between gap-3">
+                <p className="text-[10px] md:text-[11px] text-text-muted hidden sm:block">You can reopen this guide anytime from the help icon.</p>
+                <button
+                  onClick={() => setIsGuideOpen(false)}
+                  className="ml-auto h-10 px-5 rounded-full bg-[#1a73e8] hover:bg-[#1765cc] text-white text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]/40"
+                >
+                  Done
+                </button>
               </div>
             </motion.div>
           </div>
