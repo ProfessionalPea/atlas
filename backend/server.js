@@ -4,7 +4,6 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor } = require("./GoogleAdsScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
-const EventEmitter = require('events');
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require('pg');
@@ -84,7 +83,6 @@ function verifySessionToken(token) {
 }
 
 const gplayRaw = require('google-play-scraper');
-const scanEvents = new EventEmitter();
 const gplay = gplayRaw.default || gplayRaw;
 
 const app = express();
@@ -177,8 +175,8 @@ app.get("/api/auth/me", (req, res) => {
 app.use("/api", (req, res, next) => {
   if (req.method === "OPTIONS") return next();
 
-  // Allow scan-stream to authenticate inside its own route handler
-  if (req.path === "/auth/login" || req.path === "/health" || req.path === "/scan-stream") {
+  // Public exceptions
+  if (req.path === "/auth/login" || req.path === "/health") {
     return next();
   }
 
@@ -207,8 +205,91 @@ app.use("/api", (req, res, next) => {
 let activeScanCancelled = false;
 let isScanRunning = false;
 
+function createIdleScanStatus() {
+  return {
+    scanId: null,
+    state: "idle",
+    running: false,
+    isComplete: false,
+    isCancelled: false,
+    isError: false,
+    fatalError: false,
+    target: "",
+    targetIndex: 0,
+    totalTargets: 0,
+    currentAd: 0,
+    totalAds: 0,
+    timeRemaining: "00:00",
+    logs: [],
+    packages: [],
+    competitorId: null,
+    startedAt: null,
+    finishedAt: null,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+let scanStatus = createIdleScanStatus();
+
+function updateScanStatus(patch = {}) {
+  const nextLog = typeof patch.log === "string" && patch.log.trim()
+    ? patch.log.trim()
+    : null;
+
+  const nextLogs = Array.isArray(patch.logs)
+    ? patch.logs.filter(Boolean).slice(-5)
+    : nextLog
+      ? [...(scanStatus.logs || []), nextLog].filter(Boolean).slice(-5)
+      : (scanStatus.logs || []);
+
+  scanStatus = {
+    ...scanStatus,
+    ...patch,
+    logs: nextLogs,
+    updatedAt: new Date().toISOString()
+  };
+
+  return scanStatus;
+}
+
+function beginScanStatus(limit) {
+  scanStatus = {
+    ...createIdleScanStatus(),
+    scanId: typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
+    state: "starting",
+    running: true,
+    target: "Initializing...",
+    targetIndex: 1,
+    totalTargets: 1,
+    currentAd: 0,
+    totalAds: Math.max(1, Number(limit) || 1),
+    timeRemaining: "Calculating...",
+    logs: ["> Booting Intelligence Node..."],
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  return scanStatus;
+}
+
+app.get("/api/scan-status", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(scanStatus);
+});
+
 app.post("/api/cancel-scan", (_req, res) => {
+  if (!isScanRunning) {
+    return res.json({ status: "idle", message: "No scan is currently running." });
+  }
+
   activeScanCancelled = true;
+  updateScanStatus({
+    state: "cancelling",
+    log: "> 🛑 Abort requested. Finishing the current scanner step..."
+  });
+
   res.json({ status: "success", message: "Abort signal sent." });
 });
 
@@ -339,31 +420,6 @@ app.delete("/api/publishers/:id/data", async (req, res) => {
   }
 });
 
-app.get("/api/scan-stream", (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no", // Disables buffering on Ngrok / Nginx proxies
-  });
-
-  if (res.flushHeaders) {
-    res.flushHeaders();
-  }
-
-  res.write(`data: ${JSON.stringify({ log: "> Secure SSE connection established..." })}\n\n`);
-
-  const sendProgress = (data) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
-  scanEvents.on("progress", sendProgress);
-
-  req.on("close", () => {
-    scanEvents.off("progress", sendProgress);
-  });
-});
-
 app.post("/api/scan", async (req, res) => {
   const { searchQuery, scanType, targetId, targetCountry, limit, sendReport, emailListId, reportEmail } = req.body;
   const customReportEmail = typeof reportEmail === "string" ? reportEmail.trim() : "";
@@ -378,8 +434,13 @@ app.post("/api/scan", async (req, res) => {
 
   activeScanCancelled = false;
   isScanRunning = true;
+  beginScanStatus(limit);
 
-  res.json({ status: "initiated", message: "Scan running in background." });
+  res.json({
+    status: "initiated",
+    message: "Scan running in background.",
+    scanId: scanStatus.scanId
+  });
 
   (async () => {
     try {
@@ -396,8 +457,23 @@ app.post("/api/scan", async (req, res) => {
 
       if (targets.length === 0) {
         isScanRunning = false;
-        return scanEvents.emit("progress", { isError: true, log: "> ❌ No scan targets specified." });
+        updateScanStatus({
+          state: "error",
+          running: false,
+          isError: true,
+          fatalError: true,
+          finishedAt: new Date().toISOString(),
+          timeRemaining: "00:00",
+          log: "> ❌ No scan targets specified."
+        });
+        return;
       }
+
+      updateScanStatus({
+        state: "running",
+        totalTargets: targets.length,
+        targetIndex: 1
+      });
 
       const fixUrl = (url) => url && url.startsWith('//') ? 'https:' + url : url;
       let allResults = [];
@@ -438,12 +514,30 @@ app.post("/api/scan", async (req, res) => {
 
         lastResolvedCompetitorId = competitorId;
 
+        updateScanStatus({
+          state: "running",
+          running: true,
+          target: targetDisplayName,
+          targetIndex: tIndex + 1,
+          totalTargets: targets.length,
+          currentAd: 0,
+          totalAds: Math.max(1, Number(limit) || 1),
+          timeRemaining: "Calculating...",
+          log: `> 🎯 Starting target ${tIndex + 1}/${targets.length}: ${targetDisplayName}`
+        });
+
         const results = await scanCompetitor(
           targetQuery, 
           targetCountry, 
           limit, 
           (progressData) => {
-            scanEvents.emit("progress", { ...progressData, target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length });
+            updateScanStatus({
+              ...progressData,
+              running: true,
+              target: targetDisplayName,
+              targetIndex: tIndex + 1,
+              totalTargets: targets.length
+            });
           }, 
           async () => {},
           () => activeScanCancelled
@@ -454,7 +548,7 @@ app.post("/api/scan", async (req, res) => {
         // Early exit: Target produced 0 Play Store packages/ads
         if (!results || results.length === 0) {
           console.log(`⚠️ [SCAN] No valid Play Store packages found for target: "${targetDisplayName}". Skipping downstream sync.`);
-          scanEvents.emit("progress", {
+          updateScanStatus({
             target: targetDisplayName,
             targetIndex: tIndex + 1,
             totalTargets: targets.length,
@@ -467,7 +561,19 @@ app.post("/api/scan", async (req, res) => {
         }
 
         const currentScanAdCounts = {};
-        scanEvents.emit("progress", { target: targetDisplayName, targetIndex: tIndex + 1, totalTargets: targets.length, currentAd: limit, totalAds: limit, timeRemaining: "00:00", log: `> 🗄️ Ingesting creative entities to Atlas database...` });
+        const completedAdsForTarget = Math.max(
+          0,
+          Number(scanStatus.totalAds) || Number(limit) || 0
+        );
+        updateScanStatus({
+          target: targetDisplayName,
+          targetIndex: tIndex + 1,
+          totalTargets: targets.length,
+          currentAd: completedAdsForTarget,
+          totalAds: completedAdsForTarget,
+          timeRemaining: "00:00",
+          log: `> 🗄️ Ingesting creative entities to Atlas database...`
+        });
 
         for (const pkg of results) {
           interceptedPackageSet.add(pkg);
@@ -573,10 +679,15 @@ app.post("/api/scan", async (req, res) => {
 
       if (activeScanCancelled) {
         isScanRunning = false;
-        return scanEvents.emit("progress", { 
-          isCancelled: true, 
-          log: `> 🛑 Process cleanly terminated by user.` 
+        updateScanStatus({
+          state: "cancelled",
+          running: false,
+          isCancelled: true,
+          timeRemaining: "00:00",
+          finishedAt: new Date().toISOString(),
+          log: `> 🛑 Process cleanly terminated by user.`
         });
+        return;
       }
 
       if (sendReport === true && isolatedScanData.length > 0) {
@@ -605,12 +716,19 @@ app.post("/api/scan", async (req, res) => {
 
       const totalPackages = interceptedPackageSet.size;
 
-      scanEvents.emit("progress", { 
-        isComplete: true, 
+      updateScanStatus({
+        state: "complete",
+        running: false,
+        isComplete: true,
+        isCancelled: false,
+        isError: false,
+        fatalError: false,
         target: "Batch Completed",
+        timeRemaining: "00:00",
         packages: Array.from(interceptedPackageSet),
         competitorId: lastResolvedCompetitorId,
-        log: totalPackages > 0 
+        finishedAt: new Date().toISOString(),
+        log: totalPackages > 0
           ? `> 🎉 Ingest complete. Synchronized ${allResults.length} records.`
           : `> ℹ️ Scan finished. No mobile game ad campaigns found for this target.`
       });
@@ -618,7 +736,15 @@ app.post("/api/scan", async (req, res) => {
     } catch (error) {
       console.error("Scan Execution Error:", error);
       isScanRunning = false;
-      scanEvents.emit("progress", { isError: true, log: `> ❌ Scan failed: ${error.message}` });
+      updateScanStatus({
+        state: "error",
+        running: false,
+        isError: true,
+        fatalError: true,
+        timeRemaining: "00:00",
+        finishedAt: new Date().toISOString(),
+        log: `> ❌ Scan failed: ${error.message}`
+      });
     }
   })();
 });

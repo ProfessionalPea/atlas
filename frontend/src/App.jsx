@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "./lib/utils";
@@ -401,7 +401,7 @@ function App() {
   const [activeDropdown, setActiveDropdown] = useState(null);
   const [sourceSearch, setSourceSearch] = useState("");
   
-  const [lastScanTime, setLastScanTime] = useState("Never");
+  const [lastScanTime, setLastScanTime] = useState(() => localStorage.getItem("atlas_last_scan_time") || "Never");
   const [scanQuery, setScanQuery] = useState("");
   const [scanLimit, setScanLimit] = useState(20);
   const [selectedSource, setSelectedSource] = useState("manual"); 
@@ -415,6 +415,8 @@ function App() {
   const [statPanelSearch, setStatPanelSearch] = useState("");
   const deferredStatPanelSearch = useDeferredValue(statPanelSearch);
   const [scanProgress, setScanProgress] = useState({ target: "", currentAd: 0, totalAds: 0, timeRemaining: "Calculating...", logs: [] });
+  const lastHandledTerminalRef = useRef(null);
+  const scanLaunchPendingRef = useRef(false);
 
   const [targetLists, setTargetLists] = useState([]);
   const [savedCompetitors, setSavedCompetitors] = useState([]);
@@ -516,6 +518,112 @@ function App() {
       return () => clearInterval(heartbeat);
     }
   }, [authToken, currentUser, loadAllData]);
+
+  const applyScanStatus = useCallback((status) => {
+    if (!status || typeof status !== "object") return;
+
+    const state = status.state || (status.running ? "running" : "idle");
+
+    // "idle" is the normal backend state when no scan has been started since
+    // the Node process booted. Ignore it while a new POST /api/scan is still
+    // travelling to the backend so the UI cannot flicker back to idle.
+    if (state === "idle") {
+      if (!scanLaunchPendingRef.current) {
+        setIsScanning(false);
+      }
+      return;
+    }
+
+    setScanProgress(prev => ({
+      ...prev,
+      target: status.target || prev.target,
+      targetIndex: status.targetIndex ?? prev.targetIndex,
+      totalTargets: status.totalTargets ?? prev.totalTargets,
+      currentAd: status.currentAd ?? prev.currentAd,
+      totalAds: status.totalAds ?? prev.totalAds,
+      timeRemaining: status.timeRemaining || prev.timeRemaining,
+      logs: Array.isArray(status.logs) ? status.logs.slice(-5) : prev.logs
+    }));
+
+    if (status.running || state === "starting" || state === "running" || state === "cancelling") {
+      setIsScanning(true);
+      setViewMode("latest");
+      return;
+    }
+
+    const terminalKey = `${status.scanId || "scan"}:${state}:${status.finishedAt || status.updatedAt || ""}`;
+    const isNewTerminalState = lastHandledTerminalRef.current !== terminalKey;
+
+    if (state === "complete" || status.isComplete) {
+      if (Array.isArray(status.packages)) {
+        setLatestScanPackages(status.packages);
+        localStorage.setItem("atlas_latest_packages", JSON.stringify(status.packages));
+      }
+
+      if (status.competitorId) {
+        setLatestScanCompId(status.competitorId);
+        localStorage.setItem("atlas_latest_comp_id", status.competitorId.toString());
+      }
+
+      setHasLatestScan(true);
+      localStorage.setItem("atlas_has_latest_scan", "1");
+
+      if (isNewTerminalState) {
+        const finishedDate = status.finishedAt ? new Date(status.finishedAt) : new Date();
+        const displayTime = finishedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setLastScanTime(displayTime);
+        localStorage.setItem("atlas_last_scan_time", displayTime);
+        lastHandledTerminalRef.current = terminalKey;
+        void loadAllData();
+      }
+
+      setIsScanning(false);
+      return;
+    }
+
+    if (state === "cancelled" || status.isCancelled || state === "error" || status.isError || status.fatalError) {
+      if (isNewTerminalState) {
+        lastHandledTerminalRef.current = terminalKey;
+        void loadAllData();
+      }
+
+      setIsScanning(false);
+    }
+  }, [loadAllData]);
+
+  // Durable scan progress: use normal authenticated HTTP polling instead of a
+  // long-lived SSE connection. This survives ngrok/proxy stream disconnects
+  // and can recover the live scan UI after a browser refresh.
+  useEffect(() => {
+    if (!authToken || !currentUser) return;
+
+    let disposed = false;
+    let requestInFlight = false;
+
+    const pollScanStatus = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
+
+      try {
+        const status = await fetchJson(`${API_BASE}/api/scan-status`);
+        if (!disposed) applyScanStatus(status);
+      } catch (err) {
+        if (!disposed && err?.message && !err.message.includes("Unauthorized")) {
+          console.warn("Scan status poll failed:", err.message);
+        }
+      } finally {
+        requestInFlight = false;
+      }
+    };
+
+    void pollScanStatus();
+    const poller = setInterval(pollScanStatus, 1500);
+
+    return () => {
+      disposed = true;
+      clearInterval(poller);
+    };
+  }, [authToken, currentUser, applyScanStatus]);
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
@@ -947,7 +1055,7 @@ function App() {
     if (selectedEmailList === "custom" && !EMAIL_REGEX.test(directReportEmail)) {
       return alert("Please enter a valid email address for the report.");
     }
-    
+
     let targetCompId = null;
     let targetDisplayName = scanQuery;
 
@@ -969,162 +1077,36 @@ function App() {
     else localStorage.removeItem("atlas_latest_comp_id");
 
     setViewMode("latest");
-    setIsScanning(true); 
+    setIsScanning(true);
     setIsScanMinimized(false);
 
     const finalLimit = isMaxAds ? 999999 : Math.max(1, Number(scanLimit) || 1);
-    setScanProgress({ target: "Initializing...", targetIndex: 1, totalTargets: 1, currentAd: 0, totalAds: finalLimit, timeRemaining: "Calculating...", logs: ["> Booting Intelligence Node..."] });
+    setScanProgress({
+      target: "Initializing...",
+      targetIndex: 1,
+      totalTargets: 1,
+      currentAd: 0,
+      totalAds: finalLimit,
+      timeRemaining: "Calculating...",
+      logs: ["> Booting Intelligence Node..."]
+    });
 
-    let scanType = "manual"; let targetId = null;
-    if (selectedSource.startsWith("list_")) { scanType = "list"; targetId = selectedSource.split("_")[1]; } 
-    else if (selectedSource.startsWith("comp_")) { scanType = "competitor"; targetId = selectedSource.split("_")[1]; }
+    let scanType = "manual";
+    let targetId = null;
+    if (selectedSource.startsWith("list_")) {
+      scanType = "list";
+      targetId = selectedSource.split("_")[1];
+    } else if (selectedSource.startsWith("comp_")) {
+      scanType = "competitor";
+      targetId = selectedSource.split("_")[1];
+    }
 
-    const token = localStorage.getItem(AUTH_TOKEN_KEY) || "";
-    const streamController = new AbortController();
-
-    const handleProgressData = (data) => {
-      if (!data || typeof data !== "object") return;
-
-      if (data.isComplete) {
-        if (data.packages && Array.isArray(data.packages)) {
-          setLatestScanPackages(data.packages);
-          localStorage.setItem("atlas_latest_packages", JSON.stringify(data.packages));
-        }
-
-        if (data.competitorId) {
-          setLatestScanCompId(data.competitorId);
-          localStorage.setItem("atlas_latest_comp_id", data.competitorId.toString());
-        }
-
-        setHasLatestScan(true);
-        localStorage.setItem("atlas_has_latest_scan", "1");
-        setLastScanTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-        loadAllData();
-
-        setTimeout(() => {
-          setIsScanning(false);
-          streamController.abort();
-        }, 2500);
-
-        return;
-      }
-
-      if (data.isCancelled || data.fatalError) {
-        setScanProgress(prev => ({
-          ...prev,
-          logs: [...prev.logs, data.log || "> Scan terminated."].slice(-5)
-        }));
-
-        setTimeout(() => {
-          setIsScanning(false);
-          streamController.abort();
-        }, 3000);
-
-        return;
-      }
-
-      setScanProgress(prev => {
-        const newLogs = [...prev.logs, data.log].filter(Boolean).slice(-5);
-
-        return {
-          ...prev,
-          target: data.target || prev.target,
-          targetIndex: data.targetIndex || prev.targetIndex,
-          totalTargets: data.totalTargets || prev.totalTargets,
-          currentAd: data.currentAd !== undefined ? data.currentAd : prev.currentAd,
-          totalAds: data.totalAds !== undefined ? data.totalAds : prev.totalAds,
-          timeRemaining: data.timeRemaining || prev.timeRemaining,
-          logs: newLogs
-        };
-      });
-    };
+    scanLaunchPendingRef.current = true;
 
     try {
-      // Open the live progress stream first so no scanner events are missed.
-      // Unlike EventSource, fetch lets Atlas send the same auth + ngrok headers
-      // that are already used successfully by the rest of the API.
-      const streamResponse = await fetch(`${API_BASE}/api/scan-stream`, {
-        method: "GET",
-        headers: {
-          "x-atlas-token": token,
-          "ngrok-skip-browser-warning": "69420",
-          "Accept": "text/event-stream"
-        },
-        cache: "no-store",
-        signal: streamController.signal
-      });
-
-      if (streamResponse.status === 401) {
-        localStorage.removeItem(AUTH_TOKEN_KEY);
-        localStorage.removeItem(AUTH_USER_KEY);
-        window.dispatchEvent(new CustomEvent("atlas:unauthorized"));
-        throw new Error("Unauthorized: Please log in.");
-      }
-
-      if (!streamResponse.ok || !streamResponse.body) {
-        throw new Error(`Could not open live scan stream (HTTP ${streamResponse.status}).`);
-      }
-
-      // Read the server-sent-event response in the background.
-      // The backend still emits normal SSE frames: data: {...}\n\n
-      const readProgressStream = async () => {
-        const reader = streamResponse.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            buffer = buffer.replace(/\r\n/g, "\n");
-
-            let boundaryIndex;
-            while ((boundaryIndex = buffer.indexOf("\n\n")) !== -1) {
-              const eventBlock = buffer.slice(0, boundaryIndex);
-              buffer = buffer.slice(boundaryIndex + 2);
-
-              const payload = eventBlock
-                .split("\n")
-                .filter(line => line.startsWith("data:"))
-                .map(line => line.slice(5).trimStart())
-                .join("\n");
-
-              if (!payload) continue;
-
-              try {
-                handleProgressData(JSON.parse(payload));
-              } catch (parseError) {
-                console.warn("Invalid scan progress event:", parseError);
-              }
-            }
-          }
-
-          if (!streamController.signal.aborted) {
-            setScanProgress(prev => ({
-              ...prev,
-              logs: [...prev.logs, "> ⚠️ Live progress stream disconnected."].slice(-5)
-            }));
-          }
-        } catch (streamError) {
-          if (streamError?.name !== "AbortError" && !streamController.signal.aborted) {
-            console.error("Scan progress stream error:", streamError);
-            setScanProgress(prev => ({
-              ...prev,
-              logs: [...prev.logs, "> ⚠️ Live progress stream disconnected."].slice(-5)
-            }));
-          }
-        } finally {
-          try { reader.releaseLock(); } catch {}
-        }
-      };
-
-      void readProgressStream();
-
-      await fetchJson(`${API_BASE}/api/scan`, { 
-        method: "POST", 
-        headers: { "Content-Type": "application/json" }, 
+      await fetchJson(`${API_BASE}/api/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           searchQuery: scanQuery,
           scanType,
@@ -1134,11 +1116,18 @@ function App() {
           sendReport: selectedEmailList !== "none",
           emailListId: selectedEmailList === "custom" ? null : selectedEmailList,
           reportEmail: selectedEmailList === "custom" ? directReportEmail : null
-        }) 
+        })
       });
+
+      scanLaunchPendingRef.current = false;
+
+      // Pull the freshly-created backend state immediately instead of waiting
+      // for the next 1.5s polling tick.
+      const status = await fetchJson(`${API_BASE}/api/scan-status`);
+      applyScanStatus(status);
     } catch (err) {
-      console.error("Scan dispatch/stream error:", err);
-      streamController.abort();
+      scanLaunchPendingRef.current = false;
+      console.error("Scan dispatch error:", err);
       setIsScanning(false);
       setScanProgress(prev => ({
         ...prev,
