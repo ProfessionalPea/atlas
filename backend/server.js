@@ -48,6 +48,26 @@ const pool = new Pool({
   }
 })();
 
+// Auto-initialize the ad_creatives table. It records every ad (creative) ID
+// Atlas has ever seen so a re-scan can tell "still running" apart from "new",
+// instead of re-counting the same ad every time it's scanned again.
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ad_creatives (
+        creative_id   TEXT PRIMARY KEY,
+        game_id       INTEGER REFERENCES games(id) ON DELETE CASCADE,
+        competitor_id INTEGER REFERENCES competitors(id) ON DELETE CASCADE,
+        package_name  TEXT,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+    `);
+  } catch (e) {
+    console.error("⚠️ [DB] Failed to initialize ad_creatives table:", e.message);
+  }
+})();
+
 // In-memory token store: token -> { id, username, role, expires }
 const SESSION_SECRET = process.env.ATLAS_SESSION_SECRET || "atlas_secure_session_key_production_2026";
 const SESSION_EXPIRATION_DAYS = 30; // Sessions stay valid for 30 days
@@ -638,13 +658,23 @@ app.post("/api/scan", async (req, res) => {
           continue;
         }
 
-        // Count package appearances for this target FIRST. GoogleAdsScanner only
-        // contributes a package once per creative, so each count is bounded by
-        // the number of creatives scanned for this competitor.
-        const currentScanAdCounts = {};
-        for (const pkg of results) {
+        // Group this scan's findings by package, keeping the exact set of
+        // creative (ad) IDs seen for each one. GoogleAdsScanner only contributes
+        // a package once per creative, so each set is bounded by the number of
+        // creatives scanned for this competitor.
+        const creativeIdsByPackage = {};
+        for (const entry of results) {
+          const pkg = entry.package;
           interceptedPackageSet.add(pkg);
-          currentScanAdCounts[pkg] = (currentScanAdCounts[pkg] || 0) + 1;
+          if (!creativeIdsByPackage[pkg]) creativeIdsByPackage[pkg] = new Set();
+          creativeIdsByPackage[pkg].add(entry.creativeId);
+        }
+
+        // currentScanAdCounts mirrors the old package -> count shape so the
+        // status/report code just below doesn't need to change.
+        const currentScanAdCounts = {};
+        for (const [pkg, idsSet] of Object.entries(creativeIdsByPackage)) {
+          currentScanAdCounts[pkg] = idsSet.size;
         }
 
         // Keep exact latest-scan counts separate from the historical lifetime
@@ -680,8 +710,24 @@ app.post("/api/scan", async (req, res) => {
 
         // Enrich and persist each UNIQUE package once. The full per-scan count is
         // applied in one database operation, avoiding the previous off-by-one bug.
-        for (const [pkg, scanAdCountRaw] of Object.entries(currentScanAdCounts)) {
-          const scanAdCount = Math.max(1, Number(scanAdCountRaw) || 1);
+        for (const [pkg, creativeIdsSet] of Object.entries(creativeIdsByPackage)) {
+          const creativeIds = [...creativeIdsSet];
+          const scanAdCount = Math.max(1, creativeIds.length);
+
+          // Only creative IDs Atlas has never logged before should count toward
+          // the lifetime ad_count / daily history. Re-seeing the same
+          // still-running ad on a later scan no longer inflates the total.
+          let newAdCount = scanAdCount;
+          try {
+            const { rows: alreadySeen } = await pool.query(
+              "SELECT creative_id FROM ad_creatives WHERE creative_id = ANY($1)",
+              [creativeIds]
+            );
+            const alreadySeenSet = new Set(alreadySeen.map(r => r.creative_id));
+            newAdCount = creativeIds.filter(id => !alreadySeenSet.has(id)).length;
+          } catch (e) {
+            console.error("ad_creatives lookup failed, counting all as new:", e.message);
+          }
 
           let appData = null;
           try {
@@ -711,9 +757,13 @@ app.post("/api/scan", async (req, res) => {
           const pubName = appData.developer || targetDisplayName || "Unknown Publisher";
           const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+          // Match on the already-normalized name, not the raw developer string.
+          // The Play Store can return slightly different casing/punctuation for
+          // the same publisher across scans, which used to create a second
+          // "accounts" row and make the same game appear twice in the tree.
           let accQuery = (await pool.query(
-            "SELECT id FROM accounts WHERE publisher_name = $1 AND competitor_id = $2",
-            [pubName, competitorId]
+            "SELECT id FROM accounts WHERE normalized_name = $1 AND competitor_id = $2",
+            [normalizedPub, competitorId]
           )).rows[0];
 
           let accountId;
@@ -788,7 +838,7 @@ app.post("/api/scan", async (req, res) => {
             appData.released || "Unknown",
             appData.updated || 0,
             JSON.stringify(similarApps),
-            scanAdCount,
+            newAdCount,
             fixUrl(appData.headerImage) || null,
             appData.video || null,
             fixUrl(appData.videoImage) || null
@@ -801,14 +851,33 @@ app.post("/api/scan", async (req, res) => {
             [accountId, gameId]
           );
 
+          // Record/refresh every creative ID seen for this package so a later
+          // scan can tell "still running" apart from "genuinely new".
+          for (const creativeId of creativeIds) {
+            try {
+              await pool.query(
+                `INSERT INTO ad_creatives (creative_id, game_id, competitor_id, package_name, first_seen_at, last_seen_at)
+                 VALUES ($1, $2, $3, $4, now(), now())
+                 ON CONFLICT (creative_id) DO UPDATE SET
+                   last_seen_at = now(),
+                   game_id = EXCLUDED.game_id,
+                   competitor_id = EXCLUDED.competitor_id,
+                   package_name = EXCLUDED.package_name`,
+                [creativeId, gameId, competitorId, pkg]
+              );
+            } catch (e) {
+              console.error("Failed to record ad_creatives row:", creativeId, e.message);
+            }
+          }
+
           // Daily history remains cumulative across multiple scans on the same
-          // day, but now receives the complete count instead of N-1.
+          // day, but only genuinely new ad detections add to the total now.
           await pool.query(
             `INSERT INTO ad_history (game_id, ad_count, scan_date)
              VALUES ($1, $2, CURRENT_DATE)
              ON CONFLICT (game_id, scan_date)
              DO UPDATE SET ad_count = ad_history.ad_count + EXCLUDED.ad_count`,
-            [gameId, scanAdCount]
+            [gameId, newAdCount]
           );
 
           // The report must use THIS scan's count, not the lifetime counter.
@@ -848,7 +917,8 @@ app.post("/api/scan", async (req, res) => {
         );
 
         try { 
-          await pushScanToSheets(pool, targetDisplayName, results); 
+          // pushScanToSheets expects plain package_name strings.
+          await pushScanToSheets(pool, targetDisplayName, Object.keys(creativeIdsByPackage)); 
           await syncPublisherLinksToSheets(pool, targetDisplayName, targetAdsId);
         } catch (err) { console.error("Sheets Sync Error:", err); }
         

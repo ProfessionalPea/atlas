@@ -55,7 +55,9 @@ function extractStorePackages(value) {
 
   for (const pattern of patterns) {
     for (const match of decoded.matchAll(pattern)) {
-      if (isValidPackage(match[1])) found.add(match[1]);
+      // Normalize casing so the same app can never be stored as two different
+      // package_name rows just because two ads capitalized it differently.
+      if (isValidPackage(match[1])) found.add(match[1].toLowerCase());
     }
   }
 
@@ -68,7 +70,7 @@ function extractPackageKeys(value) {
   const jsonKeyRegex = /(?:packageName|package_name|appId|app_id)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
 
   for (const match of decoded.matchAll(jsonKeyRegex)) {
-    if (isValidPackage(match[1])) found.add(match[1]);
+    if (isValidPackage(match[1])) found.add(match[1].toLowerCase());
   }
 
   return [...found];
@@ -287,6 +289,8 @@ async function scanCompetitor(
     console.log(`🟢 [DEBUG] 7. Scroll phase complete. Moving to deep extraction loop...`);
     emitProgress(0, idArray.length, `> ✅ Intercepted ${idArray.length} ads! Moving to deep extraction...`);
 
+    // Each entry is { creativeId, package } — one row per (ad, package) match,
+    // so the caller can tell a genuinely new ad apart from one already logged.
     let allFoundPackagesArray = [];
 
     for (let i = 0; i < idArray.length; i++) {
@@ -380,7 +384,7 @@ async function scanCompetitor(
           emitProgress(i + 1, idArray.length, `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} packages`);
           
           for (const pkg of uniqueInAd) {
-            allFoundPackagesArray.push(pkg);
+            allFoundPackagesArray.push({ creativeId: adId, package: pkg });
             await onPackageFound(pkg); 
           }
         } else {
@@ -399,6 +403,7 @@ async function scanCompetitor(
     console.log(`\n🟢 [DEBUG] 9. PIPELINE COMPLETE!`);
     emitProgress(idArray.length, idArray.length, `> 🎉 Finished! Extracted data mapped to DB.`);
 
+    // Returns { creativeId, package }[] — see comment above allFoundPackagesArray.
     return allFoundPackagesArray;
   } catch (error) {
     console.error('❌ Scanner crashed/aborted:', error.message);
