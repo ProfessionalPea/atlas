@@ -615,6 +615,7 @@ function App() {
   const [countryScanJob, setCountryScanJob] = useState(null);
   const [countryScanError, setCountryScanError] = useState("");
   const [countryScanModalOpen, setCountryScanModalOpen] = useState(false);
+  const [countryScanLoading, setCountryScanLoading] = useState(false);
   const [isCountryScanMinimized, setIsCountryScanMinimized] = useState(false);
   const [countryScanFilter, setCountryScanFilter] = useState("all");
   const [countryScanSearch, setCountryScanSearch] = useState("");
@@ -627,6 +628,7 @@ function App() {
   const [statPanelSearch, setStatPanelSearch] = useState("");
   const deferredStatPanelSearch = useDeferredValue(statPanelSearch);
   const [scanProgress, setScanProgress] = useState({ target: "", currentAd: 0, totalAds: 0, timeRemaining: "Calculating...", logs: [] });
+  const countryScanDetailCacheRef = useRef(new Map());
   const lastHandledTerminalRef = useRef(null);
   const scanLaunchPendingRef = useRef(false);
 
@@ -1550,7 +1552,10 @@ function App() {
   const fetchLatestCountryScan = useCallback(async (packageName) => {
     const normalized = String(packageName || "").trim();
     if (!normalized) return null;
-    return fetchJson(API_BASE + "/api/country-scans/latest?packageName=" + encodeURIComponent(normalized));
+
+    const payload = await fetchJson(API_BASE + "/api/country-scans/latest?packageName=" + encodeURIComponent(normalized));
+    countryScanDetailCacheRef.current.set(normalized, payload);
+    return payload;
   }, []);
 
   const refreshCountryScanLibrary = useCallback(async () => {
@@ -1563,11 +1568,15 @@ function App() {
   }, []);
 
   const openCountryScanDetails = useCallback((payload, packageName) => {
-    if (payload) setCountryScanData(payload);
+    if (payload) {
+      setCountryScanData(payload);
+      if (packageName) countryScanDetailCacheRef.current.set(packageName, payload);
+    }
     if (packageName) setCountryPackage(packageName);
     setCountryScanFilter("all");
     setCountryScanSearch("");
     setCountryScanError("");
+    setCountryScanLoading(false);
     setCountryScanModalOpen(true);
   }, []);
 
@@ -1575,23 +1584,45 @@ function App() {
     const packageName = String(packageOverride || countryPackage || "").trim();
     if (!packageName) {
       setCountryScanError("Enter an Android package name first.");
+      setCountryScanLoading(false);
       setCountryScanModalOpen(true);
       return;
     }
 
+    const libraryEntry = countryScanLibrary.find(item => item.packageName === packageName);
+    const cached = countryScanDetailCacheRef.current.get(packageName);
+    const cacheMatchesLatest = cached &&
+      (!libraryEntry?.scanId || Number(cached.scan?.id) === Number(libraryEntry.scanId));
+
+    setCountryPackage(packageName);
     setCountryScanError("");
+    setCountryScanFilter("all");
+    setCountryScanSearch("");
+
+    if (cacheMatchesLatest) {
+      setCountryScanData(cached);
+      setCountryScanLoading(false);
+      setCountryScanModalOpen(true);
+      if (selectedGame?.package_name === packageName) setSelectedGameCountryScan(cached);
+      return;
+    }
+
+    // Open immediately so View never feels unresponsive. The backend request
+    // can still take a moment over a remote database/ngrok connection.
     setCountryScanData(null);
+    setCountryScanLoading(true);
+    setCountryScanModalOpen(true);
+
     try {
       const payload = await fetchLatestCountryScan(packageName);
-      setCountryPackage(packageName);
       setCountryScanData(payload);
-      setCountryScanModalOpen(true);
       if (selectedGame?.package_name === packageName) setSelectedGameCountryScan(payload);
     } catch (error) {
       setCountryScanError(error.message || "No saved country scan was found.");
-      setCountryScanModalOpen(true);
+    } finally {
+      setCountryScanLoading(false);
     }
-  }, [countryPackage, fetchLatestCountryScan, selectedGame?.package_name]);
+  }, [countryPackage, countryScanLibrary, fetchLatestCountryScan, selectedGame?.package_name]);
 
   const handleStartCountryScan = useCallback(async (packageOverride) => {
     const packageName = String(packageOverride || countryPackage || "").trim();
@@ -1606,6 +1637,7 @@ function App() {
     setCountryPackage(packageName);
     setCountryScanModalOpen(false);
     setCountryScanData(null);
+    setCountryScanLoading(false);
     setCountryScanError("");
     setCountryScanFilter("all");
     setCountryScanSearch("");
@@ -1739,6 +1771,7 @@ function App() {
           shouldContinue = false;
 
           setCountryScanData(payload);
+          setCountryScanLoading(false);
           setCountryScanError("");
           setCountryScanFilter("all");
           setCountryScanSearch("");
@@ -1755,6 +1788,7 @@ function App() {
         } else if (status.state === "error") {
           shouldContinue = false;
           setCountryScanJob(status);
+          setCountryScanLoading(false);
           setCountryScanError(status.error || "Country scan failed.");
           setCountryScanModalOpen(true);
           localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
@@ -3727,7 +3761,34 @@ function App() {
                 </button>
               </div>
 
-              {isCountryScanRunning && !countryScanData && !countryScanError ? (
+              {countryScanLoading ? (
+                <div className="flex-1 flex items-center justify-center p-6">
+                  <div className="w-full max-w-xl text-center">
+                    <div className="w-16 h-16 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center mx-auto">
+                      <span className="material-symbols-outlined text-[30px]">database</span>
+                    </div>
+                    <h3 className="text-lg font-medium text-text-main mt-5">Loading country results</h3>
+                    <p className="text-xs text-text-muted mt-2">
+                      Fetching the latest storefront snapshot and previous-scan comparison.
+                    </p>
+
+                    <div className="mt-7 h-2 bg-input-bg rounded-full overflow-hidden">
+                      <motion.div
+                        key={countryPackage}
+                        initial={{ width: "7%" }}
+                        animate={{ width: "88%" }}
+                        transition={{ duration: 4.5, ease: [0.22, 1, 0.36, 1] }}
+                        className="h-full bg-electric-blue rounded-full"
+                      />
+                    </div>
+
+                    <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted">
+                      <span>Loading saved scan…</span>
+                      <span className="font-mono">{countryPackage}</span>
+                    </div>
+                  </div>
+                </div>
+              ) : isCountryScanRunning && !countryScanData && !countryScanError ? (
                 <div className="flex-1 flex items-center justify-center p-6">
                   <div className="w-full max-w-xl text-center">
                     <div className="w-16 h-16 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center mx-auto">
