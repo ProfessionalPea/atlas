@@ -467,12 +467,25 @@ app.post("/api/country-scans", async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  if (activeCountryScan && activeCountryScan.state === "running") {
+  if (activeCountryScan && ["starting", "running"].includes(activeCountryScan.state)) {
     return res.status(409).json({
       error: `A country scan is already running for ${activeCountryScan.packageName}.`,
       activeScan: activeCountryScan
     });
   }
+
+  // Claim the single country-scan slot before the first database await so two
+  // near-simultaneous requests cannot both launch a full storefront sweep.
+  activeCountryScan = {
+    scanId: null,
+    packageName,
+    state: "starting",
+    checked: 0,
+    total: COUNTRY_CODES.length,
+    currentCountry: null,
+    currentCountryName: null,
+    updatedAt: new Date().toISOString()
+  };
 
   try {
     const game = (await pool.query(
@@ -622,6 +635,7 @@ app.post("/api/country-scans", async (req, res) => {
     })();
   } catch (error) {
     console.error("Country scan start failed:", error);
+    activeCountryScan = null;
     return res.status(500).json({ error: "Unable to start country availability scan." });
   }
 });
