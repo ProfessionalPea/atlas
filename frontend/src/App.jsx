@@ -2555,7 +2555,7 @@ function App() {
                         value={countryPackage}
                         onChange={(event) => setCountryPackage(event.target.value.trimStart())}
                         onKeyDown={(event) => {
-                          if (event.key === "Enter" && isAdmin && countryPackage.trim() && countryScanJob?.state !== "running") {
+                          if (event.key === "Enter" && isAdmin && countryPackage.trim() && !isCountryScanRunning) {
                             handleStartCountryScan();
                           }
                         }}
