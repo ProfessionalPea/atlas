@@ -110,10 +110,15 @@ function classifyAppMetadata(appData) {
   }
 
   const installsText = String(appData.installs ?? "").trim();
-  const minInstalls = Number(appData.minInstalls);
-  const hasInstallEvidence =
-    Boolean(installsText) ||
-    (Number.isFinite(minInstalls) && minInstalls >= 0);
+  const minInstallsRaw = appData.minInstalls;
+  const minInstalls = Number(minInstallsRaw);
+  const hasMinInstalls =
+    minInstallsRaw !== null &&
+    minInstallsRaw !== undefined &&
+    minInstallsRaw !== "" &&
+    Number.isFinite(minInstalls) &&
+    minInstalls >= 0;
+  const hasInstallEvidence = Boolean(installsText) || hasMinInstalls;
 
   const hasReleaseEvidence =
     Boolean(appData.released) ||
