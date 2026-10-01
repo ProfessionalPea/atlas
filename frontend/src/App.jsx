@@ -1658,13 +1658,14 @@ function App() {
         if (cancelled) return;
 
         if (status.state === "complete") {
-          shouldContinue = false;
-
           // Load the persisted snapshot before publishing the terminal job state.
           // Previously setCountryScanJob(status) happened first, which caused this
-          // effect to clean itself up and discard the result request.
+          // effect to clean itself up and discard the result request. If this fetch
+          // is temporarily unavailable, leave shouldContinue=true so the next poll
+          // retries the completed snapshot instead of getting stuck.
           const payload = await fetchLatestCountryScan(status.packageName);
           if (cancelled) return;
+          shouldContinue = false;
 
           setCountryScanData(payload);
           setCountryScanError("");
