@@ -484,6 +484,114 @@ async function getCountryScanPayload(packageName, scanId = null) {
   };
 }
 
+app.get("/api/country-scans/active", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+
+  const active = activeCountryScan &&
+    ["starting", "running"].includes(activeCountryScan.state)
+    ? activeCountryScan
+    : null;
+
+  return res.json({ activeScan: active });
+});
+
+app.get("/api/country-scans", async (_req, res) => {
+  try {
+    const { rows: latestRows } = await pool.query(`
+      WITH latest AS (
+        SELECT DISTINCT ON (package_name)
+          id,
+          package_name,
+          app_title,
+          developer,
+          status,
+          started_at,
+          completed_at,
+          error_message
+        FROM package_country_scans
+        WHERE status = 'complete'
+        ORDER BY package_name, id DESC
+      ),
+      totals AS (
+        SELECT package_name, COUNT(*)::int AS scan_count
+        FROM package_country_scans
+        WHERE status = 'complete'
+        GROUP BY package_name
+      )
+      SELECT
+        latest.*,
+        totals.scan_count
+      FROM latest
+      JOIN totals USING (package_name)
+      ORDER BY latest.completed_at DESC NULLS LAST, latest.id DESC
+    `);
+
+    if (latestRows.length === 0) {
+      res.set("Cache-Control", "no-store");
+      return res.json([]);
+    }
+
+    const scanIds = latestRows.map(row => Number(row.id));
+    const { rows: resultRows } = await pool.query(
+      `SELECT scan_id, release_state
+       FROM package_country_scan_results
+       WHERE scan_id = ANY($1::bigint[])
+         AND country_code::text = ANY($2::text[])`,
+      [scanIds, COUNTRY_CODES]
+    );
+
+    const countsByScan = new Map();
+
+    for (const row of resultRows) {
+      const scanId = Number(row.scan_id);
+      if (!countsByScan.has(scanId)) {
+        countsByScan.set(scanId, {
+          live: 0,
+          pre_register: 0,
+          early_access: 0,
+          unavailable: 0,
+          unknown: 0
+        });
+      }
+
+      const counts = countsByScan.get(scanId);
+      if (Object.prototype.hasOwnProperty.call(counts, row.release_state)) {
+        counts[row.release_state] += 1;
+      } else {
+        counts.unknown += 1;
+      }
+    }
+
+    const items = latestRows.map(row => {
+      const counts = countsByScan.get(Number(row.id)) || {
+        live: 0,
+        pre_register: 0,
+        early_access: 0,
+        unavailable: 0,
+        unknown: 0
+      };
+
+      return {
+        scanId: Number(row.id),
+        packageName: row.package_name,
+        appTitle: row.app_title || null,
+        developer: row.developer || null,
+        completedAt: row.completed_at,
+        startedAt: row.started_at,
+        scanCount: Number(row.scan_count) || 1,
+        totalCountries: Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0),
+        counts
+      };
+    });
+
+    res.set("Cache-Control", "no-store");
+    return res.json(items);
+  } catch (error) {
+    console.error("Country scan library fetch failed:", error);
+    return res.status(500).json({ error: "Unable to load saved country scans." });
+  }
+});
+
 app.post("/api/country-scans", async (req, res) => {
   let packageName;
   try {

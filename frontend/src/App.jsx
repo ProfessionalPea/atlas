@@ -8,6 +8,7 @@ const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 const AUTH_USER_KEY = "atlas_auth_user";
+const COUNTRY_SCAN_JOB_KEY = "atlas_country_scan_job";
 
 const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" 
   ? "http://localhost:3000" 
@@ -619,6 +620,8 @@ function App() {
   const [countryScanSearch, setCountryScanSearch] = useState("");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
   const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
+  const [countryScanLibrary, setCountryScanLibrary] = useState([]);
+  const [countryLibrarySearch, setCountryLibrarySearch] = useState("");
 
   const [activeStatPanel, setActiveStatPanel] = useState(null);
   const [statPanelSearch, setStatPanelSearch] = useState("");
@@ -712,6 +715,7 @@ function App() {
       fetchJson(`${API_BASE}/api/emails`).then(data => setEmailLists(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/competitor-history`).then(data => setHistoryData(processHistoryData(Array.isArray(data) ? data : []))),
       fetchJson(`${API_BASE}/api/settings`).then(data => { if (data && !data.error) setSettings(prev => ({ ...prev, ...data })); }),
+      fetchJson(`${API_BASE}/api/country-scans`).then(data => setCountryScanLibrary(Array.isArray(data) ? data : [])),
     ];
     const results = await Promise.allSettled(requests);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
@@ -1549,6 +1553,15 @@ function App() {
     return fetchJson(API_BASE + "/api/country-scans/latest?packageName=" + encodeURIComponent(normalized));
   }, []);
 
+  const refreshCountryScanLibrary = useCallback(async () => {
+    try {
+      const data = await fetchJson(API_BASE + "/api/country-scans");
+      setCountryScanLibrary(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Country scan library refresh failed:", error);
+    }
+  }, []);
+
   const openCountryScanDetails = useCallback((payload, packageName) => {
     if (payload) setCountryScanData(payload);
     if (packageName) setCountryPackage(packageName);
@@ -1614,12 +1627,70 @@ function App() {
         body: JSON.stringify({ packageName })
       });
       setCountryScanJob(job);
+      localStorage.setItem(COUNTRY_SCAN_JOB_KEY, JSON.stringify({
+        scanId: job.scanId,
+        packageName: job.packageName
+      }));
     } catch (error) {
       setCountryScanJob(null);
       setCountryScanError(error.message || "Unable to start country scan.");
       setCountryScanModalOpen(true);
     }
   }, [countryPackage, isAdmin]);
+
+  // Reattach to a country scan after a browser refresh. The backend scan is
+  // independent of the tab; this restores the floating progress UI and result
+  // popup instead of making a refresh look like the scan stopped.
+  useEffect(() => {
+    if (!authToken || !currentUser) return undefined;
+
+    let disposed = false;
+
+    const recoverCountryScan = async () => {
+      let savedJob = null;
+      try {
+        savedJob = JSON.parse(localStorage.getItem(COUNTRY_SCAN_JOB_KEY) || "null");
+      } catch {
+        localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+      }
+
+      try {
+        const activeResponse = await fetchJson(API_BASE + "/api/country-scans/active");
+        if (disposed) return;
+
+        let recovered = activeResponse?.activeScan || null;
+
+        if (!recovered && savedJob?.scanId) {
+          try {
+            recovered = await fetchJson(API_BASE + "/api/country-scans/status/" + savedJob.scanId);
+          } catch {
+            recovered = null;
+          }
+        }
+
+        if (!recovered?.scanId) {
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+          return;
+        }
+
+        if (["starting", "running", "complete", "error"].includes(recovered.state)) {
+          setCountryPackage(recovered.packageName || savedJob?.packageName || "");
+          setCountryScanJob(recovered);
+          localStorage.setItem(COUNTRY_SCAN_JOB_KEY, JSON.stringify({
+            scanId: recovered.scanId,
+            packageName: recovered.packageName || savedJob?.packageName || ""
+          }));
+        } else {
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+        }
+      } catch (error) {
+        console.error("Country scan recovery failed:", error);
+      }
+    };
+
+    void recoverCountryScan();
+    return () => { disposed = true; };
+  }, [authToken, currentUser]);
 
   useEffect(() => {
     if (!isDrawerOpen || !selectedGame?.package_name) return undefined;
@@ -1674,6 +1745,8 @@ function App() {
           setCountryScanJob(status);
           setIsCountryScanMinimized(false);
           setCountryScanModalOpen(true);
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+          void refreshCountryScanLibrary();
 
           if (selectedGame?.package_name === status.packageName) {
             setSelectedGameCountryScan(payload);
@@ -1684,6 +1757,7 @@ function App() {
           setCountryScanJob(status);
           setCountryScanError(status.error || "Country scan failed.");
           setCountryScanModalOpen(true);
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
         } else {
           setCountryScanJob(status);
         }
@@ -1704,7 +1778,7 @@ function App() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [countryScanJob?.scanId, fetchLatestCountryScan, selectedGame?.package_name]);
+  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, selectedGame?.package_name]);
 
   const countryChangesByCode = useMemo(() => {
     const map = new Map();
@@ -1724,6 +1798,17 @@ function App() {
       return item.state === countryScanFilter;
     });
   }, [countryScanData, countryScanFilter, countryScanSearch, countryChangesByCode]);
+
+  const filteredCountryScanLibrary = useMemo(() => {
+    const query = countryLibrarySearch.trim().toLowerCase();
+    if (!query) return countryScanLibrary;
+
+    return countryScanLibrary.filter(item =>
+      String(item.appTitle || "").toLowerCase().includes(query) ||
+      String(item.developer || "").toLowerCase().includes(query) ||
+      String(item.packageName || "").toLowerCase().includes(query)
+    );
+  }, [countryScanLibrary, countryLibrarySearch]);
 
   const countryScanSummary = useMemo(() => {
     if (!countryScanData?.scan) return "";
@@ -2118,6 +2203,7 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
           ].map((tab) => (
@@ -2469,7 +2555,7 @@ function App() {
                         value={countryPackage}
                         onChange={(event) => setCountryPackage(event.target.value.trimStart())}
                         onKeyDown={(event) => {
-                          if (event.key === "Enter" && isAdmin && countryPackage.trim() && countryScanJob?.state !== "running") {
+                          if (event.key === "Enter" && isAdmin && countryPackage.trim() && !isCountryScanRunning) {
                             handleStartCountryScan();
                           }
                         }}
@@ -2829,6 +2915,215 @@ function App() {
             </motion.div>
           )}
 
+          {/* COUNTRY SCAN LIBRARY TAB */}
+          {activeTab === "countryScans" && (
+            <motion.div
+              initial="hidden"
+              animate="show"
+              variants={{ show: { transition: { staggerChildren: 0.06 } } }}
+              className="flex flex-col w-full gap-5 md:gap-6 max-w-7xl mx-auto"
+            >
+              <motion.div variants={FADE_UP} className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center">
+                      <span className="material-symbols-outlined text-[21px]">public</span>
+                    </div>
+                    <div>
+                      <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">Country Scans</h1>
+                      <p className="text-sm text-text-muted mt-1">
+                        Saved Google Play country availability scans, ready for review and rescanning.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-xs text-text-muted">
+                  <span className="text-text-main font-medium">{countryScanLibrary.length}</span>
+                  {" "}saved {countryScanLibrary.length === 1 ? "package" : "packages"}
+                </div>
+              </motion.div>
+
+              <motion.div variants={FADE_UP} className="bg-surface-solid border border-border-subtle rounded-[24px] p-4 md:p-5 shadow-sm">
+                <div className="flex flex-col lg:flex-row gap-3">
+                  <div className="flex-1 relative">
+                    <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">deployed_code</span>
+                    <input
+                      value={countryPackage}
+                      onChange={(event) => setCountryPackage(event.target.value.trimStart())}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && isAdmin && countryPackage.trim() && !isCountryScanRunning) {
+                          handleStartCountryScan();
+                        }
+                      }}
+                      placeholder="Scan a package, e.g. com.publisher.game"
+                      className="w-full h-12 bg-input-bg text-text-main border border-border-subtle rounded-full pl-11 pr-4 outline-none focus:ring-2 focus:ring-electric-blue/30 font-mono text-xs md:text-sm"
+                    />
+                  </div>
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => handleStartCountryScan()}
+                      disabled={!countryPackage.trim() || isCountryScanRunning}
+                      className="h-12 px-5 rounded-full bg-electric-blue text-white text-xs font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm"
+                    >
+                      <span className={cn("material-symbols-outlined text-[18px]", isCountryScanRunning && "animate-spin")}>
+                        {isCountryScanRunning ? "progress_activity" : "travel_explore"}
+                      </span>
+                      {isCountryScanRunning ? "Country scan running" : "Scan package"}
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+
+              <motion.div variants={FADE_UP} className="sticky top-16 md:top-20 z-20 bg-bg-base/95 backdrop-blur-xl py-2">
+                <div className="relative w-full md:max-w-md">
+                  <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">search</span>
+                  <input
+                    value={countryLibrarySearch}
+                    onChange={(event) => setCountryLibrarySearch(event.target.value)}
+                    placeholder="Search title, developer, or package..."
+                    className="w-full h-11 bg-surface-solid text-text-main border border-border-subtle rounded-xl pl-11 pr-10 outline-none focus:ring-2 focus:ring-electric-blue/30 text-xs md:text-sm shadow-sm"
+                  />
+                  {countryLibrarySearch && (
+                    <button
+                      type="button"
+                      onClick={() => setCountryLibrarySearch("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full text-text-muted hover:text-text-main hover:bg-input-bg flex items-center justify-center"
+                      aria-label="Clear country scan search"
+                    >
+                      <span className="material-symbols-outlined text-[17px]">close</span>
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+
+              {filteredCountryScanLibrary.length === 0 ? (
+                <motion.div variants={FADE_UP} className="bg-surface-solid border border-border-subtle rounded-[24px] min-h-[280px] flex flex-col items-center justify-center text-center p-8 shadow-sm">
+                  <div className="w-14 h-14 rounded-full bg-input-bg text-text-muted flex items-center justify-center">
+                    <span className="material-symbols-outlined text-[28px]">public_off</span>
+                  </div>
+                  <h2 className="text-base font-medium text-text-main mt-4">
+                    {countryScanLibrary.length === 0 ? "No country scans saved yet" : "No saved scans match your search"}
+                  </h2>
+                  <p className="text-xs text-text-muted mt-2 max-w-md">
+                    {countryScanLibrary.length === 0
+                      ? "Run a country availability scan and the package will stay here for future review and rescanning."
+                      : "Try searching by game title, developer, or Android package name."}
+                  </p>
+                </motion.div>
+              ) : (
+                <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-2 gap-3 md:gap-4">
+                  {filteredCountryScanLibrary.map(item => {
+                    const counts = item.counts || {};
+                    const runningThisPackage = isCountryScanRunning && countryScanJob?.packageName === item.packageName;
+
+                    return (
+                      <motion.div
+                        key={item.packageName}
+                        whileHover={{ y: -2 }}
+                        className={cn(
+                          "bg-surface-solid border rounded-[22px] p-4 md:p-5 shadow-sm transition-all",
+                          runningThisPackage ? "border-electric-blue/50 ring-1 ring-electric-blue/20" : "border-border-subtle"
+                        )}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="w-11 h-11 rounded-2xl bg-electric-blue/10 text-electric-blue flex items-center justify-center flex-shrink-0">
+                            <span className="material-symbols-outlined text-[22px]">sports_esports</span>
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <h2 className="text-sm md:text-base font-medium text-text-main truncate">
+                                  {item.appTitle || item.packageName}
+                                </h2>
+                                {item.developer && (
+                                  <p className="text-[10px] md:text-xs text-text-muted mt-0.5 truncate">{item.developer}</p>
+                                )}
+                                <p className="text-[9px] md:text-[10px] text-text-muted font-mono mt-1 truncate">{item.packageName}</p>
+                              </div>
+
+                              {runningThisPackage && (
+                                <span className="px-2.5 py-1 rounded-full bg-electric-blue/10 border border-electric-blue/20 text-electric-blue text-[9px] font-medium flex items-center gap-1 flex-shrink-0">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-electric-blue animate-pulse"></span>
+                                  Scanning
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap gap-1.5 mt-4">
+                              {[
+                                ["live", Number(counts.live) || 0],
+                                ["pre_register", Number(counts.pre_register) || 0],
+                                ["early_access", Number(counts.early_access) || 0],
+                                ["unavailable", Number(counts.unavailable) || 0],
+                                ["unknown", Number(counts.unknown) || 0]
+                              ].filter(([, count]) => count > 0).map(([state, count]) => {
+                                const meta = getCountryStateMeta(state);
+                                return (
+                                  <span key={state} className={cn("px-2.5 py-1 rounded-full border text-[9px] font-medium", meta.className)}>
+                                    {count} {meta.label}
+                                  </span>
+                                );
+                              })}
+                            </div>
+
+                            <div className="mt-4 pt-3 border-t border-border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div className="text-[9px] md:text-[10px] text-text-muted">
+                                <span>{item.completedAt ? new Date(item.completedAt).toLocaleString() : "No completion time"}</span>
+                                <span className="mx-1.5">·</span>
+                                <span>{item.scanCount || 1} {(item.scanCount || 1) === 1 ? "scan" : "scans"}</span>
+                                {item.totalCountries ? (
+                                  <>
+                                    <span className="mx-1.5">·</span>
+                                    <span>{item.totalCountries} locations</span>
+                                  </>
+                                ) : null}
+                              </div>
+
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <a
+                                  href={"https://play.google.com/store/apps/details?id=" + encodeURIComponent(item.packageName)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="w-9 h-9 rounded-full border border-border-subtle bg-input-bg text-text-muted hover:text-text-main flex items-center justify-center"
+                                  title="Open on Google Play"
+                                >
+                                  <span className="material-symbols-outlined text-[17px]">open_in_new</span>
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => handleViewSavedCountryScan(item.packageName)}
+                                  className="h-9 px-3 rounded-full border border-border-subtle bg-input-bg text-text-main text-[10px] font-medium hover:bg-surface-glass flex items-center gap-1.5"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">visibility</span>
+                                  View
+                                </button>
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartCountryScan(item.packageName)}
+                                    disabled={isCountryScanRunning}
+                                    className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">refresh</span>
+                                    Rescan
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </motion.div>
+              )}
+            </motion.div>
+          )}
+
           {/* DATABASE TARGETS TAB */}
           {activeTab === "automated" && (
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-7xl mx-auto">
@@ -3027,6 +3322,7 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
           ].map((tab) => (
