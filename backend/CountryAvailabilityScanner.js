@@ -1,3 +1,6 @@
+const gplayRaw = require("google-play-scraper");
+const gplay = gplayRaw.default || gplayRaw;
+
 const DEFAULT_CONCURRENCY = Math.max(
   1,
   Math.min(12, Number(process.env.COUNTRY_SCAN_CONCURRENCY) || 8)
@@ -63,8 +66,94 @@ function hasAny(text, needles) {
   return needles.some((needle) => text.includes(needle));
 }
 
+function normalizeStoreText(body) {
+  return String(body || "")
+    .toLowerCase()
+    .replace(/\\u002d/g, "-")
+    .replace(/&#45;|&#x2d;/g, "-")
+    .replace(/&hyphen;/g, "-")
+    .replace(/\u00ad/g, "");
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message || "Timed out.")), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+function isNotFoundError(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status);
+  const message = String(error?.message || error || "").toLowerCase();
+  return status === 404 ||
+    message.includes("404") ||
+    message.includes("not found") ||
+    message.includes("app not found");
+}
+
+function classifyAppMetadata(appData) {
+  if (!appData || typeof appData !== "object") return null;
+
+  if (
+    appData.preregister === true ||
+    appData.preRegister === true ||
+    appData.preRegistration === true
+  ) {
+    return { state: "pre_register", confidence: "high", marker: "metadata_preregister" };
+  }
+
+  if (appData.available === false) {
+    return { state: "unavailable", confidence: "high", marker: "metadata_unavailable" };
+  }
+
+  const installsText = String(appData.installs ?? "").trim();
+  const minInstalls = Number(appData.minInstalls);
+  const hasInstallEvidence =
+    Boolean(installsText) ||
+    (Number.isFinite(minInstalls) && minInstalls >= 0);
+
+  const hasReleaseEvidence =
+    Boolean(appData.released) ||
+    (typeof appData.updated === "number" && appData.updated > 0) ||
+    (typeof appData.updated === "string" && appData.updated.trim() !== "");
+
+  const ratings = Number(appData.ratings);
+  const reviews = Number(appData.reviews);
+  const score = Number(appData.score);
+  const hasRatingEvidence =
+    (Number.isFinite(ratings) && ratings > 0) ||
+    (Number.isFinite(reviews) && reviews > 0) ||
+    (Number.isFinite(score) && score > 0);
+
+  // Older google-play-scraper builds do not expose a documented preregister
+  // boolean. Unreleased listings nevertheless have a distinctive "no offer"
+  // shape: zero price, free=false, and no install/release/rating fields. Use
+  // that only as a medium-confidence fallback.
+  if (
+    appData.price === 0 &&
+    appData.free === false &&
+    !hasInstallEvidence &&
+    !hasReleaseEvidence &&
+    !hasRatingEvidence
+  ) {
+    return { state: "pre_register", confidence: "medium", marker: "metadata_unreleased_shape" };
+  }
+
+  // A real production listing should expose at least one release signal. Do
+  // not call a merely accessible details page "live"; pre-registration pages
+  // are also HTTP 200 and contain generic install strings in Google scripts.
+  if (hasInstallEvidence || hasReleaseEvidence || hasRatingEvidence) {
+    return { state: "live", confidence: "high", marker: "metadata_release_signals" };
+  }
+
+  return null;
+}
+
 function classifyStorePage({ body, status, finalUrl, packageName }) {
-  const text = String(body || "").toLowerCase();
+  const text = normalizeStoreText(body);
   const packageLower = packageName.toLowerCase();
 
   if (status === 404 || status === 410) {
@@ -111,27 +200,17 @@ function classifyStorePage({ body, status, finalUrl, packageName }) {
     return { state: "early_access", confidence: "high", marker: "early_access" };
   }
 
-  if (packagePresent && hasAny(text, [
-    "aria-label=\"install\"",
-    "aria-label='install'",
-    ">install<",
-    "\"install\"",
-    "install on more devices"
-  ])) {
-    return { state: "live", confidence: "high", marker: "install_action" };
-  }
-
-  // Google changes the Play markup frequently. If the requested package is
-  // embedded in a successful details page, the listing exists in that market.
-  // Pre-registration / early-access markers above take precedence; otherwise
-  // treat an accessible listing as live but keep confidence at medium.
+  // Never infer LIVE from a generic "Install" string in the HTML. Google Play
+  // includes install-related copy/scripts on pre-registration listings too.
+  // A successful details page only proves that a listing exists; country-
+  // specific release state is resolved from app metadata in probeCountry().
   if (
     status >= 200 &&
     status < 400 &&
     packagePresent &&
     String(finalUrl || "").includes("/store/apps/details")
   ) {
-    return { state: "live", confidence: "medium", marker: "listing_accessible" };
+    return { state: "unknown", confidence: "low", marker: "listing_accessible_unverified" };
   }
 
   if (status >= 400) {
@@ -148,7 +227,9 @@ async function probeCountry(packageName, countryCode) {
 
   const url = new URL("https://play.google.com/store/apps/details");
   url.searchParams.set("id", packageName);
-  url.searchParams.set("hl", "en");
+  // Use the same English locale form Google serves in the desktop Play UI.
+  // It makes CTA text (including "Pre-register") more consistent.
+  url.searchParams.set("hl", "en_US");
   url.searchParams.set("gl", countryCode);
 
   try {
@@ -165,12 +246,59 @@ async function probeCountry(packageName, countryCode) {
     });
 
     const body = await response.text();
-    const classification = classifyStorePage({
+    const pageClassification = classifyStorePage({
       body,
       status: response.status,
       finalUrl: response.url,
       packageName
     });
+
+    // Explicit page signals (Pre-register, Early access, or a hard unavailable
+    // response) are already decisive and avoid an extra details lookup.
+    if (["pre_register", "early_access", "unavailable"].includes(pageClassification.state)) {
+      return {
+        countryCode,
+        countryName: getCountryName(countryCode),
+        state: pageClassification.state,
+        confidence: pageClassification.confidence,
+        evidence: {
+          classifierVersion: 2,
+          httpStatus: response.status,
+          marker: pageClassification.marker,
+          finalUrl: response.url,
+          packagePresent: normalizeStoreText(body).includes(packageName.toLowerCase()),
+          durationMs: Date.now() - startedAt
+        }
+      };
+    }
+
+    let metadataClassification = null;
+    let metadataError = null;
+    let appData = null;
+
+    try {
+      appData = await withTimeout(
+        gplay.app({
+          appId: packageName,
+          country: countryCode.toLowerCase(),
+          lang: "en"
+        }),
+        REQUEST_TIMEOUT_MS,
+        "Google Play metadata lookup timed out."
+      );
+      metadataClassification = classifyAppMetadata(appData);
+    } catch (error) {
+      metadataError = error;
+      if (isNotFoundError(error)) {
+        metadataClassification = {
+          state: "unavailable",
+          confidence: "high",
+          marker: "metadata_not_found"
+        };
+      }
+    }
+
+    const classification = metadataClassification || pageClassification;
 
     return {
       countryCode,
@@ -178,10 +306,23 @@ async function probeCountry(packageName, countryCode) {
       state: classification.state,
       confidence: classification.confidence,
       evidence: {
+        classifierVersion: 2,
         httpStatus: response.status,
         marker: classification.marker,
+        pageMarker: pageClassification.marker,
         finalUrl: response.url,
-        packagePresent: body.toLowerCase().includes(packageName.toLowerCase()),
+        packagePresent: normalizeStoreText(body).includes(packageName.toLowerCase()),
+        metadataPreregister:
+          appData?.preregister === true ||
+          appData?.preRegister === true ||
+          appData?.preRegistration === true,
+        metadataInstalls: appData?.installs ?? null,
+        metadataMinInstalls: appData?.minInstalls ?? null,
+        metadataReleased: appData?.released ?? null,
+        metadataAvailable: appData?.available ?? null,
+        metadataError: metadataError
+          ? String(metadataError?.message || metadataError).slice(0, 300)
+          : null,
         durationMs: Date.now() - startedAt
       }
     };
@@ -193,6 +334,7 @@ async function probeCountry(packageName, countryCode) {
       state: "unknown",
       confidence: "low",
       evidence: {
+        classifierVersion: 2,
         marker: timedOut ? "timeout" : "request_error",
         error: String((error && error.message) || error).slice(0, 300),
         durationMs: Date.now() - startedAt
@@ -268,5 +410,7 @@ module.exports = {
   COUNTRY_CODES,
   normalizePackageName,
   probeCountry,
-  scanPackageCountries
+  scanPackageCountries,
+  classifyAppMetadata,
+  classifyStorePage
 };
