@@ -310,11 +310,19 @@ async function scanCompetitor(
         const packages = extractStorePackages(req.url());
         if (packages.length === 0) return;
 
-        let isCreativeFrameRequest = false;
-        try {
-          const frame = req.frame();
-          isCreativeFrameRequest = Boolean(frame && frame !== adPage.mainFrame());
-        } catch {}
+        let frame = null;
+        try { frame = req.frame(); } catch {}
+
+        // Google's SafeFrame ad sandbox loads a "sadbundle" companion resource
+        // on every single ad view, regardless of which specific creative is
+        // being inspected. Confirmed via logging: the same package kept
+        // appearing from the same sadbundle URL across ten completely
+        // different ads for one advertiser. Treat it as ad-infrastructure
+        // noise, not part of the actual ad.
+        const frameUrl = frame ? (frame.url() || '') : '';
+        if (frameUrl.includes('/sadbundle/')) return;
+
+        const isCreativeFrameRequest = Boolean(frame && frame !== adPage.mainFrame());
 
         const bucket = isCreativeFrameRequest ? primaryPackages : fallbackPackages;
         packages.forEach(pkg => bucket.add(pkg));
@@ -344,7 +352,15 @@ async function scanCompetitor(
         await adPage.waitForTimeout(3000);
 
         const frames = adPage.frames();
-        const creativeFrames = frames.filter(frame => frame !== adPage.mainFrame());
+        // Exclude the "sadbundle" SafeFrame companion resource for the same
+        // reason as the request listener above — it's present on every ad
+        // regardless of which creative is being viewed, and was confirmed to
+        // consistently report the same package across unrelated ads.
+        const creativeFrames = frames.filter(frame => {
+          if (frame === adPage.mainFrame()) return false;
+          const url = frame.url() || '';
+          return !url.includes('/sadbundle/');
+        });
 
         // Highest-confidence source: explicit Play Store URLs inside the nested
         // creative frames.
