@@ -1733,7 +1733,7 @@ function App() {
       ["live", "pre_register", "early_access", "unavailable", "unknown"]
         .reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
 
-    if (!total) return "Scan completed, but no country results were returned.";
+    if (!total) return "Scan completed, but no Google Play country results were returned.";
 
     const allState = [
       ["live", "Live"],
@@ -1745,8 +1745,8 @@ function App() {
 
     if (allState) {
       return allState[0] === "live"
-        ? `Live in all ${total} checked countries/territories.`
-        : `${allState[1]} in all ${total} checked countries/territories.`;
+        ? `Live in all ${total} Google Play countries/regions.`
+        : `${allState[1]} in all ${total} Google Play countries/regions.`;
     }
 
     const parts = [
@@ -1760,7 +1760,7 @@ function App() {
       .filter(([count]) => count > 0)
       .map(([count, label]) => `${count} ${label}`);
 
-    return `Checked ${total} countries/territories: ${parts.join(", ")}.`;
+    return `Checked ${total} Google Play countries/regions: ${parts.join(", ")}.`;
   }, [countryScanData]);
 
   const handleGameClick = useCallback((game) => {
@@ -2459,7 +2459,7 @@ function App() {
                       </div>
                       <div className="min-w-0">
                         <h2 className="text-sm md:text-base font-medium text-text-main">Country availability</h2>
-                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every country for any Google Play package</p>
+                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every individually targetable Google Play country/region for any package</p>
                       </div>
                     </div>
 
