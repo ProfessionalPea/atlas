@@ -2203,6 +2203,7 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
           ].map((tab) => (
@@ -3112,6 +3113,7 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
           ].map((tab) => (
