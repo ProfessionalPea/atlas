@@ -2373,7 +2373,7 @@ function App() {
                       </div>
                       <div className="min-w-0">
                         <h2 className="text-sm md:text-base font-medium text-text-main">Country availability</h2>
-                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every country/territory for any Google Play package — it does not need to exist in Atlas.</p>
+                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every country for any Google Play package</p>
                       </div>
                     </div>
 
