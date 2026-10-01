@@ -277,6 +277,7 @@ app.use("/api", (req, res, next) => {
 let activeScanCancelled = false;
 let isScanRunning = false;
 let activeCountryScan = null;
+const PLAY_COUNTRY_CODE_SET = new Set(COUNTRY_CODES);
 
 function createIdleScanStatus() {
   return {
@@ -429,13 +430,37 @@ async function getCountryScanPayload(packageName, scanId = null) {
     previousByCountry = new Map(previousRows.map(row => [row.country_code, row.release_state]));
   }
 
-  const results = resultRows.map(row => ({
-    countryCode: row.country_code,
-    countryName: row.country_name,
-    state: row.release_state,
-    confidence: row.confidence,
-    evidence: row.evidence || {}
-  }));
+  // Hide legacy ISO-only rows from scans created before Atlas adopted
+  // Google Play's actual named storefront list. This keeps old saved scans
+  // compatible while making every response match what Play Console exposes.
+  const results = resultRows
+    .filter(row => PLAY_COUNTRY_CODE_SET.has(row.country_code))
+    .map(row => ({
+      countryCode: row.country_code,
+      countryName: row.country_name,
+      state: row.release_state,
+      confidence: row.confidence,
+      evidence: row.evidence || {}
+    }));
+
+  const visibleCounts = {
+    live: 0,
+    pre_register: 0,
+    early_access: 0,
+    unavailable: 0,
+    unknown: 0
+  };
+
+  for (const row of results) {
+    if (Object.prototype.hasOwnProperty.call(visibleCounts, row.state)) {
+      visibleCounts[row.state] += 1;
+    } else {
+      visibleCounts.unknown += 1;
+    }
+  }
+
+  const serializedScan = serializeCountryScan(scan);
+  serializedScan.counts = visibleCounts;
 
   const changes = previousScan
     ? results
@@ -449,7 +474,7 @@ async function getCountryScanPayload(packageName, scanId = null) {
     : [];
 
   return {
-    scan: serializeCountryScan(scan),
+    scan: serializedScan,
     previousScan: previousScan ? {
       id: Number(previousScan.id),
       completedAt: previousScan.completed_at
