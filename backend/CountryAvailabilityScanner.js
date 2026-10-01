@@ -11,36 +11,41 @@ const REQUEST_TIMEOUT_MS = Math.max(
   Math.min(30000, Number(process.env.COUNTRY_SCAN_TIMEOUT_MS) || 12000)
 );
 
-// ISO 3166-1 alpha-2 country / territory codes. Atlas checks every code so a
-// narrow regional rollout cannot be missed just because it falls outside a
-// hand-maintained "major markets" list.
+// Individually targetable Google Play distribution locations.
+//
+// This intentionally does NOT use all ISO-3166 country/territory codes.
+// Google Play Console exposes a smaller named storefront list; locations
+// outside that list are handled by Google's "Rest of World" grouping and
+// cannot be targeted individually. Atlas should mirror the Play Console
+// control surface, so scans only include these named Google Play locations.
+//
+// Source of truth checked against Google's "Supported locations for
+// distribution to Google Play users" table (176 named locations, Sep 2026).
 const COUNTRY_CODES = [
-  "AD","AE","AF","AG","AI","AL","AM","AO","AQ","AR","AS","AT","AU","AW","AX","AZ",
-  "BA","BB","BD","BE","BF","BG","BH","BI","BJ","BL","BM","BN","BO","BQ","BR","BS","BT","BV","BW","BY","BZ",
-  "CA","CC","CD","CF","CG","CH","CI","CK","CL","CM","CN","CO","CR","CU","CV","CW","CX","CY","CZ",
-  "DE","DJ","DK","DM","DO","DZ",
-  "EC","EE","EG","EH","ER","ES","ET",
-  "FI","FJ","FK","FM","FO","FR",
-  "GA","GB","GD","GE","GF","GG","GH","GI","GL","GM","GN","GP","GQ","GR","GS","GT","GU","GW","GY",
-  "HK","HM","HN","HR","HT","HU",
-  "ID","IE","IL","IM","IN","IO","IQ","IR","IS","IT",
-  "JE","JM","JO","JP",
-  "KE","KG","KH","KI","KM","KN","KP","KR","KW","KY","KZ",
-  "LA","LB","LC","LI","LK","LR","LS","LT","LU","LV","LY",
-  "MA","MC","MD","ME","MF","MG","MH","MK","ML","MM","MN","MO","MP","MQ","MR","MS","MT","MU","MV","MW","MX","MY","MZ",
-  "NA","NC","NE","NF","NG","NI","NL","NO","NP","NR","NU","NZ",
-  "OM",
-  "PA","PE","PF","PG","PH","PK","PL","PM","PN","PR","PS","PT","PW","PY",
-  "QA",
-  "RE","RO","RS","RU","RW",
-  "SA","SB","SC","SD","SE","SG","SH","SI","SJ","SK","SL","SM","SN","SO","SR","SS","ST","SV","SX","SY","SZ",
-  "TC","TD","TF","TG","TH","TJ","TK","TL","TM","TN","TO","TR","TT","TV","TW","TZ",
-  "UA","UG","UM","US","UY","UZ",
-  "VA","VC","VE","VG","VI","VN","VU",
-  "WF","WS",
-  "YE","YT",
-  "ZA","ZM","ZW"
-];
+  // United States and Canada
+  "CA","US",
+
+  // Europe
+  "AL","AT","BY","BE","BA","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GI",
+  "GR","HU","IS","IE","IT","LV","LI","LT","LU","MT","MD","MC","NL","MK","NO",
+  "PL","PT","RO","RU","SM","RS","SK","SI","ES","SE","CH","TR","UA","GB","VA",
+
+  // Africa, Middle East, and India
+  "DZ","AO","AM","AZ","BH","BJ","BW","BF","CM","CV","TD","KM","CD","CG","CI",
+  "DJ","EG","ER","GA","GM","GE","GH","GN","GW","IN","IR","IQ","IL","JO","KE",
+  "KW","LB","LR","LY","ML","MU","MA","MZ","NA","NE","NG","OM","QA","RW","SA",
+  "SN","SC","SL","SO","ZA","SD","TZ","TG","TN","UG","AE","YE","ZM","ZW",
+
+  // Latin America and the Caribbean
+  "AG","AR","AW","BS","BZ","BM","BO","BR","VG","KY","CL","CO","CR","CU","DM",
+  "DO","EC","SV","GD","GT","HT","HN","JM","MX","NI","PA","PY","PE","KN","LC",
+  "SR","TT","TC","UY","VE",
+
+  // Asia Pacific
+  "AU","BD","KH","CN","FJ","HK","ID","JP","KZ","KG","LA","MO","MY","MV","FM",
+  "MN","MM","NP","NZ","PK","PG","PH","WS","SG","SB","KR","LK","TW","TJ","TH",
+  "TO","TM","UZ","VU","VN"
+]
 
 const displayNames = typeof Intl.DisplayNames === "function"
   ? new Intl.DisplayNames(["en"], { type: "region" })
