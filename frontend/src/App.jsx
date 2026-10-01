@@ -8,6 +8,7 @@ const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 const AUTH_USER_KEY = "atlas_auth_user";
+const COUNTRY_SCAN_JOB_KEY = "atlas_country_scan_job";
 
 const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" 
   ? "http://localhost:3000" 
@@ -619,6 +620,8 @@ function App() {
   const [countryScanSearch, setCountryScanSearch] = useState("");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
   const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
+  const [countryScanLibrary, setCountryScanLibrary] = useState([]);
+  const [countryLibrarySearch, setCountryLibrarySearch] = useState("");
 
   const [activeStatPanel, setActiveStatPanel] = useState(null);
   const [statPanelSearch, setStatPanelSearch] = useState("");
@@ -712,6 +715,7 @@ function App() {
       fetchJson(`${API_BASE}/api/emails`).then(data => setEmailLists(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/competitor-history`).then(data => setHistoryData(processHistoryData(Array.isArray(data) ? data : []))),
       fetchJson(`${API_BASE}/api/settings`).then(data => { if (data && !data.error) setSettings(prev => ({ ...prev, ...data })); }),
+      fetchJson(`${API_BASE}/api/country-scans`).then(data => setCountryScanLibrary(Array.isArray(data) ? data : [])),
     ];
     const results = await Promise.allSettled(requests);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
