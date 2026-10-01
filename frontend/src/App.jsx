@@ -614,6 +614,7 @@ function App() {
   const [countryScanJob, setCountryScanJob] = useState(null);
   const [countryScanError, setCountryScanError] = useState("");
   const [countryScanModalOpen, setCountryScanModalOpen] = useState(false);
+  const [isCountryScanMinimized, setIsCountryScanMinimized] = useState(false);
   const [countryScanFilter, setCountryScanFilter] = useState("all");
   const [countryScanSearch, setCountryScanSearch] = useState("");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
@@ -1565,16 +1566,17 @@ function App() {
       return;
     }
 
-    setCountryScanModalOpen(true);
     setCountryScanError("");
     setCountryScanData(null);
     try {
       const payload = await fetchLatestCountryScan(packageName);
       setCountryPackage(packageName);
       setCountryScanData(payload);
+      setCountryScanModalOpen(true);
       if (selectedGame?.package_name === packageName) setSelectedGameCountryScan(payload);
     } catch (error) {
       setCountryScanError(error.message || "No saved country scan was found.");
+      setCountryScanModalOpen(true);
     }
   }, [countryPackage, fetchLatestCountryScan, selectedGame?.package_name]);
 
@@ -1589,9 +1591,21 @@ function App() {
     }
 
     setCountryPackage(packageName);
-    setCountryScanModalOpen(true);
+    setCountryScanModalOpen(false);
     setCountryScanData(null);
     setCountryScanError("");
+    setCountryScanFilter("all");
+    setCountryScanSearch("");
+    setIsCountryScanMinimized(false);
+    setCountryScanJob({
+      scanId: null,
+      packageName,
+      state: "starting",
+      checked: 0,
+      total: 0,
+      currentCountry: null,
+      currentCountryName: null
+    });
 
     try {
       const job = await fetchJson(API_BASE + "/api/country-scans", {
@@ -1601,7 +1615,9 @@ function App() {
       });
       setCountryScanJob(job);
     } catch (error) {
+      setCountryScanJob(null);
       setCountryScanError(error.message || "Unable to start country scan.");
+      setCountryScanModalOpen(true);
     }
   }, [countryPackage, isAdmin]);
 
@@ -1628,40 +1644,67 @@ function App() {
   }, [isDrawerOpen, selectedGame?.package_name, fetchLatestCountryScan]);
 
   useEffect(() => {
-    if (!countryScanJob?.scanId || countryScanJob.state !== "running") return undefined;
+    const scanId = countryScanJob?.scanId;
+    if (!scanId) return undefined;
 
     let cancelled = false;
+    let timer = null;
 
     const poll = async () => {
+      let shouldContinue = true;
+
       try {
-        const status = await fetchJson(API_BASE + "/api/country-scans/status/" + countryScanJob.scanId);
+        const status = await fetchJson(API_BASE + "/api/country-scans/status/" + scanId);
         if (cancelled) return;
-        setCountryScanJob(status);
 
         if (status.state === "complete") {
+          // Load the persisted snapshot before publishing the terminal job state.
+          // Previously setCountryScanJob(status) happened first, which caused this
+          // effect to clean itself up and discard the result request. If this fetch
+          // is temporarily unavailable, leave shouldContinue=true so the next poll
+          // retries the completed snapshot instead of getting stuck.
           const payload = await fetchLatestCountryScan(status.packageName);
           if (cancelled) return;
+          shouldContinue = false;
+
           setCountryScanData(payload);
           setCountryScanError("");
+          setCountryScanFilter("all");
+          setCountryScanSearch("");
+          setCountryScanJob(status);
+          setIsCountryScanMinimized(false);
+          setCountryScanModalOpen(true);
+
           if (selectedGame?.package_name === status.packageName) {
             setSelectedGameCountryScan(payload);
             setSelectedGameCountryLoading(false);
           }
         } else if (status.state === "error") {
+          shouldContinue = false;
+          setCountryScanJob(status);
           setCountryScanError(status.error || "Country scan failed.");
+          setCountryScanModalOpen(true);
+        } else {
+          setCountryScanJob(status);
         }
       } catch (error) {
-        if (!cancelled) setCountryScanError(error.message || "Unable to read country scan progress.");
+        if (!cancelled) {
+          console.error("Country scan progress check failed:", error);
+        }
+      }
+
+      if (!cancelled && shouldContinue) {
+        timer = window.setTimeout(poll, 1500);
       }
     };
 
-    poll();
-    const timer = window.setInterval(poll, 1500);
+    timer = window.setTimeout(poll, 500);
+
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer) window.clearTimeout(timer);
     };
-  }, [countryScanJob?.scanId, countryScanJob?.state, fetchLatestCountryScan, selectedGame?.package_name]);
+  }, [countryScanJob?.scanId, fetchLatestCountryScan, selectedGame?.package_name]);
 
   const countryChangesByCode = useMemo(() => {
     const map = new Map();
@@ -1681,6 +1724,44 @@ function App() {
       return item.state === countryScanFilter;
     });
   }, [countryScanData, countryScanFilter, countryScanSearch, countryChangesByCode]);
+
+  const countryScanSummary = useMemo(() => {
+    if (!countryScanData?.scan) return "";
+
+    const counts = countryScanData.scan.counts || {};
+    const total = (countryScanData.results || []).length ||
+      ["live", "pre_register", "early_access", "unavailable", "unknown"]
+        .reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+
+    if (!total) return "Scan completed, but no country results were returned.";
+
+    const allState = [
+      ["live", "Live"],
+      ["pre_register", "Pre-register"],
+      ["early_access", "Early access"],
+      ["unavailable", "Unavailable"],
+      ["unknown", "Unknown"]
+    ].find(([state]) => (Number(counts[state]) || 0) === total);
+
+    if (allState) {
+      return allState[0] === "live"
+        ? `Live in all ${total} checked countries/territories.`
+        : `${allState[1]} in all ${total} checked countries/territories.`;
+    }
+
+    const parts = [
+      ["live", "live"],
+      ["pre_register", "pre-register"],
+      ["early_access", "early access"],
+      ["unavailable", "unavailable"],
+      ["unknown", "unknown"]
+    ]
+      .map(([state, label]) => [Number(counts[state]) || 0, label])
+      .filter(([count]) => count > 0)
+      .map(([count, label]) => `${count} ${label}`);
+
+    return `Checked ${total} countries/territories: ${parts.join(", ")}.`;
+  }, [countryScanData]);
 
   const handleGameClick = useCallback((game) => {
     setSelectedGameCountryScan(null);
@@ -1729,6 +1810,11 @@ function App() {
 
   const dropDownAnim = { hidden: { opacity: 0, y: -10, scale: 0.95 }, show: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.15, ease: "easeOut" } }, exit: { opacity: 0, y: -10, scale: 0.95, transition: { duration: 0.1, ease: "easeIn" } } };
   const scanPercentage = Math.min(100, (scanProgress.currentAd / Math.max(1, scanProgress.totalAds)) * 100).toFixed(0);
+  const isCountryScanRunning = ["starting", "running"].includes(countryScanJob?.state);
+  const countryScanPercentage = Math.min(
+    100,
+    ((countryScanJob?.checked || 0) / Math.max(1, countryScanJob?.total || 1)) * 100
+  ).toFixed(0);
 
   // FULL-SCREEN SECURITY GATE FOR UNAUTHENTICATED USERS
   if (!authToken || !currentUser) {
@@ -2407,36 +2493,18 @@ function App() {
                       <button
                         type="button"
                         onClick={() => handleStartCountryScan()}
-                        disabled={!countryPackage.trim() || countryScanJob?.state === "running"}
+                        disabled={!countryPackage.trim() || isCountryScanRunning}
                         className="h-11 px-5 rounded-full bg-electric-blue text-white text-xs font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm"
                       >
-                        <span className={cn("material-symbols-outlined text-[18px]", countryScanJob?.state === "running" && "animate-spin")}>
-                          {countryScanJob?.state === "running" ? "progress_activity" : "travel_explore"}
+                        <span className={cn("material-symbols-outlined text-[18px]", isCountryScanRunning && "animate-spin")}>
+                          {isCountryScanRunning ? "progress_activity" : "travel_explore"}
                         </span>
-                        {countryScanJob?.state === "running" ? "Scanning countries" : "Scan countries"}
+                        {isCountryScanRunning ? "Scanning countries" : "Scan countries"}
                       </button>
                     )}
                   </div>
                 </div>
 
-                {countryScanJob?.state === "running" && (
-                  <div className="mt-4 pt-4 border-t border-border-subtle">
-                    <div className="flex items-center justify-between gap-3 text-[10px] md:text-xs">
-                      <span className="text-text-muted truncate">
-                        {countryScanJob.packageName} · {countryScanJob.currentCountryName || countryScanJob.currentCountry || "Starting..."}
-                      </span>
-                      <span className="text-text-main font-mono flex-shrink-0">
-                        {countryScanJob.checked || 0}/{countryScanJob.total || 0}
-                      </span>
-                    </div>
-                    <div className="mt-2 h-1.5 bg-input-bg rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-electric-blue rounded-full transition-all"
-                        style={{ width: Math.min(100, ((countryScanJob.checked || 0) / Math.max(1, countryScanJob.total || 1)) * 100) + "%" }}
-                      />
-                    </div>
-                  </div>
-                )}
               </motion.div>
 
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
@@ -3256,7 +3324,7 @@ function App() {
                         <button
                           type="button"
                           onClick={() => handleStartCountryScan(selectedGame.package_name)}
-                          disabled={countryScanJob?.state === "running"}
+                          disabled={isCountryScanRunning}
                           className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
                         >
                           <span className="material-symbols-outlined text-[16px]">refresh</span>
@@ -3277,7 +3345,7 @@ function App() {
                       <button
                         type="button"
                         onClick={() => handleStartCountryScan(selectedGame.package_name)}
-                        disabled={countryScanJob?.state === "running"}
+                        disabled={isCountryScanRunning}
                         className="mt-3 h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
                       >
                         <span className="material-symbols-outlined text-[16px]">travel_explore</span>
@@ -3346,7 +3414,7 @@ function App() {
                     <h2 className="text-base md:text-lg font-medium text-text-main">Country availability scan</h2>
                   </div>
                   <p className="text-[10px] md:text-xs text-text-muted mt-1 font-mono truncate">
-                    {countryScanJob?.state === "running" ? countryScanJob.packageName : countryScanData?.scan?.packageName || countryPackage || "Package"}
+                    {countryScanData?.scan?.packageName || (isCountryScanRunning ? countryScanJob.packageName : countryPackage || "Package")}
                   </p>
                   {countryScanData?.scan?.appTitle && (
                     <p className="text-[10px] text-text-muted mt-0.5 truncate">
@@ -3363,7 +3431,7 @@ function App() {
                 </button>
               </div>
 
-              {countryScanJob?.state === "running" ? (
+              {isCountryScanRunning && !countryScanData && !countryScanError ? (
                 <div className="flex-1 flex items-center justify-center p-6">
                   <div className="w-full max-w-xl text-center">
                     <div className="w-16 h-16 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center mx-auto">
@@ -3397,6 +3465,22 @@ function App() {
               ) : countryScanData ? (
                 <>
                   <div className="px-4 md:px-6 py-4 border-b border-border-subtle">
+                    <div className="mb-4 rounded-2xl border border-border-subtle bg-input-bg/60 px-4 py-3.5 flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center flex-shrink-0">
+                        <span className="material-symbols-outlined text-[19px]">public</span>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs md:text-sm font-medium text-text-main">{countryScanSummary}</p>
+                        {countryScanData.previousScan && (
+                          <p className="text-[10px] md:text-[11px] text-text-muted mt-1">
+                            {(countryScanData.changes?.length || 0) === 0
+                              ? "No country availability changes since the previous scan."
+                              : `${countryScanData.changes.length} country ${countryScanData.changes.length === 1 ? "status changed" : "statuses changed"} since the previous scan.`}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                       {["live", "pre_register", "early_access", "unavailable", "unknown"].map(state => {
                         const meta = getCountryStateMeta(state);
@@ -3525,6 +3609,111 @@ function App() {
               )}
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isCountryScanRunning && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className={cn(
+              "fixed left-4 right-4 md:left-auto md:right-6 z-[101] bg-surface-solid border border-border-subtle rounded-[22px] shadow-lg overflow-hidden",
+              isScanning ? "bottom-60 md:bottom-[190px]" : "bottom-20 md:bottom-6",
+              isCountryScanMinimized ? "md:w-[300px]" : "md:w-[370px]"
+            )}
+          >
+            <div className="px-4 py-3.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="relative w-9 h-9 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0 overflow-hidden">
+                  <motion.span
+                    className="absolute w-7 h-7 rounded-full border border-electric-blue/55"
+                    animate={{ scale: [0.65, 1.15], opacity: [0.7, 0] }}
+                    transition={{ duration: 1.35, repeat: Infinity, ease: "easeOut" }}
+                  />
+                  <span className="material-symbols-outlined text-[18px] text-electric-blue">public</span>
+                </div>
+
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs md:text-sm font-medium text-text-main">Country scan</h4>
+                    <div className="flex items-center gap-1" aria-label="Country scan active">
+                      {[0, 1, 2].map((dot) => (
+                        <motion.span
+                          key={dot}
+                          className="w-1 h-1 rounded-full bg-electric-blue"
+                          animate={{ opacity: [0.25, 1, 0.25], y: [0, -2, 0] }}
+                          transition={{ duration: 1.05, repeat: Infinity, delay: dot * 0.14, ease: "easeInOut" }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-[10px] md:text-[11px] text-text-muted truncate mt-0.5">
+                    {countryScanJob?.packageName || countryPackage}
+                    {countryScanJob?.currentCountryName ? ` · ${countryScanJob.currentCountryName}` : ""}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsCountryScanMinimized(!isCountryScanMinimized)}
+                className="w-8 h-8 rounded-full text-text-muted hover:text-text-main hover:bg-black/[0.035] dark:hover:bg-white/[0.045] flex items-center justify-center transition-colors flex-shrink-0"
+                title={isCountryScanMinimized ? "Expand" : "Minimize"}
+                aria-label={isCountryScanMinimized ? "Expand country scan progress" : "Minimize country scan progress"}
+              >
+                <span className="material-symbols-outlined text-[18px]">{isCountryScanMinimized ? "expand_content" : "minimize"}</span>
+              </button>
+            </div>
+
+            <AnimatePresence initial={false}>
+              {!isCountryScanMinimized && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.16 }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-4 pb-4">
+                    <div className="relative h-1.5 bg-input-bg rounded-full overflow-hidden">
+                      <div
+                        className="absolute inset-y-0 left-0 bg-electric-blue rounded-full transition-[width] duration-300 ease-out"
+                        style={{ width: `${countryScanPercentage}%` }}
+                      />
+                      <motion.div
+                        className="absolute inset-y-0 w-14 bg-gradient-to-r from-transparent via-electric-blue/55 to-transparent"
+                        animate={{ x: [-70, 390] }}
+                        transition={{ duration: 1.45, repeat: Infinity, ease: "linear" }}
+                      />
+                    </div>
+
+                    <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
+                      <span>
+                        <span className="text-text-main font-medium">{countryScanJob?.checked || 0}</span>
+                        {" "}of {countryScanJob?.total || "—"} countries
+                        {countryScanJob?.total ? <span className="ml-1.5">· {countryScanPercentage}%</span> : null}
+                      </span>
+                      <span className="tabular-nums flex-shrink-0">
+                        {countryScanJob?.currentCountry || (countryScanJob?.state === "starting" ? "Starting…" : "")}
+                      </span>
+                    </div>
+
+                    <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
+                      <span className="material-symbols-outlined text-[14px] flex-shrink-0">travel_explore</span>
+                      <span className="truncate">
+                        {countryScanJob?.currentCountryName
+                          ? `Checking Google Play in ${countryScanJob.currentCountryName}`
+                          : "Preparing Google Play storefront scan…"}
+                      </span>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
         )}
       </AnimatePresence>
 
