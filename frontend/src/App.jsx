@@ -1553,6 +1553,15 @@ function App() {
     return fetchJson(API_BASE + "/api/country-scans/latest?packageName=" + encodeURIComponent(normalized));
   }, []);
 
+  const refreshCountryScanLibrary = useCallback(async () => {
+    try {
+      const data = await fetchJson(API_BASE + "/api/country-scans");
+      setCountryScanLibrary(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Country scan library refresh failed:", error);
+    }
+  }, []);
+
   const openCountryScanDetails = useCallback((payload, packageName) => {
     if (payload) setCountryScanData(payload);
     if (packageName) setCountryPackage(packageName);
@@ -1618,12 +1627,70 @@ function App() {
         body: JSON.stringify({ packageName })
       });
       setCountryScanJob(job);
+      localStorage.setItem(COUNTRY_SCAN_JOB_KEY, JSON.stringify({
+        scanId: job.scanId,
+        packageName: job.packageName
+      }));
     } catch (error) {
       setCountryScanJob(null);
       setCountryScanError(error.message || "Unable to start country scan.");
       setCountryScanModalOpen(true);
     }
   }, [countryPackage, isAdmin]);
+
+  // Reattach to a country scan after a browser refresh. The backend scan is
+  // independent of the tab; this restores the floating progress UI and result
+  // popup instead of making a refresh look like the scan stopped.
+  useEffect(() => {
+    if (!authToken || !currentUser) return undefined;
+
+    let disposed = false;
+
+    const recoverCountryScan = async () => {
+      let savedJob = null;
+      try {
+        savedJob = JSON.parse(localStorage.getItem(COUNTRY_SCAN_JOB_KEY) || "null");
+      } catch {
+        localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+      }
+
+      try {
+        const activeResponse = await fetchJson(API_BASE + "/api/country-scans/active");
+        if (disposed) return;
+
+        let recovered = activeResponse?.activeScan || null;
+
+        if (!recovered && savedJob?.scanId) {
+          try {
+            recovered = await fetchJson(API_BASE + "/api/country-scans/status/" + savedJob.scanId);
+          } catch {
+            recovered = null;
+          }
+        }
+
+        if (!recovered?.scanId) {
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+          return;
+        }
+
+        if (["starting", "running", "complete", "error"].includes(recovered.state)) {
+          setCountryPackage(recovered.packageName || savedJob?.packageName || "");
+          setCountryScanJob(recovered);
+          localStorage.setItem(COUNTRY_SCAN_JOB_KEY, JSON.stringify({
+            scanId: recovered.scanId,
+            packageName: recovered.packageName || savedJob?.packageName || ""
+          }));
+        } else {
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+        }
+      } catch (error) {
+        console.error("Country scan recovery failed:", error);
+      }
+    };
+
+    void recoverCountryScan();
+    return () => { disposed = true; };
+  }, [authToken, currentUser]);
 
   useEffect(() => {
     if (!isDrawerOpen || !selectedGame?.package_name) return undefined;
@@ -1678,6 +1745,8 @@ function App() {
           setCountryScanJob(status);
           setIsCountryScanMinimized(false);
           setCountryScanModalOpen(true);
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+          void refreshCountryScanLibrary();
 
           if (selectedGame?.package_name === status.packageName) {
             setSelectedGameCountryScan(payload);
@@ -1688,6 +1757,7 @@ function App() {
           setCountryScanJob(status);
           setCountryScanError(status.error || "Country scan failed.");
           setCountryScanModalOpen(true);
+          localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
         } else {
           setCountryScanJob(status);
         }
@@ -1708,7 +1778,7 @@ function App() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [countryScanJob?.scanId, fetchLatestCountryScan, selectedGame?.package_name]);
+  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, selectedGame?.package_name]);
 
   const countryChangesByCode = useMemo(() => {
     const map = new Map();
@@ -1728,6 +1798,17 @@ function App() {
       return item.state === countryScanFilter;
     });
   }, [countryScanData, countryScanFilter, countryScanSearch, countryChangesByCode]);
+
+  const filteredCountryScanLibrary = useMemo(() => {
+    const query = countryLibrarySearch.trim().toLowerCase();
+    if (!query) return countryScanLibrary;
+
+    return countryScanLibrary.filter(item =>
+      String(item.appTitle || "").toLowerCase().includes(query) ||
+      String(item.developer || "").toLowerCase().includes(query) ||
+      String(item.packageName || "").toLowerCase().includes(query)
+    );
+  }, [countryScanLibrary, countryLibrarySearch]);
 
   const countryScanSummary = useMemo(() => {
     if (!countryScanData?.scan) return "";
