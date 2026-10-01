@@ -476,15 +476,15 @@ app.post("/api/country-scans", async (req, res) => {
 
   try {
     const game = (await pool.query(
-      "SELECT id, title FROM games WHERE package_name = $1 LIMIT 1",
+      "SELECT title FROM games WHERE package_name = $1 LIMIT 1",
       [packageName]
     )).rows[0];
 
     const { rows } = await pool.query(
-      `INSERT INTO package_country_scans (package_name, game_id, app_title, status)
-       VALUES ($1, $2, $3, 'running')
+      `INSERT INTO package_country_scans (package_name, app_title, status)
+       VALUES ($1, $2, 'running')
        RETURNING *`,
-      [packageName, game?.id || null, game?.title || null]
+      [packageName, game?.title || null]
     );
 
     const scan = rows[0];
