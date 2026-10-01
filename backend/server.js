@@ -3,6 +3,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor } = require("./GoogleAdsScanner");
+const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const express = require("express");
 const cors = require("cors");
@@ -65,6 +66,57 @@ const pool = new Pool({
     `);
   } catch (e) {
     console.error("⚠️ [DB] Failed to initialize ad_creatives table:", e.message);
+  }
+})();
+
+// Country availability scans are keyed by package name, not by Atlas discovery.
+// The package name is the durable identity, so standalone scans remain intact
+// even if an Atlas game record is later deleted or the main dataset is reset.
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS package_country_scans (
+        id BIGSERIAL PRIMARY KEY,
+        package_name TEXT NOT NULL,
+        app_title TEXT,
+        developer TEXT,
+        status TEXT NOT NULL DEFAULT 'running',
+        started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        completed_at TIMESTAMPTZ,
+        live_count INTEGER NOT NULL DEFAULT 0,
+        preregister_count INTEGER NOT NULL DEFAULT 0,
+        early_access_count INTEGER NOT NULL DEFAULT 0,
+        unavailable_count INTEGER NOT NULL DEFAULT 0,
+        unknown_count INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_package_country_scans_package
+        ON package_country_scans(package_name, id DESC);
+
+      CREATE TABLE IF NOT EXISTS package_country_scan_results (
+        scan_id BIGINT NOT NULL REFERENCES package_country_scans(id) ON DELETE CASCADE,
+        country_code CHAR(2) NOT NULL,
+        country_name TEXT NOT NULL,
+        release_state TEXT NOT NULL,
+        confidence TEXT,
+        evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+        PRIMARY KEY (scan_id, country_code)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_package_country_scan_results_state
+        ON package_country_scan_results(scan_id, release_state);
+    `);
+
+    await pool.query(`
+      UPDATE package_country_scans
+      SET status = 'error',
+          completed_at = COALESCE(completed_at, now()),
+          error_message = COALESCE(error_message, 'Country scan interrupted by server restart.')
+      WHERE status = 'running'
+    `);
+  } catch (e) {
+    console.error("⚠️ [DB] Failed to initialize country scan tables:", e.message);
   }
 })();
 
@@ -224,6 +276,7 @@ app.use("/api", (req, res, next) => {
 
 let activeScanCancelled = false;
 let isScanRunning = false;
+let activeCountryScan = null;
 
 function createIdleScanStatus() {
   return {
@@ -313,6 +366,335 @@ app.post("/api/cancel-scan", (_req, res) => {
   });
 
   res.json({ status: "success", message: "Abort signal sent." });
+});
+
+function serializeCountryScan(scan) {
+  if (!scan) return null;
+  return {
+    id: Number(scan.id),
+    packageName: scan.package_name,
+    appTitle: scan.app_title || null,
+    developer: scan.developer || null,
+    status: scan.status,
+    startedAt: scan.started_at,
+    completedAt: scan.completed_at,
+    counts: {
+      live: Number(scan.live_count) || 0,
+      pre_register: Number(scan.preregister_count) || 0,
+      early_access: Number(scan.early_access_count) || 0,
+      unavailable: Number(scan.unavailable_count) || 0,
+      unknown: Number(scan.unknown_count) || 0
+    },
+    error: scan.error_message || null
+  };
+}
+
+async function getCountryScanPayload(packageName, scanId = null) {
+  const scanQuery = scanId
+    ? await pool.query(
+        "SELECT * FROM package_country_scans WHERE id = $1 AND package_name = $2 LIMIT 1",
+        [scanId, packageName]
+      )
+    : await pool.query(
+        "SELECT * FROM package_country_scans WHERE package_name = $1 AND status = 'complete' ORDER BY id DESC LIMIT 1",
+        [packageName]
+      );
+
+  const scan = scanQuery.rows[0];
+  if (!scan) return null;
+
+  const { rows: resultRows } = await pool.query(
+    `SELECT country_code, country_name, release_state, confidence, evidence
+     FROM package_country_scan_results
+     WHERE scan_id = $1
+     ORDER BY country_name ASC`,
+    [scan.id]
+  );
+
+  const previousScan = (await pool.query(
+    `SELECT id, completed_at
+     FROM package_country_scans
+     WHERE package_name = $1 AND status = 'complete' AND id < $2
+     ORDER BY id DESC
+     LIMIT 1`,
+    [packageName, scan.id]
+  )).rows[0];
+
+  let previousByCountry = new Map();
+  if (previousScan) {
+    const { rows: previousRows } = await pool.query(
+      "SELECT country_code, release_state FROM package_country_scan_results WHERE scan_id = $1",
+      [previousScan.id]
+    );
+    previousByCountry = new Map(previousRows.map(row => [row.country_code, row.release_state]));
+  }
+
+  const results = resultRows.map(row => ({
+    countryCode: row.country_code,
+    countryName: row.country_name,
+    state: row.release_state,
+    confidence: row.confidence,
+    evidence: row.evidence || {}
+  }));
+
+  const changes = previousScan
+    ? results
+        .filter(row => previousByCountry.has(row.countryCode) && previousByCountry.get(row.countryCode) !== row.state)
+        .map(row => ({
+          countryCode: row.countryCode,
+          countryName: row.countryName,
+          from: previousByCountry.get(row.countryCode),
+          to: row.state
+        }))
+    : [];
+
+  return {
+    scan: serializeCountryScan(scan),
+    previousScan: previousScan ? {
+      id: Number(previousScan.id),
+      completedAt: previousScan.completed_at
+    } : null,
+    results,
+    changes
+  };
+}
+
+app.post("/api/country-scans", async (req, res) => {
+  let packageName;
+  try {
+    packageName = normalizePackageName(req.body?.packageName);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  if (activeCountryScan && ["starting", "running"].includes(activeCountryScan.state)) {
+    return res.status(409).json({
+      error: `A country scan is already running for ${activeCountryScan.packageName}.`,
+      activeScan: activeCountryScan
+    });
+  }
+
+  // Claim the single country-scan slot before the first database await so two
+  // near-simultaneous requests cannot both launch a full storefront sweep.
+  activeCountryScan = {
+    scanId: null,
+    packageName,
+    state: "starting",
+    checked: 0,
+    total: COUNTRY_CODES.length,
+    currentCountry: null,
+    currentCountryName: null,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    const game = (await pool.query(
+      "SELECT title FROM games WHERE package_name = $1 LIMIT 1",
+      [packageName]
+    )).rows[0];
+
+    const { rows } = await pool.query(
+      `INSERT INTO package_country_scans (package_name, app_title, status)
+       VALUES ($1, $2, 'running')
+       RETURNING *`,
+      [packageName, game?.title || null]
+    );
+
+    const scan = rows[0];
+    activeCountryScan = {
+      scanId: Number(scan.id),
+      packageName,
+      state: "running",
+      checked: 0,
+      total: COUNTRY_CODES.length,
+      currentCountry: null,
+      currentCountryName: null,
+      startedAt: scan.started_at,
+      updatedAt: new Date().toISOString()
+    };
+
+    res.status(202).json(activeCountryScan);
+
+    (async () => {
+      try {
+        const countryResult = await scanPackageCountries(packageName, {
+          onProgress(progress) {
+            if (!activeCountryScan || activeCountryScan.scanId !== Number(scan.id)) return;
+            activeCountryScan = {
+              ...activeCountryScan,
+              ...progress,
+              state: "running",
+              updatedAt: new Date().toISOString()
+            };
+          }
+        });
+
+        let appTitle = game?.title || null;
+        let developer = null;
+
+        const metadataCountry = countryResult.results.find(
+          item => item.state === "live" || item.state === "pre_register" || item.state === "early_access"
+        )?.countryCode;
+
+        if (metadataCountry) {
+          try {
+            const appData = await gplay.app({
+              appId: packageName,
+              country: metadataCountry.toLowerCase()
+            });
+            appTitle = appData?.title || appTitle;
+            developer = appData?.developer || null;
+          } catch {}
+        }
+
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("DELETE FROM package_country_scan_results WHERE scan_id = $1", [scan.id]);
+
+          for (const item of countryResult.results) {
+            await client.query(
+              `INSERT INTO package_country_scan_results
+                 (scan_id, country_code, country_name, release_state, confidence, evidence)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+              [
+                scan.id,
+                item.countryCode,
+                item.countryName,
+                item.state,
+                item.confidence,
+                JSON.stringify(item.evidence || {})
+              ]
+            );
+          }
+
+          await client.query(
+            `UPDATE package_country_scans
+             SET status = 'complete',
+                 completed_at = now(),
+                 app_title = COALESCE($2, app_title),
+                 developer = COALESCE($3, developer),
+                 live_count = $4,
+                 preregister_count = $5,
+                 early_access_count = $6,
+                 unavailable_count = $7,
+                 unknown_count = $8,
+                 error_message = NULL
+             WHERE id = $1`,
+            [
+              scan.id,
+              appTitle,
+              developer,
+              countryResult.counts.live,
+              countryResult.counts.pre_register,
+              countryResult.counts.early_access,
+              countryResult.counts.unavailable,
+              countryResult.counts.unknown
+            ]
+          );
+
+          await client.query("COMMIT");
+        } catch (error) {
+          try { await client.query("ROLLBACK"); } catch {}
+          throw error;
+        } finally {
+          client.release();
+        }
+
+        activeCountryScan = {
+          scanId: Number(scan.id),
+          packageName,
+          state: "complete",
+          checked: countryResult.total,
+          total: countryResult.total,
+          currentCountry: null,
+          currentCountryName: null,
+          counts: countryResult.counts,
+          completedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      } catch (error) {
+        console.error("Country availability scan failed:", error);
+        try {
+          await pool.query(
+            `UPDATE package_country_scans
+             SET status = 'error', completed_at = now(), error_message = $2
+             WHERE id = $1`,
+            [scan.id, String(error?.message || error).slice(0, 1000)]
+          );
+        } catch {}
+
+        activeCountryScan = {
+          scanId: Number(scan.id),
+          packageName,
+          state: "error",
+          error: String(error?.message || error),
+          updatedAt: new Date().toISOString()
+        };
+      }
+    })();
+  } catch (error) {
+    console.error("Country scan start failed:", error);
+    activeCountryScan = null;
+    return res.status(500).json({ error: "Unable to start country availability scan." });
+  }
+});
+
+app.get("/api/country-scans/status/:scanId", async (req, res) => {
+  const scanId = Number(req.params.scanId);
+  if (!Number.isInteger(scanId) || scanId <= 0) {
+    return res.status(400).json({ error: "Invalid country scan ID." });
+  }
+
+  if (activeCountryScan && activeCountryScan.scanId === scanId) {
+    res.set("Cache-Control", "no-store");
+    return res.json(activeCountryScan);
+  }
+
+  try {
+    const scan = (await pool.query(
+      "SELECT * FROM package_country_scans WHERE id = $1 LIMIT 1",
+      [scanId]
+    )).rows[0];
+
+    if (!scan) return res.status(404).json({ error: "Country scan not found." });
+
+    const serialized = serializeCountryScan(scan);
+    const total = Object.values(serialized.counts).reduce((sum, value) => sum + Number(value || 0), 0);
+    return res.json({
+      scanId: serialized.id,
+      packageName: serialized.packageName,
+      state: serialized.status,
+      checked: serialized.status === "complete" ? total : 0,
+      total,
+      counts: serialized.counts,
+      error: serialized.error,
+      completedAt: serialized.completedAt
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/country-scans/latest", async (req, res) => {
+  let packageName;
+  try {
+    packageName = normalizePackageName(req.query.packageName);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  try {
+    const payload = await getCountryScanPayload(packageName);
+    if (!payload) {
+      return res.status(404).json({ error: "No completed country scan has been saved for this package." });
+    }
+    res.set("Cache-Control", "no-store");
+    return res.json(payload);
+  } catch (error) {
+    console.error("Country scan fetch failed:", error);
+    return res.status(500).json({ error: "Unable to load country scan." });
+  }
 });
 
 app.get("/api/stats", async (_req, res) => {
