@@ -85,8 +85,7 @@ function classifyStorePage({ body, status, finalUrl, packageName }) {
     "we couldn't find the requested url",
     "item not available",
     "this app is not available",
-    "not available in your country",
-    "not available for your device"
+    "not available in your country"
   ])) {
     return { state: "unavailable", confidence: "high", marker: "unavailable_message" };
   }
