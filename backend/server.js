@@ -70,15 +70,14 @@ const pool = new Pool({
 })();
 
 // Country availability scans are keyed by package name, not by Atlas discovery.
-// game_id is optional so any Android package can be scanned and retained even if
-// the title has never appeared in an ad scan.
+// The package name is the durable identity, so standalone scans remain intact
+// even if an Atlas game record is later deleted or the main dataset is reset.
 (async () => {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS package_country_scans (
         id BIGSERIAL PRIMARY KEY,
         package_name TEXT NOT NULL,
-        game_id INTEGER REFERENCES games(id) ON DELETE SET NULL,
         app_title TEXT,
         developer TEXT,
         status TEXT NOT NULL DEFAULT 'running',
@@ -374,7 +373,6 @@ function serializeCountryScan(scan) {
   return {
     id: Number(scan.id),
     packageName: scan.package_name,
-    gameId: scan.game_id == null ? null : Number(scan.game_id),
     appTitle: scan.app_title || null,
     developer: scan.developer || null,
     status: scan.status,
