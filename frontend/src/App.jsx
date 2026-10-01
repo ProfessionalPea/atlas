@@ -25,6 +25,25 @@ const DIRECTORY_GAME_SORT_OPTIONS = [
   { id: "az", label: "A–Z" },
 ];
 
+const COUNTRY_STATE_META = {
+  live: { label: "Live", icon: "check_circle", className: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" },
+  pre_register: { label: "Pre-register", icon: "event_available", className: "text-electric-blue bg-electric-blue/10 border-electric-blue/20" },
+  early_access: { label: "Early access", icon: "science", className: "text-amber-500 bg-amber-500/10 border-amber-500/20" },
+  unavailable: { label: "Unavailable", icon: "block", className: "text-text-muted bg-input-bg border-border-subtle" },
+  unknown: { label: "Unknown", icon: "help", className: "text-urgent-red bg-urgent-red/10 border-urgent-red/20" }
+};
+
+function getCountryStateMeta(state) {
+  return COUNTRY_STATE_META[state] || COUNTRY_STATE_META.unknown;
+}
+
+function getCountryFlag(code) {
+  const normalized = String(code || "").toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized)) return "🌐";
+  return String.fromCodePoint(...normalized.split("").map(char => 127397 + char.charCodeAt(0)));
+}
+
+
 function getAgeText(dateValue) {
   if (!dateValue || dateValue === "Unknown" || dateValue === 0) return null;
   const dateObj = typeof dateValue === 'number' ? new Date(dateValue) : new Date(dateValue);
@@ -589,6 +608,17 @@ function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [selectedGame, setSelectedGame] = useState(null);
+
+  const [countryPackage, setCountryPackage] = useState("");
+  const [countryScanData, setCountryScanData] = useState(null);
+  const [countryScanJob, setCountryScanJob] = useState(null);
+  const [countryScanError, setCountryScanError] = useState("");
+  const [countryScanModalOpen, setCountryScanModalOpen] = useState(false);
+  const [countryScanFilter, setCountryScanFilter] = useState("all");
+  const [countryScanSearch, setCountryScanSearch] = useState("");
+  const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
+  const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
+
   const [activeStatPanel, setActiveStatPanel] = useState(null);
   const [statPanelSearch, setStatPanelSearch] = useState("");
   const deferredStatPanelSearch = useDeferredValue(statPanelSearch);
@@ -1512,7 +1542,148 @@ function App() {
     localStorage.removeItem("atlas_latest_comp_id");
   };
 
+  const fetchLatestCountryScan = useCallback(async (packageName) => {
+    const normalized = String(packageName || "").trim();
+    if (!normalized) return null;
+    return fetchJson(API_BASE + "/api/country-scans/latest?packageName=" + encodeURIComponent(normalized));
+  }, []);
+
+  const openCountryScanDetails = useCallback((payload, packageName) => {
+    if (payload) setCountryScanData(payload);
+    if (packageName) setCountryPackage(packageName);
+    setCountryScanFilter("all");
+    setCountryScanSearch("");
+    setCountryScanError("");
+    setCountryScanModalOpen(true);
+  }, []);
+
+  const handleViewSavedCountryScan = useCallback(async (packageOverride) => {
+    const packageName = String(packageOverride || countryPackage || "").trim();
+    if (!packageName) {
+      setCountryScanError("Enter an Android package name first.");
+      setCountryScanModalOpen(true);
+      return;
+    }
+
+    setCountryScanModalOpen(true);
+    setCountryScanError("");
+    setCountryScanData(null);
+    try {
+      const payload = await fetchLatestCountryScan(packageName);
+      setCountryPackage(packageName);
+      setCountryScanData(payload);
+      if (selectedGame?.package_name === packageName) setSelectedGameCountryScan(payload);
+    } catch (error) {
+      setCountryScanError(error.message || "No saved country scan was found.");
+    }
+  }, [countryPackage, fetchLatestCountryScan, selectedGame?.package_name]);
+
+  const handleStartCountryScan = useCallback(async (packageOverride) => {
+    const packageName = String(packageOverride || countryPackage || "").trim();
+    if (!isAdmin) return;
+
+    if (!packageName) {
+      setCountryScanError("Enter an Android package name first.");
+      setCountryScanModalOpen(true);
+      return;
+    }
+
+    setCountryPackage(packageName);
+    setCountryScanModalOpen(true);
+    setCountryScanData(null);
+    setCountryScanError("");
+
+    try {
+      const job = await fetchJson(API_BASE + "/api/country-scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packageName })
+      });
+      setCountryScanJob(job);
+    } catch (error) {
+      setCountryScanError(error.message || "Unable to start country scan.");
+    }
+  }, [countryPackage, isAdmin]);
+
+  useEffect(() => {
+    if (!isDrawerOpen || !selectedGame?.package_name) return undefined;
+
+    let cancelled = false;
+    const packageName = selectedGame.package_name;
+    setSelectedGameCountryLoading(true);
+    setSelectedGameCountryScan(null);
+
+    fetchLatestCountryScan(packageName)
+      .then(payload => {
+        if (!cancelled) setSelectedGameCountryScan(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedGameCountryScan(null);
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedGameCountryLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [isDrawerOpen, selectedGame?.package_name, fetchLatestCountryScan]);
+
+  useEffect(() => {
+    if (!countryScanJob?.scanId || countryScanJob.state !== "running") return undefined;
+
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const status = await fetchJson(API_BASE + "/api/country-scans/status/" + countryScanJob.scanId);
+        if (cancelled) return;
+        setCountryScanJob(status);
+
+        if (status.state === "complete") {
+          const payload = await fetchLatestCountryScan(status.packageName);
+          if (cancelled) return;
+          setCountryScanData(payload);
+          setCountryScanError("");
+          if (selectedGame?.package_name === status.packageName) {
+            setSelectedGameCountryScan(payload);
+            setSelectedGameCountryLoading(false);
+          }
+        } else if (status.state === "error") {
+          setCountryScanError(status.error || "Country scan failed.");
+        }
+      } catch (error) {
+        if (!cancelled) setCountryScanError(error.message || "Unable to read country scan progress.");
+      }
+    };
+
+    poll();
+    const timer = window.setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [countryScanJob?.scanId, countryScanJob?.state, fetchLatestCountryScan, selectedGame?.package_name]);
+
+  const countryChangesByCode = useMemo(() => {
+    const map = new Map();
+    for (const change of countryScanData?.changes || []) map.set(change.countryCode, change);
+    return map;
+  }, [countryScanData]);
+
+  const visibleCountryResults = useMemo(() => {
+    const search = countryScanSearch.trim().toLowerCase();
+    return (countryScanData?.results || []).filter(item => {
+      const matchesSearch = !search ||
+        String(item.countryName || "").toLowerCase().includes(search) ||
+        String(item.countryCode || "").toLowerCase().includes(search);
+      if (!matchesSearch) return false;
+      if (countryScanFilter === "all") return true;
+      if (countryScanFilter === "changed") return countryChangesByCode.has(item.countryCode);
+      return item.state === countryScanFilter;
+    });
+  }, [countryScanData, countryScanFilter, countryScanSearch, countryChangesByCode]);
+
   const handleGameClick = useCallback((game) => {
+    setSelectedGameCountryScan(null);
     setSelectedGame(game);
     setIsDrawerOpen(true);
   }, []);
@@ -2191,6 +2362,81 @@ function App() {
                     )}
                   </div>
                 </div>
+              </motion.div>
+
+              <motion.div variants={FADE_UP} className="w-full bg-surface-solid rounded-[24px] p-4 md:p-5 shadow-sm border border-border-subtle">
+                <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-10 h-10 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center">
+                        <span className="material-symbols-outlined text-[21px]">public</span>
+                      </div>
+                      <div className="min-w-0">
+                        <h2 className="text-sm md:text-base font-medium text-text-main">Country availability</h2>
+                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every country/territory for any Google Play package — it does not need to exist in Atlas.</p>
+                      </div>
+                    </div>
+
+                    <div className="relative">
+                      <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">deployed_code</span>
+                      <input
+                        value={countryPackage}
+                        onChange={(event) => setCountryPackage(event.target.value.trimStart())}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && isAdmin && countryPackage.trim() && countryScanJob?.state !== "running") {
+                            handleStartCountryScan();
+                          }
+                        }}
+                        placeholder="com.publisher.game"
+                        className="w-full h-12 bg-input-bg text-text-main border border-border-subtle rounded-full pl-11 pr-4 outline-none focus:ring-2 focus:ring-electric-blue/30 font-mono text-xs md:text-sm"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 lg:flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleViewSavedCountryScan()}
+                      disabled={!countryPackage.trim()}
+                      className="h-11 px-4 rounded-full border border-border-subtle bg-input-bg text-text-main text-xs font-medium hover:bg-surface-glass disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">history</span>
+                      View saved
+                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => handleStartCountryScan()}
+                        disabled={!countryPackage.trim() || countryScanJob?.state === "running"}
+                        className="h-11 px-5 rounded-full bg-electric-blue text-white text-xs font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm"
+                      >
+                        <span className={cn("material-symbols-outlined text-[18px]", countryScanJob?.state === "running" && "animate-spin")}>
+                          {countryScanJob?.state === "running" ? "progress_activity" : "travel_explore"}
+                        </span>
+                        {countryScanJob?.state === "running" ? "Scanning countries" : "Scan countries"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {countryScanJob?.state === "running" && (
+                  <div className="mt-4 pt-4 border-t border-border-subtle">
+                    <div className="flex items-center justify-between gap-3 text-[10px] md:text-xs">
+                      <span className="text-text-muted truncate">
+                        {countryScanJob.packageName} · {countryScanJob.currentCountryName || countryScanJob.currentCountry || "Starting..."}
+                      </span>
+                      <span className="text-text-main font-mono flex-shrink-0">
+                        {countryScanJob.checked || 0}/{countryScanJob.total || 0}
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1.5 bg-input-bg rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-electric-blue rounded-full transition-all"
+                        style={{ width: Math.min(100, ((countryScanJob.checked || 0) / Math.max(1, countryScanJob.total || 1)) * 100) + "%" }}
+                      />
+                    </div>
+                  </div>
+                )}
               </motion.div>
 
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
@@ -2958,6 +3204,90 @@ function App() {
                 <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted  mb-2 font-bold">Rating</p><div className="flex items-center gap-2"><p className="font-headline-lg text-2xl text-text-main font-bold">{Number(selectedGame.rating) > 0 ? Number(selectedGame.rating).toFixed(1) : "N/A"}</p><span className="material-symbols-outlined text-electric-blue text-[22px] mb-0.5" style={{fontVariationSettings: "'FILL' 1"}}>star</span></div></div>
                 <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted  mb-2 font-bold">Reviews</p><p className="font-headline-lg text-2xl text-text-main font-bold">{selectedGame.ratings_count || 0}</p></div>
               </div>
+              <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-xs text-text-main font-bold flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[17px] text-electric-blue">public</span>
+                      Country availability
+                    </h3>
+                    <p className="text-[10px] text-text-muted mt-1 font-mono break-all">{selectedGame.package_name}</p>
+                  </div>
+                  {selectedGameCountryScan?.scan?.completedAt && (
+                    <span className="text-[9px] text-text-muted text-right flex-shrink-0">
+                      {new Date(selectedGameCountryScan.scan.completedAt).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+
+                {selectedGameCountryLoading ? (
+                  <div className="mt-4 flex items-center gap-2 text-xs text-text-muted">
+                    <span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+                    Checking saved scan...
+                  </div>
+                ) : selectedGameCountryScan ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-2 mt-4">
+                      {[
+                        ["live", selectedGameCountryScan.scan.counts?.live || 0],
+                        ["pre_register", selectedGameCountryScan.scan.counts?.pre_register || 0],
+                        ["early_access", selectedGameCountryScan.scan.counts?.early_access || 0],
+                        ["unavailable", selectedGameCountryScan.scan.counts?.unavailable || 0]
+                      ].map(([state, count]) => {
+                        const meta = getCountryStateMeta(state);
+                        return (
+                          <div key={state} className={cn("rounded-xl border px-3 py-2", meta.className)}>
+                            <div className="text-[9px] font-medium">{meta.label}</div>
+                            <div className="text-lg font-semibold mt-0.5">{count}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openCountryScanDetails(selectedGameCountryScan, selectedGame.package_name)}
+                        className="h-9 px-3 rounded-full bg-input-bg border border-border-subtle text-text-main text-[10px] font-medium hover:bg-surface-solid flex items-center gap-1.5"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">visibility</span>
+                        View countries
+                      </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => handleStartCountryScan(selectedGame.package_name)}
+                          disabled={countryScanJob?.state === "running"}
+                          className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">refresh</span>
+                          Scan again
+                        </button>
+                      )}
+                      {(selectedGameCountryScan.changes?.length || 0) > 0 && (
+                        <span className="h-9 px-3 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-medium flex items-center">
+                          {selectedGameCountryScan.changes.length} changed
+                        </span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-4">
+                    <p className="text-xs text-text-muted">No country scan has been saved for this package yet.</p>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => handleStartCountryScan(selectedGame.package_name)}
+                        disabled={countryScanJob?.state === "running"}
+                        className="mt-3 h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">travel_explore</span>
+                        Scan countries
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {selectedGame.screenshots && (
                 <div className="flex flex-col gap-4">
                   <h3 className="text-xs text-text-muted  flex items-center gap-3 font-bold"><span className="w-8 h-[1px] bg-border-subtle"></span> Screenshots</h3>
@@ -2989,6 +3319,211 @@ function App() {
               )}
             </div>
             </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {countryScanModalOpen && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-5">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
+              onClick={() => setCountryScanModalOpen(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.98, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 10 }}
+              className="relative w-full max-w-5xl h-[88vh] max-h-[900px] bg-surface-solid border border-border-subtle rounded-[26px] shadow-2xl overflow-hidden flex flex-col"
+            >
+              <div className="px-5 md:px-6 py-4 border-b border-border-subtle flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-electric-blue text-[21px]">public</span>
+                    <h2 className="text-base md:text-lg font-medium text-text-main">Country availability scan</h2>
+                  </div>
+                  <p className="text-[10px] md:text-xs text-text-muted mt-1 font-mono truncate">
+                    {countryScanJob?.state === "running" ? countryScanJob.packageName : countryScanData?.scan?.packageName || countryPackage || "Package"}
+                  </p>
+                  {countryScanData?.scan?.appTitle && (
+                    <p className="text-[10px] text-text-muted mt-0.5 truncate">
+                      {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCountryScanModalOpen(false)}
+                  className="w-9 h-9 rounded-full hover:bg-input-bg text-text-muted hover:text-text-main flex items-center justify-center"
+                >
+                  <span className="material-symbols-outlined text-[20px]">close</span>
+                </button>
+              </div>
+
+              {countryScanJob?.state === "running" ? (
+                <div className="flex-1 flex items-center justify-center p-6">
+                  <div className="w-full max-w-xl text-center">
+                    <div className="w-16 h-16 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center mx-auto">
+                      <span className="material-symbols-outlined text-[32px] animate-spin">progress_activity</span>
+                    </div>
+                    <h3 className="text-lg font-medium text-text-main mt-5">Scanning Play storefronts</h3>
+                    <p className="text-xs text-text-muted mt-2">
+                      {countryScanJob.currentCountryName || countryScanJob.currentCountry || "Starting country scan..."}
+                    </p>
+                    <div className="flex items-center justify-between text-[10px] text-text-muted mt-6">
+                      <span>{countryScanJob.checked || 0} checked</span>
+                      <span>{countryScanJob.total || 0} total</span>
+                    </div>
+                    <div className="mt-2 h-2 bg-input-bg rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-electric-blue rounded-full transition-all duration-300"
+                        style={{ width: Math.min(100, ((countryScanJob.checked || 0) / Math.max(1, countryScanJob.total || 1)) * 100) + "%" }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-text-muted mt-4">Results are saved by package name, even when the app is not in the Atlas directory.</p>
+                  </div>
+                </div>
+              ) : countryScanError ? (
+                <div className="flex-1 flex items-center justify-center p-6">
+                  <div className="max-w-lg text-center">
+                    <span className="material-symbols-outlined text-urgent-red text-[36px]">error</span>
+                    <h3 className="text-base font-medium text-text-main mt-3">Country scan unavailable</h3>
+                    <p className="text-xs text-text-muted mt-2">{countryScanError}</p>
+                  </div>
+                </div>
+              ) : countryScanData ? (
+                <>
+                  <div className="px-4 md:px-6 py-4 border-b border-border-subtle">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                      {["live", "pre_register", "early_access", "unavailable", "unknown"].map(state => {
+                        const meta = getCountryStateMeta(state);
+                        const count = countryScanData.scan?.counts?.[state] || 0;
+                        return (
+                          <button
+                            type="button"
+                            key={state}
+                            onClick={() => setCountryScanFilter(state)}
+                            className={cn(
+                              "rounded-xl border p-3 text-left transition-all",
+                              meta.className,
+                              countryScanFilter === state && "ring-2 ring-current/20"
+                            )}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[9px] md:text-[10px] font-medium truncate">{meta.label}</span>
+                              <span className="material-symbols-outlined text-[15px]">{meta.icon}</span>
+                            </div>
+                            <div className="text-xl md:text-2xl font-semibold mt-1">{count}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="text-[10px] text-text-muted">
+                        Last scanned {countryScanData.scan?.completedAt ? new Date(countryScanData.scan.completedAt).toLocaleString() : "—"}
+                        {countryScanData.previousScan ? " · compared with previous scan" : " · first saved scan"}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {(countryScanData.changes?.length || 0) > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setCountryScanFilter("changed")}
+                            className="h-8 px-3 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-medium"
+                          >
+                            {countryScanData.changes.length} changes
+                          </button>
+                        )}
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => handleStartCountryScan(countryScanData.scan.packageName)}
+                            className="h-8 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium flex items-center gap-1.5"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">refresh</span>
+                            Scan again
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="px-4 md:px-6 py-3 border-b border-border-subtle flex flex-col sm:flex-row gap-2">
+                    <div className="flex-1 flex items-center gap-2 bg-input-bg border border-border-subtle rounded-xl px-3 h-10">
+                      <span className="material-symbols-outlined text-text-muted text-[17px]">search</span>
+                      <input
+                        value={countryScanSearch}
+                        onChange={event => setCountryScanSearch(event.target.value)}
+                        placeholder="Search country or code"
+                        className="w-full bg-transparent outline-none text-xs text-text-main placeholder:text-text-muted"
+                      />
+                    </div>
+                    <div className="flex gap-1 overflow-x-auto custom-scrollbar">
+                      {[
+                        ["all", "All"],
+                        ["changed", "Changed"],
+                        ["live", "Live"],
+                        ["pre_register", "Pre-register"],
+                        ["early_access", "Early access"],
+                        ["unavailable", "Unavailable"],
+                        ["unknown", "Unknown"]
+                      ].map(([id, label]) => (
+                        <button
+                          type="button"
+                          key={id}
+                          onClick={() => setCountryScanFilter(id)}
+                          className={cn(
+                            "h-10 px-3 rounded-xl text-[10px] font-medium whitespace-nowrap border",
+                            countryScanFilter === id
+                              ? "bg-primary-container text-on-primary-container border-transparent"
+                              : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 md:p-4">
+                    {visibleCountryResults.length === 0 ? (
+                      <div className="h-full min-h-[220px] flex items-center justify-center text-xs text-text-muted">No countries match this filter.</div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {visibleCountryResults.map(item => {
+                          const meta = getCountryStateMeta(item.state);
+                          const change = countryChangesByCode.get(item.countryCode);
+                          return (
+                            <div key={item.countryCode} className="rounded-xl border border-border-subtle bg-surface-glass p-3 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <span className="text-xl flex-shrink-0">{getCountryFlag(item.countryCode)}</span>
+                                <div className="min-w-0">
+                                  <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                  <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.confidence || "unknown"} confidence</div>
+                                  {change && (
+                                    <div className="text-[9px] text-amber-500 mt-1">
+                                      {getCountryStateMeta(change.from).label} → {getCountryStateMeta(change.to).label}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              <span className={cn("px-2.5 py-1.5 rounded-full border text-[9px] font-medium flex-shrink-0", meta.className)}>
+                                {meta.label}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-xs text-text-muted">No country scan loaded.</div>
+              )}
+            </motion.div>
           </div>
         )}
       </AnimatePresence>
