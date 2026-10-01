@@ -391,58 +391,68 @@ function serializeCountryScan(scan) {
 }
 
 async function getCountryScanPayload(packageName, scanId = null) {
-  const scanQuery = scanId
-    ? await pool.query(
-        "SELECT * FROM package_country_scans WHERE id = $1 AND package_name = $2 LIMIT 1",
-        [scanId, packageName]
+  const params = [packageName];
+  const idFilter = scanId ? "AND pcs.id = $2" : "";
+  if (scanId) params.push(scanId);
+
+  // Fetch the selected snapshot, its country rows, the previous snapshot, and
+  // the previous state for each matching country in one database round-trip.
+  // This endpoint is opened interactively from the Country Scans UI, so
+  // avoiding 3-4 sequential remote Postgres queries materially improves View
+  // latency on hosted databases.
+  const { rows } = await pool.query(
+    `
+      WITH target AS (
+        SELECT pcs.*
+        FROM package_country_scans pcs
+        WHERE pcs.package_name = $1
+          AND pcs.status = 'complete'
+          ${idFilter}
+        ORDER BY pcs.id DESC
+        LIMIT 1
+      ),
+      previous AS (
+        SELECT pcs.id, pcs.completed_at
+        FROM package_country_scans pcs
+        JOIN target t ON pcs.package_name = t.package_name
+        WHERE pcs.status = 'complete'
+          AND pcs.id < t.id
+        ORDER BY pcs.id DESC
+        LIMIT 1
       )
-    : await pool.query(
-        "SELECT * FROM package_country_scans WHERE package_name = $1 AND status = 'complete' ORDER BY id DESC LIMIT 1",
-        [packageName]
-      );
-
-  const scan = scanQuery.rows[0];
-  if (!scan) return null;
-
-  const { rows: resultRows } = await pool.query(
-    `SELECT country_code, country_name, release_state, confidence, evidence
-     FROM package_country_scan_results
-     WHERE scan_id = $1
-     ORDER BY country_name ASC`,
-    [scan.id]
+      SELECT
+        t.id AS scan_id,
+        t.package_name,
+        t.app_title,
+        t.developer,
+        t.status,
+        t.started_at,
+        t.completed_at,
+        t.error_message,
+        r.country_code,
+        r.country_name,
+        r.release_state,
+        r.confidence,
+        r.evidence,
+        p.id AS previous_scan_id,
+        p.completed_at AS previous_completed_at,
+        pr.release_state AS previous_release_state
+      FROM target t
+      LEFT JOIN package_country_scan_results r
+        ON r.scan_id = t.id
+      LEFT JOIN previous p
+        ON TRUE
+      LEFT JOIN package_country_scan_results pr
+        ON pr.scan_id = p.id
+       AND pr.country_code = r.country_code
+      ORDER BY r.country_name ASC NULLS LAST
+    `,
+    params
   );
 
-  const previousScan = (await pool.query(
-    `SELECT id, completed_at
-     FROM package_country_scans
-     WHERE package_name = $1 AND status = 'complete' AND id < $2
-     ORDER BY id DESC
-     LIMIT 1`,
-    [packageName, scan.id]
-  )).rows[0];
+  if (rows.length === 0) return null;
 
-  let previousByCountry = new Map();
-  if (previousScan) {
-    const { rows: previousRows } = await pool.query(
-      "SELECT country_code, release_state FROM package_country_scan_results WHERE scan_id = $1",
-      [previousScan.id]
-    );
-    previousByCountry = new Map(previousRows.map(row => [row.country_code, row.release_state]));
-  }
-
-  // Hide legacy ISO-only rows from scans created before Atlas adopted
-  // Google Play's actual named storefront list. This keeps old saved scans
-  // compatible while making every response match what Play Console exposes.
-  const results = resultRows
-    .filter(row => PLAY_COUNTRY_CODE_SET.has(row.country_code))
-    .map(row => ({
-      countryCode: row.country_code,
-      countryName: row.country_name,
-      state: row.release_state,
-      confidence: row.confidence,
-      evidence: row.evidence || {}
-    }));
-
+  const first = rows[0];
   const visibleCounts = {
     live: 0,
     pre_register: 0,
@@ -451,33 +461,54 @@ async function getCountryScanPayload(packageName, scanId = null) {
     unknown: 0
   };
 
+  const results = rows
+    .filter(row => row.country_code && PLAY_COUNTRY_CODE_SET.has(row.country_code))
+    .map(row => {
+      const state = Object.prototype.hasOwnProperty.call(visibleCounts, row.release_state)
+        ? row.release_state
+        : "unknown";
+      visibleCounts[state] += 1;
+
+      return {
+        countryCode: row.country_code,
+        countryName: row.country_name,
+        state,
+        confidence: row.confidence,
+        evidence: row.evidence || {},
+        previousState: row.previous_release_state || null
+      };
+    });
+
+  const changes = results
+    .filter(row => row.previousState && row.previousState !== row.state)
+    .map(row => ({
+      countryCode: row.countryCode,
+      countryName: row.countryName,
+      from: row.previousState,
+      to: row.state
+    }));
+
+  // previousState is only needed to build the change list; keep the public
+  // response shape unchanged.
   for (const row of results) {
-    if (Object.prototype.hasOwnProperty.call(visibleCounts, row.state)) {
-      visibleCounts[row.state] += 1;
-    } else {
-      visibleCounts.unknown += 1;
-    }
+    delete row.previousState;
   }
 
-  const serializedScan = serializeCountryScan(scan);
-  serializedScan.counts = visibleCounts;
-
-  const changes = previousScan
-    ? results
-        .filter(row => previousByCountry.has(row.countryCode) && previousByCountry.get(row.countryCode) !== row.state)
-        .map(row => ({
-          countryCode: row.countryCode,
-          countryName: row.countryName,
-          from: previousByCountry.get(row.countryCode),
-          to: row.state
-        }))
-    : [];
-
   return {
-    scan: serializedScan,
-    previousScan: previousScan ? {
-      id: Number(previousScan.id),
-      completedAt: previousScan.completed_at
+    scan: {
+      id: Number(first.scan_id),
+      packageName: first.package_name,
+      appTitle: first.app_title || null,
+      developer: first.developer || null,
+      status: first.status,
+      startedAt: first.started_at,
+      completedAt: first.completed_at,
+      counts: visibleCounts,
+      error: first.error_message || null
+    },
+    previousScan: first.previous_scan_id ? {
+      id: Number(first.previous_scan_id),
+      completedAt: first.previous_completed_at
     } : null,
     results,
     changes
