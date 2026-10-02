@@ -106,6 +106,18 @@ const pool = new Pool({
 
       CREATE INDEX IF NOT EXISTS idx_package_country_scan_results_state
         ON package_country_scan_results(scan_id, release_state);
+
+      ALTER TABLE package_country_scan_results
+        ADD COLUMN IF NOT EXISTS play_rating NUMERIC(4,3),
+        ADD COLUMN IF NOT EXISTS ratings_count BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS reviews_count BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS rating_histogram JSONB,
+        ADD COLUMN IF NOT EXISTS positive_ratings BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS negative_ratings BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS positive_share NUMERIC(6,2),
+        ADD COLUMN IF NOT EXISTS negative_share NUMERIC(6,2),
+        ADD COLUMN IF NOT EXISTS atlas_market_score NUMERIC(6,2),
+        ADD COLUMN IF NOT EXISTS performance_confidence TEXT;
     `);
 
     await pool.query(`
@@ -117,6 +129,43 @@ const pool = new Pool({
     `);
   } catch (e) {
     console.error("⚠️ [DB] Failed to initialize country scan tables:", e.message);
+  }
+})();
+
+// Suspension state lives on games for fast directory filtering, while
+// game_suspensions preserves a point-in-time snapshot so assets/stats remain
+// available even if the Play listing later disappears or the game is deleted.
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE games
+        ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS developer_id TEXT,
+        ADD COLUMN IF NOT EXISTS developer_url TEXT;
+
+      CREATE TABLE IF NOT EXISTS game_suspensions (
+        id BIGSERIAL PRIMARY KEY,
+        game_id INTEGER REFERENCES games(id) ON DELETE SET NULL,
+        package_name TEXT NOT NULL,
+        app_title TEXT NOT NULL,
+        publisher_name TEXT,
+        publisher_url TEXT,
+        game_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+        country_snapshot JSONB,
+        note TEXT,
+        marked_by TEXT,
+        suspended_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        restored_at TIMESTAMPTZ,
+        restored_by TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_game_suspensions_active
+        ON game_suspensions(package_name, suspended_at DESC)
+        WHERE restored_at IS NULL;
+    `);
+  } catch (e) {
+    console.error("⚠️ [DB] Failed to initialize suspension tracking:", e.message);
   }
 })();
 
@@ -433,6 +482,16 @@ async function getCountryScanPayload(packageName, scanId = null) {
         r.country_name,
         r.release_state,
         r.confidence,
+        r.play_rating,
+        r.ratings_count,
+        r.reviews_count,
+        r.rating_histogram,
+        r.positive_ratings,
+        r.negative_ratings,
+        r.positive_share,
+        r.negative_share,
+        r.atlas_market_score,
+        r.performance_confidence,
         r.evidence,
         p.id AS previous_scan_id,
         p.completed_at AS previous_completed_at,
@@ -474,6 +533,16 @@ async function getCountryScanPayload(packageName, scanId = null) {
         countryName: row.country_name,
         state,
         confidence: row.confidence,
+        playRating: row.play_rating == null ? null : Number(row.play_rating),
+        ratingsCount: Number(row.ratings_count) || 0,
+        reviewsCount: Number(row.reviews_count) || 0,
+        histogram: row.rating_histogram || null,
+        positiveRatings: Number(row.positive_ratings) || 0,
+        negativeRatings: Number(row.negative_ratings) || 0,
+        positiveShare: row.positive_share == null ? null : Number(row.positive_share),
+        negativeShare: row.negative_share == null ? null : Number(row.negative_share),
+        atlasMarketScore: row.atlas_market_score == null ? null : Number(row.atlas_market_score),
+        performanceConfidence: row.performance_confidence || "none",
         evidence: row.evidence || {},
         previousState: row.previous_release_state || null
       };
@@ -719,14 +788,34 @@ app.post("/api/country-scans", async (req, res) => {
           for (const item of countryResult.results) {
             await client.query(
               `INSERT INTO package_country_scan_results
-                 (scan_id, country_code, country_name, release_state, confidence, evidence)
-               VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+                 (
+                   scan_id, country_code, country_name, release_state, confidence,
+                   play_rating, ratings_count, reviews_count, rating_histogram,
+                   positive_ratings, negative_ratings, positive_share, negative_share,
+                   atlas_market_score, performance_confidence, evidence
+                 )
+               VALUES (
+                 $1, $2, $3, $4, $5,
+                 $6, $7, $8, $9::jsonb,
+                 $10, $11, $12, $13,
+                 $14, $15, $16::jsonb
+               )`,
               [
                 scan.id,
                 item.countryCode,
                 item.countryName,
                 item.state,
                 item.confidence,
+                item.playRating ?? null,
+                item.ratingsCount || 0,
+                item.reviewsCount || 0,
+                item.histogram ? JSON.stringify(item.histogram) : null,
+                item.positiveRatings || 0,
+                item.negativeRatings || 0,
+                item.positiveShare ?? null,
+                item.negativeShare ?? null,
+                item.atlasMarketScore ?? null,
+                item.performanceConfidence || "none",
                 JSON.stringify(item.evidence || {})
               ]
             );
@@ -861,11 +950,227 @@ app.get("/api/country-scans/latest", async (req, res) => {
   }
 });
 
+app.get("/api/suspended-games", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        gs.id AS suspension_id,
+        gs.game_id,
+        gs.package_name,
+        gs.app_title,
+        gs.publisher_name,
+        gs.publisher_url,
+        gs.game_snapshot,
+        gs.country_snapshot,
+        gs.note,
+        gs.marked_by,
+        gs.suspended_at
+      FROM game_suspensions gs
+      WHERE gs.restored_at IS NULL
+      ORDER BY gs.suspended_at DESC, gs.id DESC
+    `);
+
+    res.set("Cache-Control", "no-store");
+    return res.json(rows.map(row => ({
+      suspensionId: Number(row.suspension_id),
+      gameId: row.game_id == null ? null : Number(row.game_id),
+      packageName: row.package_name,
+      appTitle: row.app_title,
+      publisherName: row.publisher_name || null,
+      publisherUrl: row.publisher_url || null,
+      game: row.game_snapshot || {},
+      countryScan: row.country_snapshot || null,
+      note: row.note || null,
+      markedBy: row.marked_by || null,
+      suspendedAt: row.suspended_at
+    })));
+  } catch (error) {
+    console.error("Suspended games fetch failed:", error);
+    return res.status(500).json({ error: "Unable to load suspended games." });
+  }
+});
+
+app.patch("/api/games/:id/suspended", async (req, res) => {
+  const gameId = Number(req.params.id);
+  const suspended = req.body?.suspended === true;
+  const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 1000) : null;
+
+  if (!Number.isInteger(gameId) || gameId <= 0) {
+    return res.status(400).json({ error: "Invalid game ID." });
+  }
+
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        g.*,
+        (
+          SELECT a.publisher_name
+          FROM account_games ag
+          JOIN accounts a ON a.id = ag.account_id
+          WHERE ag.game_id = g.id
+          ORDER BY a.id ASC
+          LIMIT 1
+        ) AS publisher_name
+      FROM games g
+      WHERE g.id = $1
+      LIMIT 1
+    `, [gameId]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Game not found." });
+    }
+
+    const game = rows[0];
+
+    if (suspended) {
+      if (game.is_suspended) {
+        return res.json({ status: "success", suspended: true, alreadySuspended: true });
+      }
+
+      let countrySnapshot = null;
+      try {
+        countrySnapshot = await getCountryScanPayload(game.package_name);
+      } catch (error) {
+        console.warn("Could not snapshot country scan while suspending game:", error.message);
+      }
+
+      let publisherName = game.publisher_name || "Unknown Publisher";
+      let developerId = game.developer_id || null;
+      let publisherUrl = game.developer_url || null;
+
+      // Best-effort enrichment for older Atlas rows that predate developer-link
+      // storage. This may fail for an already-suspended listing, in which case
+      // the preserved publisher name still gets a useful Play search fallback.
+      if (!publisherUrl || !developerId) {
+        try {
+          const appData = await gplay.app({ appId: game.package_name, country: "us", lang: "en" });
+          publisherName = appData?.developer || publisherName;
+          developerId = appData?.developerId ? String(appData.developerId) : developerId;
+          publisherUrl = developerId
+            ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(developerId)}`
+            : publisherUrl;
+
+          await pool.query(
+            "UPDATE games SET developer_id = COALESCE($2, developer_id), developer_url = COALESCE($3, developer_url) WHERE id = $1",
+            [game.id, developerId, publisherUrl]
+          );
+        } catch {}
+      }
+
+      publisherUrl = publisherUrl ||
+        `https://play.google.com/store/search?q=${encodeURIComponent(publisherName)}&c=apps`;
+
+      const gameSnapshot = {
+        id: Number(game.id),
+        package_name: game.package_name,
+        title: game.title,
+        category: game.category,
+        rating: game.rating,
+        ratings_count: game.ratings_count,
+        icon: game.icon,
+        screenshots: game.screenshots,
+        description: game.description,
+        installs: game.installs,
+        min_installs: game.min_installs,
+        released: game.released,
+        updated: game.updated,
+        similar_apps: game.similar_apps,
+        ad_count: game.ad_count,
+        header_image: game.header_image,
+        video: game.video,
+        video_image: game.video_image,
+        developer_id: developerId,
+        developer_url: publisherUrl,
+        publisher_name: publisherName
+      };
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `INSERT INTO game_suspensions
+             (
+               game_id, package_name, app_title, publisher_name, publisher_url,
+               game_snapshot, country_snapshot, note, marked_by
+             )
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)`,
+          [
+            game.id,
+            game.package_name,
+            game.title || game.package_name,
+            publisherName,
+            publisherUrl,
+            JSON.stringify(gameSnapshot),
+            countrySnapshot ? JSON.stringify(countrySnapshot) : null,
+            note,
+            req.user?.username || null
+          ]
+        );
+
+        await client.query(
+          "UPDATE games SET is_suspended = TRUE, suspended_at = now() WHERE id = $1",
+          [game.id]
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        try { await client.query("ROLLBACK"); } catch {}
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      return res.json({
+        status: "success",
+        suspended: true,
+        packageName: game.package_name,
+        title: game.title
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "UPDATE games SET is_suspended = FALSE, suspended_at = NULL WHERE id = $1",
+        [game.id]
+      );
+      await client.query(
+        `UPDATE game_suspensions
+         SET restored_at = now(), restored_by = $2
+         WHERE id = (
+           SELECT id
+           FROM game_suspensions
+           WHERE package_name = $1 AND restored_at IS NULL
+           ORDER BY suspended_at DESC, id DESC
+           LIMIT 1
+         )`,
+        [game.package_name, req.user?.username || null]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      try { await client.query("ROLLBACK"); } catch {}
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return res.json({
+      status: "success",
+      suspended: false,
+      packageName: game.package_name,
+      title: game.title
+    });
+  } catch (error) {
+    console.error("Game suspension update failed:", error);
+    return res.status(500).json({ error: "Unable to update game suspension state." });
+  }
+});
+
 app.get("/api/stats", async (_req, res) => {
   try {
     const competitors = (await pool.query("SELECT COUNT(*) FROM competitors")).rows[0].count;
     const accounts = (await pool.query("SELECT COUNT(*) FROM accounts")).rows[0].count;
-    const games = (await pool.query("SELECT COUNT(*) FROM games")).rows[0].count;
+    const games = (await pool.query("SELECT COUNT(*) FROM games WHERE COALESCE(is_suspended, FALSE) = FALSE")).rows[0].count;
     res.json({ competitors: Number(competitors), accounts: Number(accounts), games: Number(games) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -899,7 +1204,7 @@ app.post("/api/reset", async (_req, res) => {
 
 app.get("/api/trending", async (_req, res) => {
   try { 
-    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id ORDER BY g.ad_count DESC`);
+    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id WHERE COALESCE(g.is_suspended, FALSE) = FALSE ORDER BY g.ad_count DESC`);
     res.json(rows);
   } catch { res.status(500).json({ error: "Fail" }); }
 });
@@ -1302,6 +1607,10 @@ app.post("/api/scan", async (req, res) => {
 
           const pubName = appData.developer || targetDisplayName || "Unknown Publisher";
           const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const developerId = appData.developerId ? String(appData.developerId) : null;
+          const developerUrl = developerId
+            ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(developerId)}`
+            : `https://play.google.com/store/search?q=${encodeURIComponent(pubName)}&c=apps`;
 
           // Match on the already-normalized name, not the raw developer string.
           // The Play Store can return slightly different casing/punctuation for
@@ -1344,11 +1653,13 @@ app.post("/api/scan", async (req, res) => {
             INSERT INTO games (
               package_name, title, category, rating, ratings_count, icon,
               screenshots, description, installs, min_installs, released,
-              updated, similar_apps, ad_count, header_image, video, video_image
+              updated, similar_apps, ad_count, header_image, video, video_image,
+              developer_id, developer_url
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
-              $10, $11, $12, $13, $14, $15, $16, $17
+              $10, $11, $12, $13, $14, $15, $16, $17,
+              $18, $19
             )
             ON CONFLICT (package_name) DO UPDATE SET
               title = EXCLUDED.title,
@@ -1366,7 +1677,9 @@ app.post("/api/scan", async (req, res) => {
               ad_count = games.ad_count + EXCLUDED.ad_count,
               header_image = EXCLUDED.header_image,
               video = EXCLUDED.video,
-              video_image = EXCLUDED.video_image
+              video_image = EXCLUDED.video_image,
+              developer_id = COALESCE(EXCLUDED.developer_id, games.developer_id),
+              developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url)
             RETURNING id
           `;
 
@@ -1387,7 +1700,9 @@ app.post("/api/scan", async (req, res) => {
             newAdCount,
             fixUrl(appData.headerImage) || null,
             appData.video || null,
-            fixUrl(appData.videoImage) || null
+            fixUrl(appData.videoImage) || null,
+            developerId,
+            developerUrl
           ]);
 
           const gameId = gameRes.rows[0].id;
@@ -1565,6 +1880,7 @@ app.get("/api/competitors", async (_req, res) => {
         SELECT ag.account_id, g.* 
         FROM account_games ag 
         JOIN games g ON ag.game_id = g.id
+        WHERE COALESCE(g.is_suspended, FALSE) = FALSE
       `)
     ]);
 

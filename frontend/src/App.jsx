@@ -568,6 +568,7 @@ function App() {
   const [directorySearch, setDirectorySearch] = useState("");
   const [directoryFilter, setDirectoryFilter] = useState("all"); 
   const [directoryGameSort, setDirectoryGameSort] = useState("activity");
+  const [suspendedGames, setSuspendedGames] = useState([]);
   const [pubSort, setPubSort] = useState("installs"); 
   const [pubFilterNew, setPubFilterNew] = useState(false); 
   const [pubFilterComp, setPubFilterComp] = useState("all");
@@ -619,6 +620,8 @@ function App() {
   const [isCountryScanMinimized, setIsCountryScanMinimized] = useState(false);
   const [countryScanFilter, setCountryScanFilter] = useState("all");
   const [countryScanSearch, setCountryScanSearch] = useState("");
+  const [countryScanViewTab, setCountryScanViewTab] = useState("availability");
+  const [countryPerformanceSort, setCountryPerformanceSort] = useState("atlas_desc");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
   const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
   const [countryScanLibrary, setCountryScanLibrary] = useState([]);
@@ -718,6 +721,7 @@ function App() {
       fetchJson(`${API_BASE}/api/competitor-history`).then(data => setHistoryData(processHistoryData(Array.isArray(data) ? data : []))),
       fetchJson(`${API_BASE}/api/settings`).then(data => { if (data && !data.error) setSettings(prev => ({ ...prev, ...data })); }),
       fetchJson(`${API_BASE}/api/country-scans`).then(data => setCountryScanLibrary(Array.isArray(data) ? data : [])),
+      fetchJson(`${API_BASE}/api/suspended-games`).then(data => setSuspendedGames(Array.isArray(data) ? data : [])),
     ];
     const results = await Promise.allSettled(requests);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
@@ -959,6 +963,51 @@ function App() {
       alert(err?.message || "Failed to delete game.");
     }
   }, [isAdmin, isScanning, loadAllData]);
+
+  const handleSetGameSuspended = useCallback(async (game, suspended, event) => {
+    event?.stopPropagation?.();
+    if (!isAdmin || !game?.id) return;
+
+    const label = game.title || game.package_name || "this game";
+    const message = suspended
+      ? `Mark ${label} as suspended? Atlas will preserve its current stats, assets, publisher link, and latest country status. You can restore it later.`
+      : `Restore ${label} from the Suspended tab?`;
+
+    if (!window.confirm(message)) return;
+
+    try {
+      await fetchJson(`${API_BASE}/api/games/${game.id}/suspended`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ suspended })
+      });
+
+      if (selectedGame && selectedGame.id === game.id) {
+        setIsDrawerOpen(false);
+        setSelectedGame(null);
+      }
+
+      await loadAllData();
+    } catch (error) {
+      alert(error?.message || "Unable to update suspension state.");
+    }
+  }, [isAdmin, loadAllData, selectedGame]);
+
+  const handleRestoreSuspendedGame = useCallback(async (item, event) => {
+    event?.stopPropagation?.();
+    const game = item?.game || {};
+    const gameId = item?.gameId || game.id;
+    if (!gameId) {
+      alert("This archived suspension no longer has a live Atlas game record to restore.");
+      return;
+    }
+    await handleSetGameSuspended({
+      ...game,
+      id: gameId,
+      title: item.appTitle || game.title,
+      package_name: item.packageName || game.package_name
+    }, false, event);
+  }, [handleSetGameSuspended]);
 
   const getLatestScanAdCount = useCallback((game) => {
     if (!game?.package_name) return 0;
@@ -1575,6 +1624,7 @@ function App() {
     if (packageName) setCountryPackage(packageName);
     setCountryScanFilter("all");
     setCountryScanSearch("");
+    setCountryScanViewTab("availability");
     setCountryScanError("");
     setCountryScanLoading(false);
     setCountryScanModalOpen(true);
@@ -1598,6 +1648,7 @@ function App() {
     setCountryScanError("");
     setCountryScanFilter("all");
     setCountryScanSearch("");
+    setCountryScanViewTab("availability");
 
     if (cacheMatchesLatest) {
       setCountryScanData(cached);
@@ -1641,6 +1692,7 @@ function App() {
     setCountryScanError("");
     setCountryScanFilter("all");
     setCountryScanSearch("");
+    setCountryScanViewTab("availability");
     setIsCountryScanMinimized(false);
     setCountryScanJob({
       scanId: null,
@@ -1727,6 +1779,12 @@ function App() {
   useEffect(() => {
     if (!isDrawerOpen || !selectedGame?.package_name) return undefined;
 
+    if (selectedGame?.is_suspended && selectedGame?.suspension_country_scan) {
+      setSelectedGameCountryLoading(false);
+      setSelectedGameCountryScan(selectedGame.suspension_country_scan);
+      return undefined;
+    }
+
     let cancelled = false;
     const packageName = selectedGame.package_name;
     setSelectedGameCountryLoading(true);
@@ -1744,7 +1802,7 @@ function App() {
       });
 
     return () => { cancelled = true; };
-  }, [isDrawerOpen, selectedGame?.package_name, fetchLatestCountryScan]);
+  }, [isDrawerOpen, selectedGame?.package_name, selectedGame?.is_suspended, selectedGame?.suspension_country_scan, fetchLatestCountryScan]);
 
   useEffect(() => {
     const scanId = countryScanJob?.scanId;
@@ -1843,6 +1901,67 @@ function App() {
       String(item.packageName || "").toLowerCase().includes(query)
     );
   }, [countryScanLibrary, countryLibrarySearch]);
+
+  const visibleSuspendedGames = useMemo(() => {
+    const query = directorySearch.trim().toLowerCase();
+    if (!query) return suspendedGames;
+
+    return suspendedGames.filter(item => {
+      const game = item.game || {};
+      return String(item.appTitle || game.title || "").toLowerCase().includes(query) ||
+        String(item.packageName || game.package_name || "").toLowerCase().includes(query) ||
+        String(item.publisherName || game.publisher_name || "").toLowerCase().includes(query);
+    });
+  }, [suspendedGames, directorySearch]);
+
+  const countryPerformanceRows = useMemo(() => {
+    const query = countryScanSearch.trim().toLowerCase();
+    const rows = (countryScanData?.results || [])
+      .filter(item => {
+        if (item.playRating == null && item.atlasMarketScore == null && !item.ratingsCount && !item.reviewsCount) return false;
+        if (!query) return true;
+        return String(item.countryName || "").toLowerCase().includes(query) ||
+          String(item.countryCode || "").toLowerCase().includes(query);
+      })
+      .map(item => ({ ...item }));
+
+    const numeric = (value, fallback) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    const validScores = rows
+      .map(item => Number(item.atlasMarketScore))
+      .filter(value => Number.isFinite(value))
+      .sort((a, b) => a - b);
+    const q1 = validScores.length ? validScores[Math.floor((validScores.length - 1) * 0.25)] : null;
+    const q3 = validScores.length ? validScores[Math.floor((validScores.length - 1) * 0.75)] : null;
+    const hasUsefulSpread = q1 != null && q3 != null && (q3 - q1) >= 0.5;
+
+    for (const item of rows) {
+      const score = Number(item.atlasMarketScore);
+      item.performanceBand = !Number.isFinite(score) || !hasUsefulSpread
+        ? "typical"
+        : score >= q3
+          ? "strong"
+          : score <= q1
+            ? "weak"
+            : "typical";
+    }
+
+    rows.sort((a, b) => {
+      if (countryPerformanceSort === "atlas_asc") return numeric(a.atlasMarketScore, Infinity) - numeric(b.atlasMarketScore, Infinity);
+      if (countryPerformanceSort === "rating_desc") return numeric(b.playRating, -Infinity) - numeric(a.playRating, -Infinity);
+      if (countryPerformanceSort === "rating_asc") return numeric(a.playRating, Infinity) - numeric(b.playRating, Infinity);
+      if (countryPerformanceSort === "ratings_desc") return numeric(b.ratingsCount, 0) - numeric(a.ratingsCount, 0);
+      if (countryPerformanceSort === "reviews_desc") return numeric(b.reviewsCount, 0) - numeric(a.reviewsCount, 0);
+      if (countryPerformanceSort === "negative_desc") return numeric(b.negativeShare, -Infinity) - numeric(a.negativeShare, -Infinity);
+      if (countryPerformanceSort === "positive_desc") return numeric(b.positiveShare, -Infinity) - numeric(a.positiveShare, -Infinity);
+      return numeric(b.atlasMarketScore, -Infinity) - numeric(a.atlasMarketScore, -Infinity);
+    });
+
+    return rows;
+  }, [countryScanData, countryScanSearch, countryPerformanceSort]);
 
   const countryScanSummary = useMemo(() => {
     if (!countryScanData?.scan) return "";
@@ -2714,8 +2833,9 @@ function App() {
                 {/* Filter Category Pills */}
                 <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
                   {[
-                    { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
+                    { id: "all", label: `All (${filteredGames.length + visibleSuspendedGames.length + processedAccounts.length + filteredCompetitors.length})` },
                     { id: "games", label: `Games (${filteredGames.length})` },
+                    { id: "suspended", label: `Suspended (${visibleSuspendedGames.length})` },
                     { id: "publishers", label: `Publishers (${processedAccounts.length})` },
                     { id: "competitors", label: `Competitors (${filteredCompetitors.length})` }
                   ].map(tab => (
@@ -2749,6 +2869,130 @@ function App() {
                 </div>
 
               </div>
+
+              {(directoryFilter === "all" || directoryFilter === "suspended") && visibleSuspendedGames.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
+                      <span className="material-symbols-outlined text-urgent-red text-[18px]">block</span>
+                      Suspended games
+                    </h3>
+                    <span className="text-[10px] text-text-muted">Preserved snapshots · reversible</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
+                    {visibleSuspendedGames.map(item => {
+                      const game = item.game || {};
+                      const countryCounts = item.countryScan?.scan?.counts || {};
+                      const suspendedGame = {
+                        ...game,
+                        id: item.gameId || game.id,
+                        title: item.appTitle || game.title,
+                        package_name: item.packageName || game.package_name,
+                        publisher_name: item.publisherName || game.publisher_name,
+                        is_suspended: true,
+                        publisher_url: item.publisherUrl,
+                        suspension_country_scan: item.countryScan || null
+                      };
+
+                      return (
+                        <motion.div
+                          whileHover={{ y: -1 }}
+                          key={item.suspensionId || item.packageName}
+                          onClick={() => handleGameClick(suspendedGame)}
+                          className="bg-surface-glass rounded-2xl border border-urgent-red/25 overflow-hidden shadow-sm hover:border-urgent-red/45 transition-colors cursor-pointer group flex flex-col relative"
+                        >
+                          <div className="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full bg-urgent-red/90 text-white text-[9px] font-medium flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">block</span>
+                            Suspended
+                          </div>
+
+                          {game.header_image ? (
+                            <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
+                              <img src={game.header_image} alt={suspendedGame.title} className="w-full h-full object-cover opacity-70 grayscale-[20%]" />
+                            </div>
+                          ) : <div className="h-14 bg-urgent-red/5" />}
+
+                          <div className="p-4 flex-1 flex flex-col">
+                            <div className="flex items-start gap-3">
+                              <div className="w-12 h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0">
+                                {game.icon ? <img src={game.icon} alt={suspendedGame.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted h-full flex items-center justify-center">sports_esports</span>}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <h4 className="text-sm font-semibold text-text-main truncate">{suspendedGame.title}</h4>
+                                <p className="text-[10px] text-text-muted mt-0.5 truncate">{suspendedGame.publisher_name || "Unknown publisher"}</p>
+                                <p className="text-[9px] text-text-muted mt-1 font-mono truncate">{suspendedGame.package_name}</p>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 mt-4">
+                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
+                                <div className="text-[9px] text-text-muted">Rating</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "—"}</div>
+                              </div>
+                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
+                                <div className="text-[9px] text-text-muted">Installs</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "—"}</div>
+                              </div>
+                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
+                                <div className="text-[9px] text-text-muted">Ads</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.ad_count) || 0}</div>
+                              </div>
+                            </div>
+
+                            {item.countryScan?.scan && (
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                {[
+                                  ["live", countryCounts.live || 0],
+                                  ["pre_register", countryCounts.pre_register || 0],
+                                  ["unavailable", countryCounts.unavailable || 0],
+                                  ["unknown", countryCounts.unknown || 0]
+                                ].filter(([, count]) => Number(count) > 0).map(([state, count]) => {
+                                  const meta = getCountryStateMeta(state);
+                                  return <span key={state} className={cn("px-2 py-1 rounded-full border text-[9px] font-medium", meta.className)}>{count} {meta.label}</span>;
+                                })}
+                              </div>
+                            )}
+
+                            <div className="mt-4 pt-3 border-t border-border-subtle flex items-center justify-between gap-2">
+                              <div className="text-[9px] text-text-muted min-w-0">
+                                <div>{item.suspendedAt ? `Suspended ${new Date(item.suspendedAt).toLocaleString()}` : "Suspended"}</div>
+                                {item.markedBy && <div className="mt-0.5">by {item.markedBy}</div>}
+                              </div>
+
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                {item.publisherUrl && (
+                                  <a
+                                    href={item.publisherUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={event => event.stopPropagation()}
+                                    className="w-9 h-9 rounded-full border border-border-subtle bg-input-bg text-text-muted hover:text-electric-blue flex items-center justify-center"
+                                    title="Open publisher on Google Play"
+                                  >
+                                    <span className="material-symbols-outlined text-[17px]">storefront</span>
+                                  </a>
+                                )}
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={event => handleRestoreSuspendedGame(item, event)}
+                                    disabled={!item.gameId}
+                                    className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-40 flex items-center gap-1.5"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">undo</span>
+                                    Restore
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {(directoryFilter === "all" || directoryFilter === "games") && filteredGames.length > 0 && (
                 <div className="space-y-4">
@@ -2811,15 +3055,25 @@ function App() {
                     {sortedDirectoryGames.map(game => (
                       <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
                         {isAdmin && (
-                          <button
-                            onClick={(e) => handleDeleteGame(e, game)}
-                            disabled={isScanning}
-                            className="absolute top-3 right-3 z-20 w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
-                            title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
-                            aria-label={`Delete ${game.title || game.package_name || "game"}`}
-                          >
-                            <span className="material-symbols-outlined text-[17px]">delete</span>
-                          </button>
+                          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => handleSetGameSuspended(game, true, e)}
+                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all flex items-center justify-center"
+                              title="Mark game as suspended"
+                              aria-label={`Mark ${game.title || game.package_name || "game"} suspended`}
+                            >
+                              <span className="material-symbols-outlined text-[17px]">block</span>
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteGame(e, game)}
+                              disabled={isScanning}
+                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                              title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
+                              aria-label={`Delete ${game.title || game.package_name || "game"}`}
+                            >
+                              <span className="material-symbols-outlined text-[17px]">delete</span>
+                            </button>
+                          </div>
                         )}
                         {game.header_image && (
                           <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
@@ -3590,9 +3844,37 @@ function App() {
                     );
                   })()}
 
-                  <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue hover:bg-blue-600 text-white text-xs px-4 py-2 rounded-lg border border-border-subtle transition-all w-max shadow-sm font-bold active:scale-[0.98]">
-                    Play Store <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                  </a>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue hover:bg-blue-600 text-white text-xs px-4 py-2 rounded-lg border border-border-subtle transition-all w-max shadow-sm font-bold active:scale-[0.98]">
+                      Play Store <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                    </a>
+                    {selectedGame.publisher_url && (
+                      <a href={selectedGame.publisher_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 bg-input-bg text-text-main text-xs px-3 py-2 rounded-lg border border-border-subtle transition-all w-max">
+                        Publisher <span className="material-symbols-outlined text-[15px]">storefront</span>
+                      </a>
+                    )}
+                    {isAdmin && selectedGame.id && (
+                      selectedGame.is_suspended ? (
+                        <button
+                          type="button"
+                          onClick={(event) => handleSetGameSuspended(selectedGame, false, event)}
+                          className="flex items-center gap-1.5 bg-emerald-500/10 text-emerald-500 text-xs px-3 py-2 rounded-lg border border-emerald-500/25 transition-all w-max"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">undo</span>
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(event) => handleSetGameSuspended(selectedGame, true, event)}
+                          className="flex items-center gap-1.5 bg-urgent-red/10 text-urgent-red text-xs px-3 py-2 rounded-lg border border-urgent-red/25 transition-all w-max"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">block</span>
+                          Mark suspended
+                        </button>
+                      )
+                    )}
+                  </div>
                 </div>
               </div>
               <button onClick={closeDrawer} className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-glass border border-transparent hover:border-border-subtle transition-all text-text-muted hover:text-text-main bg-surface-solid md:bg-transparent flex-shrink-0"><span className="material-symbols-outlined text-[24px]">close</span></button>
@@ -3892,6 +4174,30 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="px-4 md:px-6 pt-3 border-b border-border-subtle">
+                    <div className="flex items-center gap-1 bg-input-bg rounded-xl p-1 w-max">
+                      {[
+                        ["availability", "Availability", "public"],
+                        ["performance", "Market performance", "monitoring"]
+                      ].map(([id, label, icon]) => (
+                        <button
+                          type="button"
+                          key={id}
+                          onClick={() => setCountryScanViewTab(id)}
+                          className={cn(
+                            "h-9 px-3 rounded-lg text-[10px] md:text-xs font-medium flex items-center gap-1.5 transition-colors",
+                            countryScanViewTab === id
+                              ? "bg-surface-solid text-text-main shadow-sm"
+                              : "text-text-muted hover:text-text-main"
+                          )}
+                        >
+                          <span className="material-symbols-outlined text-[16px]">{icon}</span>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="px-4 md:px-6 py-3 border-b border-border-subtle flex flex-col sm:flex-row gap-2">
                     <div className="flex-1 flex items-center gap-2 bg-input-bg border border-border-subtle rounded-xl px-3 h-10">
                       <span className="material-symbols-outlined text-text-muted text-[17px]">search</span>
@@ -3902,35 +4208,136 @@ function App() {
                         className="w-full bg-transparent outline-none text-xs text-text-main placeholder:text-text-muted"
                       />
                     </div>
-                    <div className="flex gap-1 overflow-x-auto custom-scrollbar">
-                      {[
-                        ["all", "All"],
-                        ["changed", "Changed"],
-                        ["live", "Live"],
-                        ["pre_register", "Pre-register"],
-                        ["early_access", "Early access"],
-                        ["unavailable", "Unavailable"],
-                        ["unknown", "Unknown"]
-                      ].map(([id, label]) => (
-                        <button
-                          type="button"
-                          key={id}
-                          onClick={() => setCountryScanFilter(id)}
-                          className={cn(
-                            "h-10 px-3 rounded-xl text-[10px] font-medium whitespace-nowrap border",
-                            countryScanFilter === id
-                              ? "bg-primary-container text-on-primary-container border-transparent"
-                              : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
+
+                    {countryScanViewTab === "availability" ? (
+                      <div className="flex gap-1 overflow-x-auto custom-scrollbar">
+                        {[
+                          ["all", "All"],
+                          ["changed", "Changed"],
+                          ["live", "Live"],
+                          ["pre_register", "Pre-register"],
+                          ["early_access", "Early access"],
+                          ["unavailable", "Unavailable"],
+                          ["unknown", "Unknown"]
+                        ].map(([id, label]) => (
+                          <button
+                            type="button"
+                            key={id}
+                            onClick={() => setCountryScanFilter(id)}
+                            className={cn(
+                              "h-10 px-3 rounded-xl text-[10px] font-medium whitespace-nowrap border",
+                              countryScanFilter === id
+                                ? "bg-primary-container text-on-primary-container border-transparent"
+                                : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <select
+                        value={countryPerformanceSort}
+                        onChange={event => setCountryPerformanceSort(event.target.value)}
+                        className="h-10 px-3 rounded-xl border border-border-subtle bg-surface-solid text-text-main text-[10px] md:text-xs outline-none"
+                      >
+                        <option value="atlas_desc">Highest Atlas score</option>
+                        <option value="atlas_asc">Lowest Atlas score</option>
+                        <option value="rating_desc">Highest Play rating</option>
+                        <option value="rating_asc">Lowest Play rating</option>
+                        <option value="ratings_desc">Most ratings</option>
+                        <option value="reviews_desc">Most reviews</option>
+                        <option value="positive_desc">Highest positive share</option>
+                        <option value="negative_desc">Highest negative share</option>
+                      </select>
+                    )}
                   </div>
 
                   <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 md:p-4">
-                    {visibleCountryResults.length === 0 ? (
+                    {countryScanViewTab === "performance" ? (
+                      countryPerformanceRows.length === 0 ? (
+                        <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-6">
+                          <span className="material-symbols-outlined text-text-muted text-[30px]">monitoring</span>
+                          <p className="text-xs text-text-main font-medium mt-3">No market performance data in this scan</p>
+                          <p className="text-[10px] text-text-muted mt-1 max-w-md">Country rating, rating-count, review-count and sentiment data are collected on scans run after this update.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="mb-3 rounded-xl border border-border-subtle bg-input-bg/60 px-3 py-2.5 text-[10px] text-text-muted">
+                            <span className="font-medium text-text-main">Atlas score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {countryPerformanceRows.map((item, index) => (
+                              <div key={item.countryCode} className="rounded-xl border border-border-subtle bg-surface-glass p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span className="text-xl flex-shrink-0">{getCountryFlag(item.countryCode)}</span>
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                        <span className={cn(
+                                          "px-1.5 py-0.5 rounded-full border text-[8px] font-medium flex-shrink-0",
+                                          item.performanceBand === "strong"
+                                            ? "text-emerald-500 bg-emerald-500/10 border-emerald-500/20"
+                                            : item.performanceBand === "weak"
+                                              ? "text-urgent-red bg-urgent-red/10 border-urgent-red/20"
+                                              : "text-text-muted bg-input-bg border-border-subtle"
+                                        )}>
+                                          {item.performanceBand === "strong" ? "Strong" : item.performanceBand === "weak" ? "Weak" : "Typical"}
+                                        </span>
+                                      </div>
+                                      <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.performanceConfidence || "none"} sample confidence</div>
+                                    </div>
+                                  </div>
+                                  <div className="text-right flex-shrink-0">
+                                    <div className="text-[9px] text-text-muted">Atlas score</div>
+                                    <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "—" : Number(item.atlasMarketScore).toFixed(1)}</div>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Play rating</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{item.playRating == null ? "—" : Number(item.playRating).toFixed(2)} ★</div>
+                                  </div>
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Ratings</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{Number(item.ratingsCount || 0).toLocaleString()}</div>
+                                  </div>
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Reviews</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{Number(item.reviewsCount || 0).toLocaleString()}</div>
+                                  </div>
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Rank</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">#{index + 1}</div>
+                                  </div>
+                                </div>
+
+                                {(item.positiveShare != null || item.negativeShare != null) && (
+                                  <div className="mt-3">
+                                    <div className="flex items-center justify-between text-[9px] text-text-muted">
+                                      <span className="text-emerald-500">
+                                        Positive {item.positiveShare == null ? "—" : Number(item.positiveShare).toFixed(1) + "%"}
+                                        {item.positiveRatings ? ` · ${Number(item.positiveRatings).toLocaleString()}` : ""}
+                                      </span>
+                                      <span className="text-urgent-red">
+                                        Negative {item.negativeShare == null ? "—" : Number(item.negativeShare).toFixed(1) + "%"}
+                                        {item.negativeRatings ? ` · ${Number(item.negativeRatings).toLocaleString()}` : ""}
+                                      </span>
+                                    </div>
+                                    <div className="mt-1.5 h-1.5 bg-input-bg rounded-full overflow-hidden flex">
+                                      <div className="h-full bg-emerald-500" style={{ width: (item.positiveShare || 0) + "%" }} />
+                                      <div className="h-full bg-urgent-red" style={{ width: (item.negativeShare || 0) + "%" }} />
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )
+                    ) : visibleCountryResults.length === 0 ? (
                       <div className="h-full min-h-[220px] flex items-center justify-center text-xs text-text-muted">No countries match this filter.</div>
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
