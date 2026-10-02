@@ -402,7 +402,13 @@ const TrendingTargets = memo(function TrendingTargets({
                   </div>
 
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
+                      <PaidBadge item={game} compact showPrice={false} />
+                      {game.is_suspended && (
+                        <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                      )}
+                    </div>
                     <p className="text-[10px] md:text-xs text-text-muted truncate mt-0.5">{game.publisher_name}</p>
                   </div>
 
@@ -542,7 +548,13 @@ const LiveDirectory = memo(function LiveDirectory({
                           >
                             <span className="material-symbols-outlined text-text-muted text-[16px] flex-shrink-0">sports_esports</span>
                             <div className="min-w-0 flex-1">
-                              <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
+                                <PaidBadge item={game} compact showPrice={false} />
+                                {game.is_suspended && (
+                                  <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                                )}
+                              </div>
                               <div className="text-[9px] text-text-muted truncate">{game.package_name}</div>
                             </div>
                             {isAdmin && (
@@ -2857,7 +2869,7 @@ function App() {
                 {/* Filter Category Pills */}
                 <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
                   {[
-                    { id: "all", label: `All (${filteredGames.length + visibleSuspendedGames.length + processedAccounts.length + filteredCompetitors.length})` },
+                    { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
                     { id: "games", label: `Games (${filteredGames.length})` },
                     { id: "suspended", label: `Suspended (${visibleSuspendedGames.length})` },
                     { id: "publishers", label: `Publishers (${processedAccounts.length})` },
@@ -2894,7 +2906,7 @@ function App() {
 
               </div>
 
-              {(directoryFilter === "all" || directoryFilter === "suspended") && visibleSuspendedGames.length > 0 && (
+              {directoryFilter === "suspended" && visibleSuspendedGames.length > 0 && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
@@ -2946,6 +2958,9 @@ function App() {
                                 <h4 className="text-sm font-semibold text-text-main truncate">{suspendedGame.title}</h4>
                                 <p className="text-[10px] text-text-muted mt-0.5 truncate">{suspendedGame.publisher_name || "Unknown publisher"}</p>
                                 <p className="text-[9px] text-text-muted mt-1 font-mono truncate">{suspendedGame.package_name}</p>
+                                <div className="mt-2">
+                                  <PaidBadge item={suspendedGame} compact />
+                                </div>
                               </div>
                             </div>
 
@@ -3078,15 +3093,28 @@ function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
                     {sortedDirectoryGames.map(game => (
                       <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
+                        {game.is_suspended && (
+                          <div className="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full bg-urgent-red/90 text-white text-[9px] font-medium flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">block</span>
+                            Suspended
+                          </div>
+                        )}
                         {isAdmin && (
                           <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                             <button
-                              onClick={(e) => handleSetGameSuspended(game, true, e)}
-                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all flex items-center justify-center"
-                              title="Mark game as suspended"
-                              aria-label={`Mark ${game.title || game.package_name || "game"} suspended`}
+                              onClick={(e) => handleSetGameSuspended(game, !game.is_suspended, e)}
+                              className={cn(
+                                "w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border transition-all flex items-center justify-center",
+                                game.is_suspended
+                                  ? "border-emerald-500/25 text-emerald-500 hover:bg-emerald-500/10"
+                                  : "border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10"
+                              )}
+                              title={game.is_suspended ? "Restore suspended game" : "Mark game as suspended"}
+                              aria-label={game.is_suspended
+                                ? `Restore ${game.title || game.package_name || "game"}`
+                                : `Mark ${game.title || game.package_name || "game"} suspended`}
                             >
-                              <span className="material-symbols-outlined text-[17px]">block</span>
+                              <span className="material-symbols-outlined text-[17px]">{game.is_suspended ? "undo" : "block"}</span>
                             </button>
                             <button
                               onClick={(e) => handleDeleteGame(e, game)}
@@ -3114,6 +3142,14 @@ function App() {
                               <h4 className="font-body-sm md:font-body-md font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h4>
                               <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">{game.publisher_name}</p>
                               <p className="font-mono text-[9px] md:text-[10px] text-text-muted/70 truncate mt-0.5">{game.package_name}</p>
+                              <div className="mt-2 flex items-center gap-1.5">
+                                <PaidBadge item={game} compact />
+                                {game.is_suspended && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium">
+                                    Suspended
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                           
@@ -3348,9 +3384,12 @@ function App() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <h2 className="text-sm md:text-base font-medium text-text-main truncate">
-                                  {item.appTitle || item.packageName}
-                                </h2>
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <h2 className="text-sm md:text-base font-medium text-text-main truncate">
+                                    {item.appTitle || item.packageName}
+                                  </h2>
+                                  <PaidBadge item={item} compact showPrice={false} />
+                                </div>
                                 {item.developer && (
                                   <p className="text-[10px] md:text-xs text-text-muted mt-0.5 truncate">{item.developer}</p>
                                 )}
@@ -3853,7 +3892,10 @@ function App() {
                   {selectedGame.icon ? <img loading="lazy" decoding="async" src={selectedGame.icon} alt="Icon" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-[40px] text-primary/50">sports_esports</span>}
                 </div>
                 <div className="flex flex-col pt-1 min-w-0">
-                  <h1 className="font-headline-lg text-text-main text-xl md:text-2xl mb-1 leading-tight truncate">{selectedGame.title}</h1>
+                  <div className="flex items-center gap-2 min-w-0 mb-1">
+                    <h1 className="font-headline-lg text-text-main text-xl md:text-2xl leading-tight truncate">{selectedGame.title}</h1>
+                    <PaidBadge item={selectedGame} showPrice />
+                  </div>
                   <p className="font-body-xs md:font-body-sm text-text-muted  font-medium mb-3 truncate">{selectedGame.publisher_name}</p>
                   
                   {(() => {
