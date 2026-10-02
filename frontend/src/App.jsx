@@ -4148,6 +4148,30 @@ function App() {
                     </div>
                   </div>
 
+                  <div className="px-4 md:px-6 pt-3 border-b border-border-subtle">
+                    <div className="flex items-center gap-1 bg-input-bg rounded-xl p-1 w-max">
+                      {[
+                        ["availability", "Availability", "public"],
+                        ["performance", "Market performance", "monitoring"]
+                      ].map(([id, label, icon]) => (
+                        <button
+                          type="button"
+                          key={id}
+                          onClick={() => setCountryScanViewTab(id)}
+                          className={cn(
+                            "h-9 px-3 rounded-lg text-[10px] md:text-xs font-medium flex items-center gap-1.5 transition-colors",
+                            countryScanViewTab === id
+                              ? "bg-surface-solid text-text-main shadow-sm"
+                              : "text-text-muted hover:text-text-main"
+                          )}
+                        >
+                          <span className="material-symbols-outlined text-[16px]">{icon}</span>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="px-4 md:px-6 py-3 border-b border-border-subtle flex flex-col sm:flex-row gap-2">
                     <div className="flex-1 flex items-center gap-2 bg-input-bg border border-border-subtle rounded-xl px-3 h-10">
                       <span className="material-symbols-outlined text-text-muted text-[17px]">search</span>
@@ -4158,35 +4182,118 @@ function App() {
                         className="w-full bg-transparent outline-none text-xs text-text-main placeholder:text-text-muted"
                       />
                     </div>
-                    <div className="flex gap-1 overflow-x-auto custom-scrollbar">
-                      {[
-                        ["all", "All"],
-                        ["changed", "Changed"],
-                        ["live", "Live"],
-                        ["pre_register", "Pre-register"],
-                        ["early_access", "Early access"],
-                        ["unavailable", "Unavailable"],
-                        ["unknown", "Unknown"]
-                      ].map(([id, label]) => (
-                        <button
-                          type="button"
-                          key={id}
-                          onClick={() => setCountryScanFilter(id)}
-                          className={cn(
-                            "h-10 px-3 rounded-xl text-[10px] font-medium whitespace-nowrap border",
-                            countryScanFilter === id
-                              ? "bg-primary-container text-on-primary-container border-transparent"
-                              : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
+
+                    {countryScanViewTab === "availability" ? (
+                      <div className="flex gap-1 overflow-x-auto custom-scrollbar">
+                        {[
+                          ["all", "All"],
+                          ["changed", "Changed"],
+                          ["live", "Live"],
+                          ["pre_register", "Pre-register"],
+                          ["early_access", "Early access"],
+                          ["unavailable", "Unavailable"],
+                          ["unknown", "Unknown"]
+                        ].map(([id, label]) => (
+                          <button
+                            type="button"
+                            key={id}
+                            onClick={() => setCountryScanFilter(id)}
+                            className={cn(
+                              "h-10 px-3 rounded-xl text-[10px] font-medium whitespace-nowrap border",
+                              countryScanFilter === id
+                                ? "bg-primary-container text-on-primary-container border-transparent"
+                                : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <select
+                        value={countryPerformanceSort}
+                        onChange={event => setCountryPerformanceSort(event.target.value)}
+                        className="h-10 px-3 rounded-xl border border-border-subtle bg-surface-solid text-text-main text-[10px] md:text-xs outline-none"
+                      >
+                        <option value="atlas_desc">Highest Atlas score</option>
+                        <option value="atlas_asc">Lowest Atlas score</option>
+                        <option value="rating_desc">Highest Play rating</option>
+                        <option value="rating_asc">Lowest Play rating</option>
+                        <option value="ratings_desc">Most ratings</option>
+                        <option value="reviews_desc">Most reviews</option>
+                        <option value="positive_desc">Highest positive share</option>
+                        <option value="negative_desc">Highest negative share</option>
+                      </select>
+                    )}
                   </div>
 
                   <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 md:p-4">
-                    {visibleCountryResults.length === 0 ? (
+                    {countryScanViewTab === "performance" ? (
+                      countryPerformanceRows.length === 0 ? (
+                        <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-6">
+                          <span className="material-symbols-outlined text-text-muted text-[30px]">monitoring</span>
+                          <p className="text-xs text-text-main font-medium mt-3">No market performance data in this scan</p>
+                          <p className="text-[10px] text-text-muted mt-1 max-w-md">Country rating, rating-count, review-count and sentiment data are collected on scans run after this update.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="mb-3 rounded-xl border border-border-subtle bg-input-bg/60 px-3 py-2.5 text-[10px] text-text-muted">
+                            <span className="font-medium text-text-main">Atlas score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {countryPerformanceRows.map((item, index) => (
+                              <div key={item.countryCode} className="rounded-xl border border-border-subtle bg-surface-glass p-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span className="text-xl flex-shrink-0">{getCountryFlag(item.countryCode)}</span>
+                                    <div className="min-w-0">
+                                      <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                      <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.performanceConfidence || "none"} sample confidence</div>
+                                    </div>
+                                  </div>
+                                  <div className="text-right flex-shrink-0">
+                                    <div className="text-[9px] text-text-muted">Atlas score</div>
+                                    <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "—" : Number(item.atlasMarketScore).toFixed(1)}</div>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Play rating</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{item.playRating == null ? "—" : Number(item.playRating).toFixed(2)} ★</div>
+                                  </div>
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Ratings</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{Number(item.ratingsCount || 0).toLocaleString()}</div>
+                                  </div>
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Reviews</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{Number(item.reviewsCount || 0).toLocaleString()}</div>
+                                  </div>
+                                  <div className="rounded-lg bg-input-bg px-2.5 py-2">
+                                    <div className="text-[9px] text-text-muted">Rank</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">#{index + 1}</div>
+                                  </div>
+                                </div>
+
+                                {(item.positiveShare != null || item.negativeShare != null) && (
+                                  <div className="mt-3">
+                                    <div className="flex items-center justify-between text-[9px] text-text-muted">
+                                      <span className="text-emerald-500">Positive {item.positiveShare == null ? "—" : Number(item.positiveShare).toFixed(1) + "%"}</span>
+                                      <span className="text-urgent-red">Negative {item.negativeShare == null ? "—" : Number(item.negativeShare).toFixed(1) + "%"}</span>
+                                    </div>
+                                    <div className="mt-1.5 h-1.5 bg-input-bg rounded-full overflow-hidden flex">
+                                      <div className="h-full bg-emerald-500" style={{ width: (item.positiveShare || 0) + "%" }} />
+                                      <div className="h-full bg-urgent-red" style={{ width: (item.negativeShare || 0) + "%" }} />
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )
+                    ) : visibleCountryResults.length === 0 ? (
                       <div className="h-full min-h-[220px] flex items-center justify-center text-xs text-text-muted">No countries match this filter.</div>
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
