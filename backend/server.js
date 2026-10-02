@@ -1106,11 +1106,15 @@ app.patch("/api/games/:id/suspended", async (req, res) => {
       let publisherName = game.publisher_name || "Unknown Publisher";
       let developerId = game.developer_id || null;
       let publisherUrl = game.developer_url || null;
+      let isPaid = game.is_paid === true;
+      let price = game.price == null ? null : Number(game.price);
+      let currency = game.currency || null;
+      let priceText = game.price_text || null;
 
       // Best-effort enrichment for older Atlas rows that predate developer-link
-      // storage. This may fail for an already-suspended listing, in which case
-      // the preserved publisher name still gets a useful Play search fallback.
-      if (!publisherUrl || !developerId) {
+      // and paid-app storage. This may fail for an already-suspended listing,
+      // in which case Atlas still preserves the last known snapshot.
+      if (!publisherUrl || !developerId || (price == null && !priceText)) {
         try {
           const appData = await gplay.app({ appId: game.package_name, country: "us", lang: "en" });
           publisherName = appData?.developer || publisherName;
@@ -1119,9 +1123,29 @@ app.patch("/api/games/:id/suspended", async (req, res) => {
             ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(developerId)}`
             : publisherUrl;
 
+          const metadataPrice = Number(appData?.price);
+          const metadataPaid =
+            appData?.free === false &&
+            Number.isFinite(metadataPrice) &&
+            metadataPrice > 0;
+
+          if (metadataPaid) {
+            isPaid = true;
+            price = metadataPrice;
+            currency = appData?.currency || currency;
+            priceText = appData?.priceText || priceText;
+          }
+
           await pool.query(
-            "UPDATE games SET developer_id = COALESCE($2, developer_id), developer_url = COALESCE($3, developer_url) WHERE id = $1",
-            [game.id, developerId, publisherUrl]
+            `UPDATE games
+             SET developer_id = COALESCE($2, developer_id),
+                 developer_url = COALESCE($3, developer_url),
+                 is_paid = CASE WHEN $4 THEN TRUE ELSE is_paid END,
+                 price = CASE WHEN $4 THEN COALESCE($5, price) ELSE price END,
+                 currency = CASE WHEN $4 THEN COALESCE($6, currency) ELSE currency END,
+                 price_text = CASE WHEN $4 THEN COALESCE($7, price_text) ELSE price_text END
+             WHERE id = $1`,
+            [game.id, developerId, publisherUrl, metadataPaid, price, currency, priceText]
           );
         } catch {}
       }
@@ -1151,10 +1175,10 @@ app.patch("/api/games/:id/suspended", async (req, res) => {
         developer_id: developerId,
         developer_url: publisherUrl,
         publisher_name: publisherName,
-        is_paid: game.is_paid === true,
-        price: game.price == null ? null : Number(game.price),
-        currency: game.currency || null,
-        price_text: game.price_text || null
+        is_paid: isPaid,
+        price,
+        currency,
+        price_text: priceText
       };
 
       const client = await pool.connect();
