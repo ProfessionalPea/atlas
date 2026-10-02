@@ -640,9 +640,22 @@ app.get("/api/country-scans", async (_req, res) => {
       )
       SELECT
         latest.*,
-        totals.scan_count
+        totals.scan_count,
+        COALESCE(atlas_link.competitor_names, ARRAY[]::text[]) AS competitor_names,
+        COALESCE(atlas_link.in_atlas, FALSE) AS in_atlas
       FROM latest
       JOIN totals USING (package_name)
+      LEFT JOIN LATERAL (
+        SELECT
+          ARRAY_AGG(DISTINCT c.name ORDER BY c.name)
+            FILTER (WHERE c.id IS NOT NULL AND c.name IS NOT NULL) AS competitor_names,
+          BOOL_OR(g.id IS NOT NULL) AS in_atlas
+        FROM games g
+        LEFT JOIN account_games ag ON ag.game_id = g.id
+        LEFT JOIN accounts a ON a.id = ag.account_id
+        LEFT JOIN competitors c ON c.id = a.competitor_id
+        WHERE g.package_name = latest.package_name
+      ) atlas_link ON TRUE
       ORDER BY latest.completed_at DESC NULLS LAST, latest.id DESC
     `);
 
@@ -706,6 +719,10 @@ app.get("/api/country-scans", async (_req, res) => {
           .reduce((sum, state) => sum + Number(counts[state] || 0), 0),
         isPaid: Number(counts.paidCountries || 0) > 0,
         paidCountryCount: Number(counts.paidCountries || 0),
+        inAtlas: row.in_atlas === true,
+        competitors: Array.isArray(row.competitor_names)
+          ? row.competitor_names.filter(Boolean)
+          : [],
         counts: {
           live: counts.live,
           pre_register: counts.pre_register,
