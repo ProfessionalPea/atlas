@@ -860,7 +860,13 @@ app.post("/api/country-scans", async (req, res) => {
           }
 
           const paidResult = countryResult.results.find(item => item.isPaid);
-          const pricedResult = countryResult.results.find(item => item.isPaid && (item.priceText || item.price != null));
+          const pricedResult =
+            countryResult.results.find(item =>
+              item.countryCode === "US" &&
+              item.isPaid &&
+              (item.priceText || item.price != null)
+            ) ||
+            countryResult.results.find(item => item.isPaid && (item.priceText || item.price != null));
           const freeEvidence = countryResult.results.some(item => item?.evidence?.metadataFree === true);
 
           // Do not clear a known paid flag just because one scan had parser or
