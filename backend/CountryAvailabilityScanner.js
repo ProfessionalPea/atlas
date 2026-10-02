@@ -99,6 +99,95 @@ function isNotFoundError(error) {
     message.includes("app not found");
 }
 
+function normalizeHistogram(histogram) {
+  const source = histogram && typeof histogram === "object" ? histogram : {};
+  const result = {};
+  for (let star = 1; star <= 5; star += 1) {
+    const value = Number(source[String(star)] ?? source[star] ?? 0);
+    result[String(star)] = Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+  }
+  return result;
+}
+
+function getMarketPerformance(appData) {
+  if (!appData || typeof appData !== "object") {
+    return {
+      playRating: null,
+      ratingsCount: 0,
+      reviewsCount: 0,
+      histogram: null,
+      positiveRatings: 0,
+      negativeRatings: 0,
+      positiveShare: null,
+      negativeShare: null,
+      atlasMarketScore: null,
+      performanceConfidence: "none"
+    };
+  }
+
+  const playRatingValue = Number(appData.score);
+  const playRating = Number.isFinite(playRatingValue) && playRatingValue > 0
+    ? Number(playRatingValue.toFixed(3))
+    : null;
+  const ratingsCount = Math.max(0, Math.round(Number(appData.ratings) || 0));
+  const reviewsCount = Math.max(0, Math.round(Number(appData.reviews) || 0));
+  const histogram = normalizeHistogram(appData.histogram);
+  const histogramTotal = Object.values(histogram).reduce((sum, value) => sum + value, 0);
+  const positiveRatings = histogram["4"] + histogram["5"];
+  const negativeRatings = histogram["1"] + histogram["2"];
+  const positiveShare = histogramTotal > 0
+    ? Number(((positiveRatings / histogramTotal) * 100).toFixed(2))
+    : null;
+  const negativeShare = histogramTotal > 0
+    ? Number(((negativeRatings / histogramTotal) * 100).toFixed(2))
+    : null;
+
+  let observedRating = playRating;
+  let evidenceCount = ratingsCount;
+
+  if (histogramTotal > 0) {
+    observedRating = (
+      histogram["1"] +
+      histogram["2"] * 2 +
+      histogram["3"] * 3 +
+      histogram["4"] * 4 +
+      histogram["5"] * 5
+    ) / histogramTotal;
+    evidenceCount = histogramTotal;
+  }
+
+  // Confidence-adjusted score: shrink tiny samples toward a neutral-ish
+  // 3.5-star prior so a country with only a handful of perfect ratings does
+  // not outrank a market with thousands of consistently strong ratings.
+  const priorRating = 3.5;
+  const priorWeight = 25;
+  const atlasMarketScore = observedRating && evidenceCount > 0
+    ? Number(((
+        ((observedRating * evidenceCount) + (priorRating * priorWeight)) /
+        (evidenceCount + priorWeight)
+      ) / 5 * 100).toFixed(2))
+    : null;
+
+  const performanceConfidence =
+    evidenceCount >= 1000 ? "high" :
+    evidenceCount >= 100 ? "medium" :
+    evidenceCount > 0 ? "low" :
+    "none";
+
+  return {
+    playRating,
+    ratingsCount,
+    reviewsCount,
+    histogram: histogramTotal > 0 ? histogram : null,
+    positiveRatings,
+    negativeRatings,
+    positiveShare,
+    negativeShare,
+    atlasMarketScore,
+    performanceConfidence
+  };
+}
+
 function classifyAppMetadata(appData) {
   if (!appData || typeof appData !== "object") return null;
 
@@ -309,12 +398,14 @@ async function probeCountry(packageName, countryCode) {
     }
 
     const classification = metadataClassification || pageClassification;
+    const marketPerformance = getMarketPerformance(appData);
 
     return {
       countryCode,
       countryName: getCountryName(countryCode),
       state: classification.state,
       confidence: classification.confidence,
+      ...marketPerformance,
       evidence: {
         classifierVersion: 2,
         httpStatus: response.status,
@@ -422,5 +513,6 @@ module.exports = {
   probeCountry,
   scanPackageCountries,
   classifyAppMetadata,
-  classifyStorePage
+  classifyStorePage,
+  getMarketPerformance
 };
