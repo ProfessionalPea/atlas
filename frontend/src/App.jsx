@@ -3958,6 +3958,9 @@ function App() {
                       Country availability
                     </h3>
                     <p className="text-[10px] text-text-muted mt-1 font-mono break-all">{selectedGame.package_name}</p>
+                    <div className="mt-2">
+                      <PaidBadge item={selectedGameCountryScan?.scan?.isPaid ? selectedGameCountryScan.scan : selectedGame} compact />
+                    </div>
                   </div>
                   {selectedGameCountryScan?.scan?.completedAt && (
                     <span className="text-[9px] text-text-muted text-right flex-shrink-0">
@@ -4095,9 +4098,12 @@ function App() {
                     {countryScanData?.scan?.packageName || (isCountryScanRunning ? countryScanJob.packageName : countryPackage || "Package")}
                   </p>
                   {countryScanData?.scan?.appTitle && (
-                    <p className="text-[10px] text-text-muted mt-0.5 truncate">
-                      {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
-                    </p>
+                    <div className="mt-0.5 flex items-center gap-2 min-w-0">
+                      <p className="text-[10px] text-text-muted truncate">
+                        {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
+                      </p>
+                      <PaidBadge item={countryScanData.scan} compact showPrice={false} />
+                    </div>
                   )}
                 </div>
                 <button
@@ -4168,7 +4174,7 @@ function App() {
                   </div>
                 </div>
               ) : countryScanData ? (
-                <>
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                   <div className="px-4 md:px-6 py-4 border-b border-border-subtle">
                     <div className="mb-4 rounded-2xl border border-border-subtle bg-input-bg/60 px-4 py-3.5 flex items-start gap-3">
                       <div className="w-9 h-9 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center flex-shrink-0">
@@ -4240,8 +4246,8 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="px-4 md:px-6 pt-3 border-b border-border-subtle">
-                    <div className="flex items-center gap-1 bg-input-bg rounded-xl p-1 w-max">
+                  <div className="px-4 md:px-6 py-3 border-b border-border-subtle flex items-center">
+                    <div className="inline-flex items-center gap-1 bg-input-bg rounded-xl p-1">
                       {[
                         ["availability", "Availability", "public"],
                         ["performance", "Market performance", "monitoring"]
@@ -4307,8 +4313,8 @@ function App() {
                         onChange={event => setCountryPerformanceSort(event.target.value)}
                         className="h-10 px-3 rounded-xl border border-border-subtle bg-surface-solid text-text-main text-[10px] md:text-xs outline-none"
                       >
-                        <option value="atlas_desc">Highest Atlas score</option>
-                        <option value="atlas_asc">Lowest Atlas score</option>
+                        <option value="atlas_desc">Highest calculated score</option>
+                        <option value="atlas_asc">Lowest calculated score</option>
                         <option value="rating_desc">Highest Play rating</option>
                         <option value="rating_asc">Lowest Play rating</option>
                         <option value="ratings_desc">Most ratings</option>
@@ -4319,7 +4325,7 @@ function App() {
                     )}
                   </div>
 
-                  <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 md:p-4">
+                  <div className="p-3 md:p-4">
                     {countryScanViewTab === "performance" ? (
                       countryPerformanceRows.length === 0 ? (
                         <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-6">
@@ -4330,7 +4336,7 @@ function App() {
                       ) : (
                         <>
                           <div className="mb-3 rounded-xl border border-border-subtle bg-input-bg/60 px-3 py-2.5 text-[10px] text-text-muted">
-                            <span className="font-medium text-text-main">Atlas score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
+                            <span className="font-medium text-text-main">Calculated score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                             {countryPerformanceRows.map((item, index) => (
@@ -4341,6 +4347,7 @@ function App() {
                                     <div className="min-w-0">
                                       <div className="flex items-center gap-1.5 min-w-0">
                                         <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                        <PaidBadge item={item} compact />
                                         <span className={cn(
                                           "px-1.5 py-0.5 rounded-full border text-[8px] font-medium flex-shrink-0",
                                           item.performanceBand === "strong"
@@ -4356,7 +4363,7 @@ function App() {
                                     </div>
                                   </div>
                                   <div className="text-right flex-shrink-0">
-                                    <div className="text-[9px] text-text-muted">Atlas score</div>
+                                    <div className="text-[9px] text-text-muted">Calculated score</div>
                                     <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "—" : Number(item.atlasMarketScore).toFixed(1)}</div>
                                   </div>
                                 </div>
@@ -4415,7 +4422,10 @@ function App() {
                               <div className="flex items-center gap-3 min-w-0">
                                 <span className="text-xl flex-shrink-0">{getCountryFlag(item.countryCode)}</span>
                                 <div className="min-w-0">
-                                  <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                    <PaidBadge item={item} compact />
+                                  </div>
                                   <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.confidence || "unknown"} confidence</div>
                                   {change && (
                                     <div className="text-[9px] text-amber-500 mt-1">
@@ -4433,7 +4443,7 @@ function App() {
                       </div>
                     )}
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-xs text-text-muted">No country scan loaded.</div>
               )}
