@@ -861,8 +861,12 @@ app.post("/api/country-scans", async (req, res) => {
 
           const paidResult = countryResult.results.find(item => item.isPaid);
           const pricedResult = countryResult.results.find(item => item.isPaid && (item.priceText || item.price != null));
+          const freeEvidence = countryResult.results.some(item => item?.evidence?.metadataFree === true);
 
-          if (game) {
+          // Do not clear a known paid flag just because one scan had parser or
+          // timeout gaps. A transition to free is only accepted when Google
+          // metadata explicitly reports free=true in at least one storefront.
+          if (game && (paidResult || freeEvidence)) {
             await client.query(
               `UPDATE games
                SET is_paid = $2,
@@ -1233,7 +1237,7 @@ app.get("/api/stats", async (_req, res) => {
   try {
     const competitors = (await pool.query("SELECT COUNT(*) FROM competitors")).rows[0].count;
     const accounts = (await pool.query("SELECT COUNT(*) FROM accounts")).rows[0].count;
-    const games = (await pool.query("SELECT COUNT(*) FROM games WHERE COALESCE(is_suspended, FALSE) = FALSE")).rows[0].count;
+    const games = (await pool.query("SELECT COUNT(*) FROM games")).rows[0].count;
     res.json({ competitors: Number(competitors), accounts: Number(accounts), games: Number(games) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
