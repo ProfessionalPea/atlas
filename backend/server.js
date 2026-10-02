@@ -117,7 +117,11 @@ const pool = new Pool({
         ADD COLUMN IF NOT EXISTS positive_share NUMERIC(6,2),
         ADD COLUMN IF NOT EXISTS negative_share NUMERIC(6,2),
         ADD COLUMN IF NOT EXISTS atlas_market_score NUMERIC(6,2),
-        ADD COLUMN IF NOT EXISTS performance_confidence TEXT;
+        ADD COLUMN IF NOT EXISTS performance_confidence TEXT,
+        ADD COLUMN IF NOT EXISTS is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS price NUMERIC(12,4),
+        ADD COLUMN IF NOT EXISTS currency TEXT,
+        ADD COLUMN IF NOT EXISTS price_text TEXT;
     `);
 
     await pool.query(`
@@ -142,7 +146,11 @@ const pool = new Pool({
         ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ,
         ADD COLUMN IF NOT EXISTS developer_id TEXT,
-        ADD COLUMN IF NOT EXISTS developer_url TEXT;
+        ADD COLUMN IF NOT EXISTS developer_url TEXT,
+        ADD COLUMN IF NOT EXISTS is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS price NUMERIC(12,4),
+        ADD COLUMN IF NOT EXISTS currency TEXT,
+        ADD COLUMN IF NOT EXISTS price_text TEXT;
 
       CREATE TABLE IF NOT EXISTS game_suspensions (
         id BIGSERIAL PRIMARY KEY,
@@ -492,6 +500,10 @@ async function getCountryScanPayload(packageName, scanId = null) {
         r.negative_share,
         r.atlas_market_score,
         r.performance_confidence,
+        r.is_paid,
+        r.price,
+        r.currency,
+        r.price_text,
         r.evidence,
         p.id AS previous_scan_id,
         p.completed_at AS previous_completed_at,
@@ -543,10 +555,16 @@ async function getCountryScanPayload(packageName, scanId = null) {
         negativeShare: row.negative_share == null ? null : Number(row.negative_share),
         atlasMarketScore: row.atlas_market_score == null ? null : Number(row.atlas_market_score),
         performanceConfidence: row.performance_confidence || "none",
+        isPaid: row.is_paid === true,
+        price: row.price == null ? null : Number(row.price),
+        currency: row.currency || null,
+        priceText: row.price_text || null,
         evidence: row.evidence || {},
         previousState: row.previous_release_state || null
       };
     });
+
+  const paidCountryCount = results.filter(row => row.isPaid).length;
 
   const changes = results
     .filter(row => row.previousState && row.previousState !== row.state)
@@ -573,6 +591,8 @@ async function getCountryScanPayload(packageName, scanId = null) {
       startedAt: first.started_at,
       completedAt: first.completed_at,
       counts: visibleCounts,
+      isPaid: paidCountryCount > 0,
+      paidCountryCount,
       error: first.error_message || null
     },
     previousScan: first.previous_scan_id ? {
@@ -633,7 +653,7 @@ app.get("/api/country-scans", async (_req, res) => {
 
     const scanIds = latestRows.map(row => Number(row.id));
     const { rows: resultRows } = await pool.query(
-      `SELECT scan_id, release_state
+      `SELECT scan_id, release_state, is_paid
        FROM package_country_scan_results
        WHERE scan_id = ANY($1::bigint[])
          AND country_code::text = ANY($2::text[])`,
@@ -650,7 +670,8 @@ app.get("/api/country-scans", async (_req, res) => {
           pre_register: 0,
           early_access: 0,
           unavailable: 0,
-          unknown: 0
+          unknown: 0,
+          paidCountries: 0
         });
       }
 
@@ -660,6 +681,7 @@ app.get("/api/country-scans", async (_req, res) => {
       } else {
         counts.unknown += 1;
       }
+      if (row.is_paid === true) counts.paidCountries += 1;
     }
 
     const items = latestRows.map(row => {
@@ -668,7 +690,8 @@ app.get("/api/country-scans", async (_req, res) => {
         pre_register: 0,
         early_access: 0,
         unavailable: 0,
-        unknown: 0
+        unknown: 0,
+        paidCountries: 0
       };
 
       return {
@@ -679,8 +702,17 @@ app.get("/api/country-scans", async (_req, res) => {
         completedAt: row.completed_at,
         startedAt: row.started_at,
         scanCount: Number(row.scan_count) || 1,
-        totalCountries: Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0),
-        counts
+        totalCountries: ["live", "pre_register", "early_access", "unavailable", "unknown"]
+          .reduce((sum, state) => sum + Number(counts[state] || 0), 0),
+        isPaid: Number(counts.paidCountries || 0) > 0,
+        paidCountryCount: Number(counts.paidCountries || 0),
+        counts: {
+          live: counts.live,
+          pre_register: counts.pre_register,
+          early_access: counts.early_access,
+          unavailable: counts.unavailable,
+          unknown: counts.unknown
+        }
       };
     });
 
@@ -792,13 +824,15 @@ app.post("/api/country-scans", async (req, res) => {
                    scan_id, country_code, country_name, release_state, confidence,
                    play_rating, ratings_count, reviews_count, rating_histogram,
                    positive_ratings, negative_ratings, positive_share, negative_share,
-                   atlas_market_score, performance_confidence, evidence
+                   atlas_market_score, performance_confidence,
+                   is_paid, price, currency, price_text, evidence
                  )
                VALUES (
                  $1, $2, $3, $4, $5,
                  $6, $7, $8, $9::jsonb,
                  $10, $11, $12, $13,
-                 $14, $15, $16::jsonb
+                 $14, $15,
+                 $16, $17, $18, $19, $20::jsonb
                )`,
               [
                 scan.id,
@@ -816,7 +850,32 @@ app.post("/api/country-scans", async (req, res) => {
                 item.negativeShare ?? null,
                 item.atlasMarketScore ?? null,
                 item.performanceConfidence || "none",
+                item.isPaid === true,
+                item.price ?? null,
+                item.currency || null,
+                item.priceText || null,
                 JSON.stringify(item.evidence || {})
+              ]
+            );
+          }
+
+          const paidResult = countryResult.results.find(item => item.isPaid);
+          const pricedResult = countryResult.results.find(item => item.isPaid && (item.priceText || item.price != null));
+
+          if (game) {
+            await client.query(
+              `UPDATE games
+               SET is_paid = $2,
+                   price = CASE WHEN $2 THEN COALESCE($3, price) ELSE NULL END,
+                   currency = CASE WHEN $2 THEN COALESCE($4, currency) ELSE NULL END,
+                   price_text = CASE WHEN $2 THEN COALESCE($5, price_text) ELSE NULL END
+               WHERE package_name = $1`,
+              [
+                packageName,
+                Boolean(paidResult),
+                pricedResult?.price ?? null,
+                pricedResult?.currency || null,
+                pricedResult?.priceText || null
               ]
             );
           }
@@ -1081,7 +1140,11 @@ app.patch("/api/games/:id/suspended", async (req, res) => {
         video_image: game.video_image,
         developer_id: developerId,
         developer_url: publisherUrl,
-        publisher_name: publisherName
+        publisher_name: publisherName,
+        is_paid: game.is_paid === true,
+        price: game.price == null ? null : Number(game.price),
+        currency: game.currency || null,
+        price_text: game.price_text || null
       };
 
       const client = await pool.connect();
@@ -1204,7 +1267,7 @@ app.post("/api/reset", async (_req, res) => {
 
 app.get("/api/trending", async (_req, res) => {
   try { 
-    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id WHERE COALESCE(g.is_suspended, FALSE) = FALSE ORDER BY g.ad_count DESC`);
+    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id ORDER BY g.ad_count DESC`);
     res.json(rows);
   } catch { res.status(500).json({ error: "Fail" }); }
 });
@@ -1654,12 +1717,12 @@ app.post("/api/scan", async (req, res) => {
               package_name, title, category, rating, ratings_count, icon,
               screenshots, description, installs, min_installs, released,
               updated, similar_apps, ad_count, header_image, video, video_image,
-              developer_id, developer_url
+              developer_id, developer_url, is_paid, price, currency, price_text
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
               $10, $11, $12, $13, $14, $15, $16, $17,
-              $18, $19
+              $18, $19, $20, $21, $22, $23
             )
             ON CONFLICT (package_name) DO UPDATE SET
               title = EXCLUDED.title,
@@ -1679,7 +1742,11 @@ app.post("/api/scan", async (req, res) => {
               video = EXCLUDED.video,
               video_image = EXCLUDED.video_image,
               developer_id = COALESCE(EXCLUDED.developer_id, games.developer_id),
-              developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url)
+              developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url),
+              is_paid = EXCLUDED.is_paid,
+              price = EXCLUDED.price,
+              currency = EXCLUDED.currency,
+              price_text = EXCLUDED.price_text
             RETURNING id
           `;
 
@@ -1702,7 +1769,11 @@ app.post("/api/scan", async (req, res) => {
             appData.video || null,
             fixUrl(appData.videoImage) || null,
             developerId,
-            developerUrl
+            developerUrl,
+            appData.free === false && Number(appData.price) > 0,
+            appData.free === false && Number(appData.price) > 0 ? Number(appData.price) : null,
+            appData.free === false && Number(appData.price) > 0 ? (appData.currency || null) : null,
+            appData.free === false && Number(appData.price) > 0 ? (appData.priceText || null) : null
           ]);
 
           const gameId = gameRes.rows[0].id;
@@ -1880,7 +1951,6 @@ app.get("/api/competitors", async (_req, res) => {
         SELECT ag.account_id, g.* 
         FROM account_games ag 
         JOIN games g ON ag.game_id = g.id
-        WHERE COALESCE(g.is_suspended, FALSE) = FALSE
       `)
     ]);
 
