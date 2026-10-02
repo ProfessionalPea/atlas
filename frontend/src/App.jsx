@@ -568,6 +568,7 @@ function App() {
   const [directorySearch, setDirectorySearch] = useState("");
   const [directoryFilter, setDirectoryFilter] = useState("all"); 
   const [directoryGameSort, setDirectoryGameSort] = useState("activity");
+  const [suspendedGames, setSuspendedGames] = useState([]);
   const [pubSort, setPubSort] = useState("installs"); 
   const [pubFilterNew, setPubFilterNew] = useState(false); 
   const [pubFilterComp, setPubFilterComp] = useState("all");
@@ -619,6 +620,8 @@ function App() {
   const [isCountryScanMinimized, setIsCountryScanMinimized] = useState(false);
   const [countryScanFilter, setCountryScanFilter] = useState("all");
   const [countryScanSearch, setCountryScanSearch] = useState("");
+  const [countryScanViewTab, setCountryScanViewTab] = useState("availability");
+  const [countryPerformanceSort, setCountryPerformanceSort] = useState("atlas_desc");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
   const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
   const [countryScanLibrary, setCountryScanLibrary] = useState([]);
@@ -718,6 +721,7 @@ function App() {
       fetchJson(`${API_BASE}/api/competitor-history`).then(data => setHistoryData(processHistoryData(Array.isArray(data) ? data : []))),
       fetchJson(`${API_BASE}/api/settings`).then(data => { if (data && !data.error) setSettings(prev => ({ ...prev, ...data })); }),
       fetchJson(`${API_BASE}/api/country-scans`).then(data => setCountryScanLibrary(Array.isArray(data) ? data : [])),
+      fetchJson(`${API_BASE}/api/suspended-games`).then(data => setSuspendedGames(Array.isArray(data) ? data : [])),
     ];
     const results = await Promise.allSettled(requests);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
@@ -1575,6 +1579,7 @@ function App() {
     if (packageName) setCountryPackage(packageName);
     setCountryScanFilter("all");
     setCountryScanSearch("");
+    setCountryScanViewTab("availability");
     setCountryScanError("");
     setCountryScanLoading(false);
     setCountryScanModalOpen(true);
@@ -1598,6 +1603,7 @@ function App() {
     setCountryScanError("");
     setCountryScanFilter("all");
     setCountryScanSearch("");
+    setCountryScanViewTab("availability");
 
     if (cacheMatchesLatest) {
       setCountryScanData(cached);
@@ -1641,6 +1647,7 @@ function App() {
     setCountryScanError("");
     setCountryScanFilter("all");
     setCountryScanSearch("");
+    setCountryScanViewTab("availability");
     setIsCountryScanMinimized(false);
     setCountryScanJob({
       scanId: null,
@@ -1843,6 +1850,48 @@ function App() {
       String(item.packageName || "").toLowerCase().includes(query)
     );
   }, [countryScanLibrary, countryLibrarySearch]);
+
+  const visibleSuspendedGames = useMemo(() => {
+    const query = directorySearch.trim().toLowerCase();
+    if (!query) return suspendedGames;
+
+    return suspendedGames.filter(item => {
+      const game = item.game || {};
+      return String(item.appTitle || game.title || "").toLowerCase().includes(query) ||
+        String(item.packageName || game.package_name || "").toLowerCase().includes(query) ||
+        String(item.publisherName || game.publisher_name || "").toLowerCase().includes(query);
+    });
+  }, [suspendedGames, directorySearch]);
+
+  const countryPerformanceRows = useMemo(() => {
+    const query = countryScanSearch.trim().toLowerCase();
+    const rows = (countryScanData?.results || [])
+      .filter(item => {
+        if (item.playRating == null && item.atlasMarketScore == null && !item.ratingsCount && !item.reviewsCount) return false;
+        if (!query) return true;
+        return String(item.countryName || "").toLowerCase().includes(query) ||
+          String(item.countryCode || "").toLowerCase().includes(query);
+      })
+      .map(item => ({ ...item }));
+
+    const numeric = (value, fallback) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    rows.sort((a, b) => {
+      if (countryPerformanceSort === "atlas_asc") return numeric(a.atlasMarketScore, Infinity) - numeric(b.atlasMarketScore, Infinity);
+      if (countryPerformanceSort === "rating_desc") return numeric(b.playRating, -Infinity) - numeric(a.playRating, -Infinity);
+      if (countryPerformanceSort === "rating_asc") return numeric(a.playRating, Infinity) - numeric(b.playRating, Infinity);
+      if (countryPerformanceSort === "ratings_desc") return numeric(b.ratingsCount, 0) - numeric(a.ratingsCount, 0);
+      if (countryPerformanceSort === "reviews_desc") return numeric(b.reviewsCount, 0) - numeric(a.reviewsCount, 0);
+      if (countryPerformanceSort === "negative_desc") return numeric(b.negativeShare, -Infinity) - numeric(a.negativeShare, -Infinity);
+      if (countryPerformanceSort === "positive_desc") return numeric(b.positiveShare, -Infinity) - numeric(a.positiveShare, -Infinity);
+      return numeric(b.atlasMarketScore, -Infinity) - numeric(a.atlasMarketScore, -Infinity);
+    });
+
+    return rows;
+  }, [countryScanData, countryScanSearch, countryPerformanceSort]);
 
   const countryScanSummary = useMemo(() => {
     if (!countryScanData?.scan) return "";
