@@ -1930,6 +1930,25 @@ function App() {
       return Number.isFinite(parsed) ? parsed : fallback;
     };
 
+    const validScores = rows
+      .map(item => Number(item.atlasMarketScore))
+      .filter(value => Number.isFinite(value))
+      .sort((a, b) => a - b);
+    const q1 = validScores.length ? validScores[Math.floor((validScores.length - 1) * 0.25)] : null;
+    const q3 = validScores.length ? validScores[Math.floor((validScores.length - 1) * 0.75)] : null;
+    const hasUsefulSpread = q1 != null && q3 != null && (q3 - q1) >= 0.5;
+
+    for (const item of rows) {
+      const score = Number(item.atlasMarketScore);
+      item.performanceBand = !Number.isFinite(score) || !hasUsefulSpread
+        ? "typical"
+        : score >= q3
+          ? "strong"
+          : score <= q1
+            ? "weak"
+            : "typical";
+    }
+
     rows.sort((a, b) => {
       if (countryPerformanceSort === "atlas_asc") return numeric(a.atlasMarketScore, Infinity) - numeric(b.atlasMarketScore, Infinity);
       if (countryPerformanceSort === "rating_desc") return numeric(b.playRating, -Infinity) - numeric(a.playRating, -Infinity);
@@ -4254,7 +4273,19 @@ function App() {
                                   <div className="flex items-center gap-3 min-w-0">
                                     <span className="text-xl flex-shrink-0">{getCountryFlag(item.countryCode)}</span>
                                     <div className="min-w-0">
-                                      <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                        <span className={cn(
+                                          "px-1.5 py-0.5 rounded-full border text-[8px] font-medium flex-shrink-0",
+                                          item.performanceBand === "strong"
+                                            ? "text-emerald-500 bg-emerald-500/10 border-emerald-500/20"
+                                            : item.performanceBand === "weak"
+                                              ? "text-urgent-red bg-urgent-red/10 border-urgent-red/20"
+                                              : "text-text-muted bg-input-bg border-border-subtle"
+                                        )}>
+                                          {item.performanceBand === "strong" ? "Strong" : item.performanceBand === "weak" ? "Weak" : "Typical"}
+                                        </span>
+                                      </div>
                                       <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.performanceConfidence || "none"} sample confidence</div>
                                     </div>
                                   </div>
