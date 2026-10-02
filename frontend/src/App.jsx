@@ -3029,15 +3029,25 @@ function App() {
                     {sortedDirectoryGames.map(game => (
                       <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
                         {isAdmin && (
-                          <button
-                            onClick={(e) => handleDeleteGame(e, game)}
-                            disabled={isScanning}
-                            className="absolute top-3 right-3 z-20 w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
-                            title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
-                            aria-label={`Delete ${game.title || game.package_name || "game"}`}
-                          >
-                            <span className="material-symbols-outlined text-[17px]">delete</span>
-                          </button>
+                          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                            <button
+                              onClick={(e) => handleSetGameSuspended(game, true, e)}
+                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all flex items-center justify-center"
+                              title="Mark game as suspended"
+                              aria-label={`Mark ${game.title || game.package_name || "game"} suspended`}
+                            >
+                              <span className="material-symbols-outlined text-[17px]">block</span>
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteGame(e, game)}
+                              disabled={isScanning}
+                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
+                              title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
+                              aria-label={`Delete ${game.title || game.package_name || "game"}`}
+                            >
+                              <span className="material-symbols-outlined text-[17px]">delete</span>
+                            </button>
+                          </div>
                         )}
                         {game.header_image && (
                           <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
@@ -3808,9 +3818,37 @@ function App() {
                     );
                   })()}
 
-                  <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue hover:bg-blue-600 text-white text-xs px-4 py-2 rounded-lg border border-border-subtle transition-all w-max shadow-sm font-bold active:scale-[0.98]">
-                    Play Store <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                  </a>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue hover:bg-blue-600 text-white text-xs px-4 py-2 rounded-lg border border-border-subtle transition-all w-max shadow-sm font-bold active:scale-[0.98]">
+                      Play Store <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                    </a>
+                    {selectedGame.publisher_url && (
+                      <a href={selectedGame.publisher_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 bg-input-bg text-text-main text-xs px-3 py-2 rounded-lg border border-border-subtle transition-all w-max">
+                        Publisher <span className="material-symbols-outlined text-[15px]">storefront</span>
+                      </a>
+                    )}
+                    {isAdmin && selectedGame.id && (
+                      selectedGame.is_suspended ? (
+                        <button
+                          type="button"
+                          onClick={(event) => handleSetGameSuspended(selectedGame, false, event)}
+                          className="flex items-center gap-1.5 bg-emerald-500/10 text-emerald-500 text-xs px-3 py-2 rounded-lg border border-emerald-500/25 transition-all w-max"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">undo</span>
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(event) => handleSetGameSuspended(selectedGame, true, event)}
+                          className="flex items-center gap-1.5 bg-urgent-red/10 text-urgent-red text-xs px-3 py-2 rounded-lg border border-urgent-red/25 transition-all w-max"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">block</span>
+                          Mark suspended
+                        </button>
+                      )
+                    )}
+                  </div>
                 </div>
               </div>
               <button onClick={closeDrawer} className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-glass border border-transparent hover:border-border-subtle transition-all text-text-muted hover:text-text-main bg-surface-solid md:bg-transparent flex-shrink-0"><span className="material-symbols-outlined text-[24px]">close</span></button>
