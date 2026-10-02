@@ -80,6 +80,60 @@ function normalizeStoreText(body) {
     .replace(/\u00ad/g, "");
 }
 
+function normalizeVisibleStoreText(body) {
+  return normalizeStoreText(body)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getStoreOffer(appData, body = "") {
+  const rawPrice = Number(appData?.price);
+  const metadataPaid =
+    appData?.free === false &&
+    Number.isFinite(rawPrice) &&
+    rawPrice > 0;
+
+  if (metadataPaid) {
+    return {
+      isPaid: true,
+      price: rawPrice,
+      currency: appData?.currency ? String(appData.currency) : null,
+      priceText: appData?.priceText ? String(appData.priceText) : null,
+      source: "metadata"
+    };
+  }
+
+  // Paid games are a special case for the HTML fallback. A valid paid listing
+  // can expose a Buy CTA even when google-play-scraper times out or fails to
+  // parse that storefront. That is still strong evidence the app is live.
+  const visibleText = normalizeVisibleStoreText(body);
+  const paidCta = visibleText.match(
+    /((?:[$€£¥₹₩₽₺₫₱₦₴₪₵₲₡₭₮₸₼₾]\s*\d[\d.,]*|\b(?:usd|eur|gbp|cad|aud|nzd|inr|jpy|krw|brl|zar|ngn|aoa)\s*\d[\d.,]*))\s*(?:buy|purchase)\b/i
+  );
+
+  if (paidCta) {
+    return {
+      isPaid: true,
+      price: null,
+      currency: null,
+      priceText: paidCta[1].trim(),
+      source: "page_buy_cta"
+    };
+  }
+
+  return {
+    isPaid: false,
+    price: Number.isFinite(rawPrice) ? rawPrice : null,
+    currency: appData?.currency ? String(appData.currency) : null,
+    priceText: appData?.priceText ? String(appData.priceText) : null,
+    source: appData ? "metadata" : null
+  };
+}
+
 function withTimeout(promise, timeoutMs, message) {
   let timer;
   return Promise.race([
@@ -203,6 +257,11 @@ function classifyAppMetadata(appData) {
     return { state: "unavailable", confidence: "high", marker: "metadata_unavailable" };
   }
 
+  const storeOffer = getStoreOffer(appData);
+  if (storeOffer.isPaid) {
+    return { state: "live", confidence: "high", marker: "metadata_paid_offer" };
+  }
+
   const installsText = String(appData.installs ?? "").trim();
   const minInstallsRaw = appData.minInstalls;
   const minInstalls = Number(minInstallsRaw);
@@ -299,6 +358,11 @@ function classifyStorePage({ body, status, finalUrl, packageName }) {
     return { state: "early_access", confidence: "high", marker: "early_access" };
   }
 
+  const pageOffer = getStoreOffer(null, body);
+  if (packagePresent && pageOffer.isPaid) {
+    return { state: "live", confidence: "high", marker: "paid_buy_cta" };
+  }
+
   // Never infer LIVE from a generic "Install" string in the HTML. Google Play
   // includes install-related copy/scripts on pre-registration listings too.
   // A successful details page only proves that a listing exists; country-
@@ -355,13 +419,18 @@ async function probeCountry(packageName, countryCode) {
     // Explicit page signals (Pre-register, Early access, or a hard unavailable
     // response) are already decisive and avoid an extra details lookup.
     if (["pre_register", "early_access", "unavailable"].includes(pageClassification.state)) {
+      const storeOffer = getStoreOffer(null, body);
       return {
         countryCode,
         countryName: getCountryName(countryCode),
         state: pageClassification.state,
         confidence: pageClassification.confidence,
+        isPaid: storeOffer.isPaid,
+        price: storeOffer.price,
+        currency: storeOffer.currency,
+        priceText: storeOffer.priceText,
         evidence: {
-          classifierVersion: 2,
+          classifierVersion: 3,
           httpStatus: response.status,
           marker: pageClassification.marker,
           finalUrl: response.url,
@@ -399,15 +468,20 @@ async function probeCountry(packageName, countryCode) {
 
     const classification = metadataClassification || pageClassification;
     const marketPerformance = getMarketPerformance(appData);
+    const storeOffer = getStoreOffer(appData, body);
 
     return {
       countryCode,
       countryName: getCountryName(countryCode),
       state: classification.state,
       confidence: classification.confidence,
+      isPaid: storeOffer.isPaid,
+      price: storeOffer.price,
+      currency: storeOffer.currency,
+      priceText: storeOffer.priceText,
       ...marketPerformance,
       evidence: {
-        classifierVersion: 2,
+        classifierVersion: 3,
         httpStatus: response.status,
         marker: classification.marker,
         pageMarker: pageClassification.marker,
@@ -421,6 +495,11 @@ async function probeCountry(packageName, countryCode) {
         metadataMinInstalls: appData?.minInstalls ?? null,
         metadataReleased: appData?.released ?? null,
         metadataAvailable: appData?.available ?? null,
+        metadataFree: appData?.free ?? null,
+        metadataPrice: appData?.price ?? null,
+        metadataCurrency: appData?.currency ?? null,
+        metadataPriceText: appData?.priceText ?? null,
+        storeOfferSource: storeOffer.source,
         metadataError: metadataError
           ? String(metadataError?.message || metadataError).slice(0, 300)
           : null,
@@ -434,8 +513,12 @@ async function probeCountry(packageName, countryCode) {
       countryName: getCountryName(countryCode),
       state: "unknown",
       confidence: "low",
+      isPaid: false,
+      price: null,
+      currency: null,
+      priceText: null,
       evidence: {
-        classifierVersion: 2,
+        classifierVersion: 3,
         marker: timedOut ? "timeout" : "request_error",
         error: String((error && error.message) || error).slice(0, 300),
         durationMs: Date.now() - startedAt
@@ -483,6 +566,37 @@ async function scanPackageCountries(packageNameInput, options = {}) {
     Array.from({ length: Math.min(concurrency, COUNTRY_CODES.length) }, () => worker())
   );
 
+  // Paid listings give us one extra cross-country consistency signal. If the
+  // app is positively identified as paid in at least one storefront, an
+  // otherwise-unknown country with a successful, package-matching details page
+  // is almost always a parser/metadata miss rather than a genuine unknown.
+  // Explicit pre-register / early-access / unavailable results are untouched.
+  const packageIsPaid = results.some(result => result?.isPaid === true);
+  if (packageIsPaid) {
+    for (const result of results) {
+      const evidence = result?.evidence || {};
+      const accessiblePaidFallback =
+        result?.state === "unknown" &&
+        evidence.packagePresent === true &&
+        Number(evidence.httpStatus) >= 200 &&
+        Number(evidence.httpStatus) < 400 &&
+        ["listing_accessible_unverified", "unclassified"].includes(
+          evidence.pageMarker || evidence.marker
+        );
+
+      if (accessiblePaidFallback) {
+        result.state = "live";
+        result.confidence = "medium";
+        result.isPaid = true;
+        result.evidence = {
+          ...evidence,
+          originalMarker: evidence.marker || null,
+          marker: "paid_listing_accessible_fallback"
+        };
+      }
+    }
+  }
+
   const counts = {
     live: 0,
     pre_register: 0,
@@ -514,5 +628,6 @@ module.exports = {
   scanPackageCountries,
   classifyAppMetadata,
   classifyStorePage,
-  getMarketPerformance
+  getMarketPerformance,
+  getStoreOffer
 };

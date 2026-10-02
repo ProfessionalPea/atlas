@@ -45,6 +45,30 @@ function getCountryFlag(code) {
 }
 
 
+function PaidBadge({ item, compact = false, showPrice = true }) {
+  const isPaid = item?.is_paid === true || item?.isPaid === true;
+  if (!isPaid) return null;
+
+  const rawPriceText = item?.price_text || item?.priceText || "";
+  const priceText = typeof rawPriceText === "string" && rawPriceText.trim() && rawPriceText.trim().toLowerCase() !== "free"
+    ? rawPriceText.trim()
+    : "";
+  const label = showPrice && priceText ? `Paid · ${priceText}` : "Paid";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border border-violet-500/25 bg-violet-500/10 text-violet-400 font-medium whitespace-nowrap",
+        compact ? "gap-1 px-1.5 py-0.5 text-[8px]" : "gap-1.5 px-2.5 py-1 text-[9px] md:text-[10px]"
+      )}
+      title={priceText ? `Paid app · ${priceText}` : "Paid app"}
+    >
+      <span className={cn("material-symbols-outlined", compact ? "text-[11px]" : "text-[14px]")}>payments</span>
+      {label}
+    </span>
+  );
+}
+
 function getAgeText(dateValue) {
   if (!dateValue || dateValue === "Unknown" || dateValue === 0) return null;
   const dateObj = typeof dateValue === 'number' ? new Date(dateValue) : new Date(dateValue);
@@ -378,7 +402,13 @@ const TrendingTargets = memo(function TrendingTargets({
                   </div>
 
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
+                      <PaidBadge item={game} compact showPrice={false} />
+                      {game.is_suspended && (
+                        <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                      )}
+                    </div>
                     <p className="text-[10px] md:text-xs text-text-muted truncate mt-0.5">{game.publisher_name}</p>
                   </div>
 
@@ -518,7 +548,13 @@ const LiveDirectory = memo(function LiveDirectory({
                           >
                             <span className="material-symbols-outlined text-text-muted text-[16px] flex-shrink-0">sports_esports</span>
                             <div className="min-w-0 flex-1">
-                              <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
+                                <PaidBadge item={game} compact showPrice={false} />
+                                {game.is_suspended && (
+                                  <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                                )}
+                              </div>
                               <div className="text-[9px] text-text-muted truncate">{game.package_name}</div>
                             </div>
                             {isAdmin && (
@@ -1838,6 +1874,7 @@ function App() {
           setCountryScanModalOpen(true);
           localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
           void refreshCountryScanLibrary();
+          void loadAllData();
 
           if (selectedGame?.package_name === status.packageName) {
             setSelectedGameCountryScan(payload);
@@ -1870,7 +1907,7 @@ function App() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, selectedGame?.package_name]);
+  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, loadAllData, selectedGame?.package_name]);
 
   const countryChangesByCode = useMemo(() => {
     const map = new Map();
@@ -2833,7 +2870,7 @@ function App() {
                 {/* Filter Category Pills */}
                 <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
                   {[
-                    { id: "all", label: `All (${filteredGames.length + visibleSuspendedGames.length + processedAccounts.length + filteredCompetitors.length})` },
+                    { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
                     { id: "games", label: `Games (${filteredGames.length})` },
                     { id: "suspended", label: `Suspended (${visibleSuspendedGames.length})` },
                     { id: "publishers", label: `Publishers (${processedAccounts.length})` },
@@ -2870,7 +2907,7 @@ function App() {
 
               </div>
 
-              {(directoryFilter === "all" || directoryFilter === "suspended") && visibleSuspendedGames.length > 0 && (
+              {directoryFilter === "suspended" && visibleSuspendedGames.length > 0 && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
@@ -2922,6 +2959,9 @@ function App() {
                                 <h4 className="text-sm font-semibold text-text-main truncate">{suspendedGame.title}</h4>
                                 <p className="text-[10px] text-text-muted mt-0.5 truncate">{suspendedGame.publisher_name || "Unknown publisher"}</p>
                                 <p className="text-[9px] text-text-muted mt-1 font-mono truncate">{suspendedGame.package_name}</p>
+                                <div className="mt-2">
+                                  <PaidBadge item={suspendedGame} compact />
+                                </div>
                               </div>
                             </div>
 
@@ -3057,12 +3097,19 @@ function App() {
                         {isAdmin && (
                           <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                             <button
-                              onClick={(e) => handleSetGameSuspended(game, true, e)}
-                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all flex items-center justify-center"
-                              title="Mark game as suspended"
-                              aria-label={`Mark ${game.title || game.package_name || "game"} suspended`}
+                              onClick={(e) => handleSetGameSuspended(game, !game.is_suspended, e)}
+                              className={cn(
+                                "w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border transition-all flex items-center justify-center",
+                                game.is_suspended
+                                  ? "border-emerald-500/25 text-emerald-500 hover:bg-emerald-500/10"
+                                  : "border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10"
+                              )}
+                              title={game.is_suspended ? "Restore suspended game" : "Mark game as suspended"}
+                              aria-label={game.is_suspended
+                                ? `Restore ${game.title || game.package_name || "game"}`
+                                : `Mark ${game.title || game.package_name || "game"} suspended`}
                             >
-                              <span className="material-symbols-outlined text-[17px]">block</span>
+                              <span className="material-symbols-outlined text-[17px]">{game.is_suspended ? "undo" : "block"}</span>
                             </button>
                             <button
                               onClick={(e) => handleDeleteGame(e, game)}
@@ -3090,6 +3137,14 @@ function App() {
                               <h4 className="font-body-sm md:font-body-md font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h4>
                               <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">{game.publisher_name}</p>
                               <p className="font-mono text-[9px] md:text-[10px] text-text-muted/70 truncate mt-0.5">{game.package_name}</p>
+                              <div className="mt-2 flex items-center gap-1.5">
+                                <PaidBadge item={game} compact />
+                                {game.is_suspended && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium">
+                                    Suspended
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                           
@@ -3324,9 +3379,12 @@ function App() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <h2 className="text-sm md:text-base font-medium text-text-main truncate">
-                                  {item.appTitle || item.packageName}
-                                </h2>
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <h2 className="text-sm md:text-base font-medium text-text-main truncate">
+                                    {item.appTitle || item.packageName}
+                                  </h2>
+                                  <PaidBadge item={item} compact showPrice={false} />
+                                </div>
                                 {item.developer && (
                                   <p className="text-[10px] md:text-xs text-text-muted mt-0.5 truncate">{item.developer}</p>
                                 )}
@@ -3829,7 +3887,10 @@ function App() {
                   {selectedGame.icon ? <img loading="lazy" decoding="async" src={selectedGame.icon} alt="Icon" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-[40px] text-primary/50">sports_esports</span>}
                 </div>
                 <div className="flex flex-col pt-1 min-w-0">
-                  <h1 className="font-headline-lg text-text-main text-xl md:text-2xl mb-1 leading-tight truncate">{selectedGame.title}</h1>
+                  <div className="flex items-center gap-2 min-w-0 mb-1">
+                    <h1 className="font-headline-lg text-text-main text-xl md:text-2xl leading-tight truncate">{selectedGame.title}</h1>
+                    <PaidBadge item={selectedGame} showPrice />
+                  </div>
                   <p className="font-body-xs md:font-body-sm text-text-muted  font-medium mb-3 truncate">{selectedGame.publisher_name}</p>
                   
                   {(() => {
@@ -3892,6 +3953,9 @@ function App() {
                       Country availability
                     </h3>
                     <p className="text-[10px] text-text-muted mt-1 font-mono break-all">{selectedGame.package_name}</p>
+                    <div className="mt-2">
+                      <PaidBadge item={selectedGameCountryScan?.scan?.isPaid ? selectedGameCountryScan.scan : selectedGame} compact />
+                    </div>
                   </div>
                   {selectedGameCountryScan?.scan?.completedAt && (
                     <span className="text-[9px] text-text-muted text-right flex-shrink-0">
@@ -4029,9 +4093,12 @@ function App() {
                     {countryScanData?.scan?.packageName || (isCountryScanRunning ? countryScanJob.packageName : countryPackage || "Package")}
                   </p>
                   {countryScanData?.scan?.appTitle && (
-                    <p className="text-[10px] text-text-muted mt-0.5 truncate">
-                      {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
-                    </p>
+                    <div className="mt-0.5 flex items-center gap-2 min-w-0">
+                      <p className="text-[10px] text-text-muted truncate">
+                        {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
+                      </p>
+                      <PaidBadge item={countryScanData.scan} compact showPrice={false} />
+                    </div>
                   )}
                 </div>
                 <button
@@ -4102,7 +4169,7 @@ function App() {
                   </div>
                 </div>
               ) : countryScanData ? (
-                <>
+                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
                   <div className="px-4 md:px-6 py-4 border-b border-border-subtle">
                     <div className="mb-4 rounded-2xl border border-border-subtle bg-input-bg/60 px-4 py-3.5 flex items-start gap-3">
                       <div className="w-9 h-9 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center flex-shrink-0">
@@ -4174,8 +4241,8 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="px-4 md:px-6 pt-3 border-b border-border-subtle">
-                    <div className="flex items-center gap-1 bg-input-bg rounded-xl p-1 w-max">
+                  <div className="px-4 md:px-6 py-3 border-b border-border-subtle flex items-center">
+                    <div className="inline-flex items-center gap-1 bg-input-bg rounded-xl p-1">
                       {[
                         ["availability", "Availability", "public"],
                         ["performance", "Market performance", "monitoring"]
@@ -4241,8 +4308,8 @@ function App() {
                         onChange={event => setCountryPerformanceSort(event.target.value)}
                         className="h-10 px-3 rounded-xl border border-border-subtle bg-surface-solid text-text-main text-[10px] md:text-xs outline-none"
                       >
-                        <option value="atlas_desc">Highest Atlas score</option>
-                        <option value="atlas_asc">Lowest Atlas score</option>
+                        <option value="atlas_desc">Highest calculated score</option>
+                        <option value="atlas_asc">Lowest calculated score</option>
                         <option value="rating_desc">Highest Play rating</option>
                         <option value="rating_asc">Lowest Play rating</option>
                         <option value="ratings_desc">Most ratings</option>
@@ -4253,7 +4320,7 @@ function App() {
                     )}
                   </div>
 
-                  <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-3 md:p-4">
+                  <div className="p-3 md:p-4">
                     {countryScanViewTab === "performance" ? (
                       countryPerformanceRows.length === 0 ? (
                         <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-6">
@@ -4264,7 +4331,7 @@ function App() {
                       ) : (
                         <>
                           <div className="mb-3 rounded-xl border border-border-subtle bg-input-bg/60 px-3 py-2.5 text-[10px] text-text-muted">
-                            <span className="font-medium text-text-main">Atlas score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
+                            <span className="font-medium text-text-main">Calculated score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                             {countryPerformanceRows.map((item, index) => (
@@ -4275,6 +4342,7 @@ function App() {
                                     <div className="min-w-0">
                                       <div className="flex items-center gap-1.5 min-w-0">
                                         <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                        <PaidBadge item={item} compact />
                                         <span className={cn(
                                           "px-1.5 py-0.5 rounded-full border text-[8px] font-medium flex-shrink-0",
                                           item.performanceBand === "strong"
@@ -4290,7 +4358,7 @@ function App() {
                                     </div>
                                   </div>
                                   <div className="text-right flex-shrink-0">
-                                    <div className="text-[9px] text-text-muted">Atlas score</div>
+                                    <div className="text-[9px] text-text-muted">Calculated score</div>
                                     <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "—" : Number(item.atlasMarketScore).toFixed(1)}</div>
                                   </div>
                                 </div>
@@ -4349,7 +4417,10 @@ function App() {
                               <div className="flex items-center gap-3 min-w-0">
                                 <span className="text-xl flex-shrink-0">{getCountryFlag(item.countryCode)}</span>
                                 <div className="min-w-0">
-                                  <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
+                                    <PaidBadge item={item} compact />
+                                  </div>
                                   <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.confidence || "unknown"} confidence</div>
                                   {change && (
                                     <div className="text-[9px] text-amber-500 mt-1">
@@ -4367,7 +4438,7 @@ function App() {
                       </div>
                     )}
                   </div>
-                </>
+                </div>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-xs text-text-muted">No country scan loaded.</div>
               )}
