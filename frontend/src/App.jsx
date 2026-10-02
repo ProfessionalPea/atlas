@@ -1874,6 +1874,7 @@ function App() {
           setCountryScanModalOpen(true);
           localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
           void refreshCountryScanLibrary();
+          void loadAllData();
 
           if (selectedGame?.package_name === status.packageName) {
             setSelectedGameCountryScan(payload);
@@ -1906,7 +1907,7 @@ function App() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, selectedGame?.package_name]);
+  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, loadAllData, selectedGame?.package_name]);
 
   const countryChangesByCode = useMemo(() => {
     const map = new Map();
@@ -3093,12 +3094,6 @@ function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
                     {sortedDirectoryGames.map(game => (
                       <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
-                        {game.is_suspended && (
-                          <div className="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full bg-urgent-red/90 text-white text-[9px] font-medium flex items-center gap-1">
-                            <span className="material-symbols-outlined text-[13px]">block</span>
-                            Suspended
-                          </div>
-                        )}
                         {isAdmin && (
                           <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                             <button
