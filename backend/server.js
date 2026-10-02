@@ -106,6 +106,18 @@ const pool = new Pool({
 
       CREATE INDEX IF NOT EXISTS idx_package_country_scan_results_state
         ON package_country_scan_results(scan_id, release_state);
+
+      ALTER TABLE package_country_scan_results
+        ADD COLUMN IF NOT EXISTS play_rating NUMERIC(4,3),
+        ADD COLUMN IF NOT EXISTS ratings_count BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS reviews_count BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS rating_histogram JSONB,
+        ADD COLUMN IF NOT EXISTS positive_ratings BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS negative_ratings BIGINT NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS positive_share NUMERIC(6,2),
+        ADD COLUMN IF NOT EXISTS negative_share NUMERIC(6,2),
+        ADD COLUMN IF NOT EXISTS atlas_market_score NUMERIC(6,2),
+        ADD COLUMN IF NOT EXISTS performance_confidence TEXT;
     `);
 
     await pool.query(`
@@ -117,6 +129,43 @@ const pool = new Pool({
     `);
   } catch (e) {
     console.error("⚠️ [DB] Failed to initialize country scan tables:", e.message);
+  }
+})();
+
+// Suspension state lives on games for fast directory filtering, while
+// game_suspensions preserves a point-in-time snapshot so assets/stats remain
+// available even if the Play listing later disappears or the game is deleted.
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE games
+        ADD COLUMN IF NOT EXISTS is_suspended BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS developer_id TEXT,
+        ADD COLUMN IF NOT EXISTS developer_url TEXT;
+
+      CREATE TABLE IF NOT EXISTS game_suspensions (
+        id BIGSERIAL PRIMARY KEY,
+        game_id INTEGER REFERENCES games(id) ON DELETE SET NULL,
+        package_name TEXT NOT NULL,
+        app_title TEXT NOT NULL,
+        publisher_name TEXT,
+        publisher_url TEXT,
+        game_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+        country_snapshot JSONB,
+        note TEXT,
+        marked_by TEXT,
+        suspended_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        restored_at TIMESTAMPTZ,
+        restored_by TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_game_suspensions_active
+        ON game_suspensions(package_name, suspended_at DESC)
+        WHERE restored_at IS NULL;
+    `);
+  } catch (e) {
+    console.error("⚠️ [DB] Failed to initialize suspension tracking:", e.message);
   }
 })();
 
