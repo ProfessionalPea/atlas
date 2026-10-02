@@ -1034,11 +1034,31 @@ app.patch("/api/games/:id/suspended", async (req, res) => {
         console.warn("Could not snapshot country scan while suspending game:", error.message);
       }
 
-      const publisherName = game.publisher_name || "Unknown Publisher";
-      const publisherUrl = game.developer_url ||
-        (game.developer_id
-          ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(game.developer_id)}`
-          : `https://play.google.com/store/search?q=${encodeURIComponent(publisherName)}&c=apps`);
+      let publisherName = game.publisher_name || "Unknown Publisher";
+      let developerId = game.developer_id || null;
+      let publisherUrl = game.developer_url || null;
+
+      // Best-effort enrichment for older Atlas rows that predate developer-link
+      // storage. This may fail for an already-suspended listing, in which case
+      // the preserved publisher name still gets a useful Play search fallback.
+      if (!publisherUrl || !developerId) {
+        try {
+          const appData = await gplay.app({ appId: game.package_name, country: "us", lang: "en" });
+          publisherName = appData?.developer || publisherName;
+          developerId = appData?.developerId ? String(appData.developerId) : developerId;
+          publisherUrl = developerId
+            ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(developerId)}`
+            : publisherUrl;
+
+          await pool.query(
+            "UPDATE games SET developer_id = COALESCE($2, developer_id), developer_url = COALESCE($3, developer_url) WHERE id = $1",
+            [game.id, developerId, publisherUrl]
+          );
+        } catch {}
+      }
+
+      publisherUrl = publisherUrl ||
+        `https://play.google.com/store/search?q=${encodeURIComponent(publisherName)}&c=apps`;
 
       const gameSnapshot = {
         id: Number(game.id),
@@ -1059,7 +1079,7 @@ app.patch("/api/games/:id/suspended", async (req, res) => {
         header_image: game.header_image,
         video: game.video,
         video_image: game.video_image,
-        developer_id: game.developer_id || null,
+        developer_id: developerId,
         developer_url: publisherUrl,
         publisher_name: publisherName
       };
