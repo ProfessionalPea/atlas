@@ -4317,8 +4317,14 @@ function App() {
                                 {(item.positiveShare != null || item.negativeShare != null) && (
                                   <div className="mt-3">
                                     <div className="flex items-center justify-between text-[9px] text-text-muted">
-                                      <span className="text-emerald-500">Positive {item.positiveShare == null ? "—" : Number(item.positiveShare).toFixed(1) + "%"}</span>
-                                      <span className="text-urgent-red">Negative {item.negativeShare == null ? "—" : Number(item.negativeShare).toFixed(1) + "%"}</span>
+                                      <span className="text-emerald-500">
+                                        Positive {item.positiveShare == null ? "—" : Number(item.positiveShare).toFixed(1) + "%"}
+                                        {item.positiveRatings ? ` · ${Number(item.positiveRatings).toLocaleString()}` : ""}
+                                      </span>
+                                      <span className="text-urgent-red">
+                                        Negative {item.negativeShare == null ? "—" : Number(item.negativeShare).toFixed(1) + "%"}
+                                        {item.negativeRatings ? ` · ${Number(item.negativeRatings).toLocaleString()}` : ""}
+                                      </span>
                                     </div>
                                     <div className="mt-1.5 h-1.5 bg-input-bg rounded-full overflow-hidden flex">
                                       <div className="h-full bg-emerald-500" style={{ width: (item.positiveShare || 0) + "%" }} />
