@@ -566,6 +566,37 @@ async function scanPackageCountries(packageNameInput, options = {}) {
     Array.from({ length: Math.min(concurrency, COUNTRY_CODES.length) }, () => worker())
   );
 
+  // Paid listings give us one extra cross-country consistency signal. If the
+  // app is positively identified as paid in at least one storefront, an
+  // otherwise-unknown country with a successful, package-matching details page
+  // is almost always a parser/metadata miss rather than a genuine unknown.
+  // Explicit pre-register / early-access / unavailable results are untouched.
+  const packageIsPaid = results.some(result => result?.isPaid === true);
+  if (packageIsPaid) {
+    for (const result of results) {
+      const evidence = result?.evidence || {};
+      const accessiblePaidFallback =
+        result?.state === "unknown" &&
+        evidence.packagePresent === true &&
+        Number(evidence.httpStatus) >= 200 &&
+        Number(evidence.httpStatus) < 400 &&
+        ["listing_accessible_unverified", "unclassified"].includes(
+          evidence.pageMarker || evidence.marker
+        );
+
+      if (accessiblePaidFallback) {
+        result.state = "live";
+        result.confidence = "medium";
+        result.isPaid = true;
+        result.evidence = {
+          ...evidence,
+          originalMarker: evidence.marker || null,
+          marker: "paid_listing_accessible_fallback"
+        };
+      }
+    }
+  }
+
   const counts = {
     live: 0,
     pre_register: 0,
