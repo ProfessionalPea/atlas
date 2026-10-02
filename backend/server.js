@@ -482,6 +482,16 @@ async function getCountryScanPayload(packageName, scanId = null) {
         r.country_name,
         r.release_state,
         r.confidence,
+        r.play_rating,
+        r.ratings_count,
+        r.reviews_count,
+        r.rating_histogram,
+        r.positive_ratings,
+        r.negative_ratings,
+        r.positive_share,
+        r.negative_share,
+        r.atlas_market_score,
+        r.performance_confidence,
         r.evidence,
         p.id AS previous_scan_id,
         p.completed_at AS previous_completed_at,
@@ -523,6 +533,16 @@ async function getCountryScanPayload(packageName, scanId = null) {
         countryName: row.country_name,
         state,
         confidence: row.confidence,
+        playRating: row.play_rating == null ? null : Number(row.play_rating),
+        ratingsCount: Number(row.ratings_count) || 0,
+        reviewsCount: Number(row.reviews_count) || 0,
+        histogram: row.rating_histogram || null,
+        positiveRatings: Number(row.positive_ratings) || 0,
+        negativeRatings: Number(row.negative_ratings) || 0,
+        positiveShare: row.positive_share == null ? null : Number(row.positive_share),
+        negativeShare: row.negative_share == null ? null : Number(row.negative_share),
+        atlasMarketScore: row.atlas_market_score == null ? null : Number(row.atlas_market_score),
+        performanceConfidence: row.performance_confidence || "none",
         evidence: row.evidence || {},
         previousState: row.previous_release_state || null
       };
@@ -768,14 +788,34 @@ app.post("/api/country-scans", async (req, res) => {
           for (const item of countryResult.results) {
             await client.query(
               `INSERT INTO package_country_scan_results
-                 (scan_id, country_code, country_name, release_state, confidence, evidence)
-               VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+                 (
+                   scan_id, country_code, country_name, release_state, confidence,
+                   play_rating, ratings_count, reviews_count, rating_histogram,
+                   positive_ratings, negative_ratings, positive_share, negative_share,
+                   atlas_market_score, performance_confidence, evidence
+                 )
+               VALUES (
+                 $1, $2, $3, $4, $5,
+                 $6, $7, $8, $9::jsonb,
+                 $10, $11, $12, $13,
+                 $14, $15, $16::jsonb
+               )`,
               [
                 scan.id,
                 item.countryCode,
                 item.countryName,
                 item.state,
                 item.confidence,
+                item.playRating ?? null,
+                item.ratingsCount || 0,
+                item.reviewsCount || 0,
+                item.histogram ? JSON.stringify(item.histogram) : null,
+                item.positiveRatings || 0,
+                item.negativeRatings || 0,
+                item.positiveShare ?? null,
+                item.negativeShare ?? null,
+                item.atlasMarketScore ?? null,
+                item.performanceConfidence || "none",
                 JSON.stringify(item.evidence || {})
               ]
             );
