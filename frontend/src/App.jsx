@@ -964,6 +964,51 @@ function App() {
     }
   }, [isAdmin, isScanning, loadAllData]);
 
+  const handleSetGameSuspended = useCallback(async (game, suspended, event) => {
+    event?.stopPropagation?.();
+    if (!isAdmin || !game?.id) return;
+
+    const label = game.title || game.package_name || "this game";
+    const message = suspended
+      ? `Mark ${label} as suspended? Atlas will preserve its current stats, assets, publisher link, and latest country status. You can restore it later.`
+      : `Restore ${label} from the Suspended tab?`;
+
+    if (!window.confirm(message)) return;
+
+    try {
+      await fetchJson(`${API_BASE}/api/games/${game.id}/suspended`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ suspended })
+      });
+
+      if (selectedGame && selectedGame.id === game.id) {
+        setIsDrawerOpen(false);
+        setSelectedGame(null);
+      }
+
+      await loadAllData();
+    } catch (error) {
+      alert(error?.message || "Unable to update suspension state.");
+    }
+  }, [isAdmin, loadAllData, selectedGame]);
+
+  const handleRestoreSuspendedGame = useCallback(async (item, event) => {
+    event?.stopPropagation?.();
+    const game = item?.game || {};
+    const gameId = item?.gameId || game.id;
+    if (!gameId) {
+      alert("This archived suspension no longer has a live Atlas game record to restore.");
+      return;
+    }
+    await handleSetGameSuspended({
+      ...game,
+      id: gameId,
+      title: item.appTitle || game.title,
+      package_name: item.packageName || game.package_name
+    }, false, event);
+  }, [handleSetGameSuspended]);
+
   const getLatestScanAdCount = useCallback((game) => {
     if (!game?.package_name) return 0;
 
@@ -2765,6 +2810,7 @@ function App() {
                   {[
                     { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
                     { id: "games", label: `Games (${filteredGames.length})` },
+                    { id: "suspended", label: `Suspended (${visibleSuspendedGames.length})` },
                     { id: "publishers", label: `Publishers (${processedAccounts.length})` },
                     { id: "competitors", label: `Competitors (${filteredCompetitors.length})` }
                   ].map(tab => (
@@ -2798,6 +2844,129 @@ function App() {
                 </div>
 
               </div>
+
+              {(directoryFilter === "all" || directoryFilter === "suspended") && visibleSuspendedGames.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
+                      <span className="material-symbols-outlined text-urgent-red text-[18px]">block</span>
+                      Suspended games
+                    </h3>
+                    <span className="text-[10px] text-text-muted">Preserved snapshots · reversible</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
+                    {visibleSuspendedGames.map(item => {
+                      const game = item.game || {};
+                      const countryCounts = item.countryScan?.scan?.counts || {};
+                      const suspendedGame = {
+                        ...game,
+                        id: item.gameId || game.id,
+                        title: item.appTitle || game.title,
+                        package_name: item.packageName || game.package_name,
+                        publisher_name: item.publisherName || game.publisher_name,
+                        is_suspended: true,
+                        publisher_url: item.publisherUrl
+                      };
+
+                      return (
+                        <motion.div
+                          whileHover={{ y: -1 }}
+                          key={item.suspensionId || item.packageName}
+                          onClick={() => handleGameClick(suspendedGame)}
+                          className="bg-surface-glass rounded-2xl border border-urgent-red/25 overflow-hidden shadow-sm hover:border-urgent-red/45 transition-colors cursor-pointer group flex flex-col relative"
+                        >
+                          <div className="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full bg-urgent-red/90 text-white text-[9px] font-medium flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">block</span>
+                            Suspended
+                          </div>
+
+                          {game.header_image ? (
+                            <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
+                              <img src={game.header_image} alt={suspendedGame.title} className="w-full h-full object-cover opacity-70 grayscale-[20%]" />
+                            </div>
+                          ) : <div className="h-14 bg-urgent-red/5" />}
+
+                          <div className="p-4 flex-1 flex flex-col">
+                            <div className="flex items-start gap-3">
+                              <div className="w-12 h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0">
+                                {game.icon ? <img src={game.icon} alt={suspendedGame.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted h-full flex items-center justify-center">sports_esports</span>}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <h4 className="text-sm font-semibold text-text-main truncate">{suspendedGame.title}</h4>
+                                <p className="text-[10px] text-text-muted mt-0.5 truncate">{suspendedGame.publisher_name || "Unknown publisher"}</p>
+                                <p className="text-[9px] text-text-muted mt-1 font-mono truncate">{suspendedGame.package_name}</p>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 mt-4">
+                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
+                                <div className="text-[9px] text-text-muted">Rating</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "—"}</div>
+                              </div>
+                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
+                                <div className="text-[9px] text-text-muted">Installs</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "—"}</div>
+                              </div>
+                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
+                                <div className="text-[9px] text-text-muted">Ads</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.ad_count) || 0}</div>
+                              </div>
+                            </div>
+
+                            {item.countryScan?.scan && (
+                              <div className="mt-3 flex flex-wrap gap-1.5">
+                                {[
+                                  ["live", countryCounts.live || 0],
+                                  ["pre_register", countryCounts.pre_register || 0],
+                                  ["unavailable", countryCounts.unavailable || 0],
+                                  ["unknown", countryCounts.unknown || 0]
+                                ].filter(([, count]) => Number(count) > 0).map(([state, count]) => {
+                                  const meta = getCountryStateMeta(state);
+                                  return <span key={state} className={cn("px-2 py-1 rounded-full border text-[9px] font-medium", meta.className)}>{count} {meta.label}</span>;
+                                })}
+                              </div>
+                            )}
+
+                            <div className="mt-4 pt-3 border-t border-border-subtle flex items-center justify-between gap-2">
+                              <div className="text-[9px] text-text-muted min-w-0">
+                                <div>{item.suspendedAt ? `Suspended ${new Date(item.suspendedAt).toLocaleString()}` : "Suspended"}</div>
+                                {item.markedBy && <div className="mt-0.5">by {item.markedBy}</div>}
+                              </div>
+
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                {item.publisherUrl && (
+                                  <a
+                                    href={item.publisherUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={event => event.stopPropagation()}
+                                    className="w-9 h-9 rounded-full border border-border-subtle bg-input-bg text-text-muted hover:text-electric-blue flex items-center justify-center"
+                                    title="Open publisher on Google Play"
+                                  >
+                                    <span className="material-symbols-outlined text-[17px]">storefront</span>
+                                  </a>
+                                )}
+                                {isAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={event => handleRestoreSuspendedGame(item, event)}
+                                    disabled={!item.gameId}
+                                    className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-40 flex items-center gap-1.5"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">undo</span>
+                                    Restore
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {(directoryFilter === "all" || directoryFilter === "games") && filteredGames.length > 0 && (
                 <div className="space-y-4">
