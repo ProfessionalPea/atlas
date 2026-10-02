@@ -1391,6 +1391,10 @@ app.post("/api/scan", async (req, res) => {
 
           const pubName = appData.developer || targetDisplayName || "Unknown Publisher";
           const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const developerId = appData.developerId ? String(appData.developerId) : null;
+          const developerUrl = developerId
+            ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(developerId)}`
+            : `https://play.google.com/store/search?q=${encodeURIComponent(pubName)}&c=apps`;
 
           // Match on the already-normalized name, not the raw developer string.
           // The Play Store can return slightly different casing/punctuation for
@@ -1433,11 +1437,13 @@ app.post("/api/scan", async (req, res) => {
             INSERT INTO games (
               package_name, title, category, rating, ratings_count, icon,
               screenshots, description, installs, min_installs, released,
-              updated, similar_apps, ad_count, header_image, video, video_image
+              updated, similar_apps, ad_count, header_image, video, video_image,
+              developer_id, developer_url
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
-              $10, $11, $12, $13, $14, $15, $16, $17
+              $10, $11, $12, $13, $14, $15, $16, $17,
+              $18, $19
             )
             ON CONFLICT (package_name) DO UPDATE SET
               title = EXCLUDED.title,
@@ -1455,7 +1461,9 @@ app.post("/api/scan", async (req, res) => {
               ad_count = games.ad_count + EXCLUDED.ad_count,
               header_image = EXCLUDED.header_image,
               video = EXCLUDED.video,
-              video_image = EXCLUDED.video_image
+              video_image = EXCLUDED.video_image,
+              developer_id = COALESCE(EXCLUDED.developer_id, games.developer_id),
+              developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url)
             RETURNING id
           `;
 
@@ -1476,7 +1484,9 @@ app.post("/api/scan", async (req, res) => {
             newAdCount,
             fixUrl(appData.headerImage) || null,
             appData.video || null,
-            fixUrl(appData.videoImage) || null
+            fixUrl(appData.videoImage) || null,
+            developerId,
+            developerUrl
           ]);
 
           const gameId = gameRes.rows[0].id;
