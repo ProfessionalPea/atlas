@@ -45,6 +45,30 @@ function getCountryFlag(code) {
 }
 
 
+function PaidBadge({ item, compact = false, showPrice = true }) {
+  const isPaid = item?.is_paid === true || item?.isPaid === true;
+  if (!isPaid) return null;
+
+  const rawPriceText = item?.price_text || item?.priceText || "";
+  const priceText = typeof rawPriceText === "string" && rawPriceText.trim() && rawPriceText.trim().toLowerCase() !== "free"
+    ? rawPriceText.trim()
+    : "";
+  const label = showPrice && priceText ? `Paid · ${priceText}` : "Paid";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border border-violet-500/25 bg-violet-500/10 text-violet-400 font-medium whitespace-nowrap",
+        compact ? "gap-1 px-1.5 py-0.5 text-[8px]" : "gap-1.5 px-2.5 py-1 text-[9px] md:text-[10px]"
+      )}
+      title={priceText ? `Paid app · ${priceText}` : "Paid app"}
+    >
+      <span className={cn("material-symbols-outlined", compact ? "text-[11px]" : "text-[14px]")}>payments</span>
+      {label}
+    </span>
+  );
+}
+
 function getAgeText(dateValue) {
   if (!dateValue || dateValue === "Unknown" || dateValue === 0) return null;
   const dateObj = typeof dateValue === 'number' ? new Date(dateValue) : new Date(dateValue);
