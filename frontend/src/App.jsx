@@ -1779,6 +1779,12 @@ function App() {
   useEffect(() => {
     if (!isDrawerOpen || !selectedGame?.package_name) return undefined;
 
+    if (selectedGame?.is_suspended && selectedGame?.suspension_country_scan) {
+      setSelectedGameCountryLoading(false);
+      setSelectedGameCountryScan(selectedGame.suspension_country_scan);
+      return undefined;
+    }
+
     let cancelled = false;
     const packageName = selectedGame.package_name;
     setSelectedGameCountryLoading(true);
@@ -1796,7 +1802,7 @@ function App() {
       });
 
     return () => { cancelled = true; };
-  }, [isDrawerOpen, selectedGame?.package_name, fetchLatestCountryScan]);
+  }, [isDrawerOpen, selectedGame?.package_name, selectedGame?.is_suspended, selectedGame?.suspension_country_scan, fetchLatestCountryScan]);
 
   useEffect(() => {
     const scanId = countryScanJob?.scanId;
@@ -2808,7 +2814,7 @@ function App() {
                 {/* Filter Category Pills */}
                 <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
                   {[
-                    { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
+                    { id: "all", label: `All (${filteredGames.length + visibleSuspendedGames.length + processedAccounts.length + filteredCompetitors.length})` },
                     { id: "games", label: `Games (${filteredGames.length})` },
                     { id: "suspended", label: `Suspended (${visibleSuspendedGames.length})` },
                     { id: "publishers", label: `Publishers (${processedAccounts.length})` },
@@ -2866,7 +2872,8 @@ function App() {
                         package_name: item.packageName || game.package_name,
                         publisher_name: item.publisherName || game.publisher_name,
                         is_suspended: true,
-                        publisher_url: item.publisherUrl
+                        publisher_url: item.publisherUrl,
+                        suspension_country_scan: item.countryScan || null
                       };
 
                       return (
@@ -3029,7 +3036,7 @@ function App() {
                     {sortedDirectoryGames.map(game => (
                       <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
                         {isAdmin && (
-                          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                             <button
                               onClick={(e) => handleSetGameSuspended(game, true, e)}
                               className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all flex items-center justify-center"
