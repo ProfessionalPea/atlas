@@ -7,6 +7,7 @@
 
 const express = require('express');
 const { registerIntelligenceFeatures } = require('./AtlasIntelligenceFeatures');
+const { registerKeywordPackageRoute } = require('./KeywordPackageRoute');
 
 const originalListen = express.application.listen;
 let atlasApp = null;
@@ -32,6 +33,7 @@ if (!atlasApp) {
 
 try {
   registerIntelligenceFeatures(atlasApp);
+  registerKeywordPackageRoute(atlasApp);
 } catch (error) {
   console.error('⚠️ [Intelligence] Failed to register feature routes:', error);
 }
