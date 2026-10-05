@@ -70,6 +70,17 @@ async function initializeIntelligenceFeatures(pool) {
 
     CREATE INDEX IF NOT EXISTS idx_ad_video_links_competitor
       ON ad_video_links(competitor_id);
+
+    CREATE TABLE IF NOT EXISTS creative_extraction_cache (
+      creative_id TEXT PRIMARY KEY,
+      package_names JSONB NOT NULL DEFAULT '[]'::jsonb,
+      video_checked_at TIMESTAMPTZ,
+      last_deep_scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_video_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_creative_extraction_cache_checked
+      ON creative_extraction_cache(video_checked_at DESC);
   `);
 }
 
@@ -150,6 +161,74 @@ async function persistVideoAssets(pool, {
       [assetId, creativeId, packageName || '', gameId || null, competitorId || null, creativeUrl]
     );
   }
+}
+
+async function getCreativeExtractionCache(pool, creativeIds) {
+  const ids = Array.isArray(creativeIds)
+    ? creativeIds.map(value => String(value || '').trim()).filter(Boolean)
+    : [];
+  if (!ids.length) return new Map();
+
+  const { rows } = await pool.query(
+    `SELECT creative_id, package_names, video_checked_at, last_deep_scanned_at, last_video_count
+     FROM creative_extraction_cache
+     WHERE creative_id = ANY($1::text[])`,
+    [ids]
+  );
+
+  return new Map(rows.map(row => [row.creative_id, {
+    creativeId: row.creative_id,
+    packageNames: Array.isArray(row.package_names) ? row.package_names.filter(Boolean) : [],
+    videoCheckedAt: row.video_checked_at || null,
+    lastDeepScannedAt: row.last_deep_scanned_at || null,
+    videoCount: Number(row.last_video_count) || 0
+  }]));
+}
+
+async function persistCreativeExtractionCache(pool, {
+  creativeId,
+  packageNames = [],
+  videoCount = 0
+}) {
+  const id = String(creativeId || '').trim();
+  if (!id) return;
+
+  const normalizedPackages = [...new Set(
+    (Array.isArray(packageNames) ? packageNames : [])
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+  )];
+
+  await pool.query(
+    `INSERT INTO creative_extraction_cache (
+       creative_id, package_names, video_checked_at, last_deep_scanned_at, last_video_count
+     )
+     VALUES ($1, $2::jsonb, now(), now(), $3)
+     ON CONFLICT (creative_id) DO UPDATE SET
+       package_names = EXCLUDED.package_names,
+       video_checked_at = now(),
+       last_deep_scanned_at = now(),
+       last_video_count = EXCLUDED.last_video_count`,
+    [id, JSON.stringify(normalizedPackages), Math.max(0, Number(videoCount) || 0)]
+  );
+}
+
+async function touchCreativeVideoAssets(pool, creativeId) {
+  const id = String(creativeId || '').trim();
+  if (!id) return;
+
+  await pool.query(
+    `WITH touched AS (
+       UPDATE ad_video_links
+       SET last_seen_at = now()
+       WHERE creative_id = $1
+       RETURNING asset_id
+     )
+     UPDATE video_assets va
+     SET last_seen_at = now()
+     WHERE va.id IN (SELECT asset_id FROM touched)`,
+    [id]
+  );
 }
 
 async function getVideoLibrary(pool) {
@@ -303,6 +382,9 @@ function registerIntelligenceRoutes({ app, pool, gplay }) {
 module.exports = {
   initializeIntelligenceFeatures,
   persistVideoAssets,
+  getCreativeExtractionCache,
+  persistCreativeExtractionCache,
+  touchCreativeVideoAssets,
   registerIntelligenceRoutes,
   getAssetKey
 };
