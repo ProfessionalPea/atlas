@@ -98,41 +98,49 @@ function VideoLibrary({ onClose }) {
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed top-16 bottom-[72px] md:bottom-0 left-0 md:left-[88px] right-0 z-[45] bg-bg-base text-text-main overflow-y-auto custom-scrollbar"
+      className="atlas-google-shell fixed top-16 bottom-[72px] md:bottom-0 left-0 md:left-[88px] right-0 z-[45] bg-bg-base text-text-main overflow-y-auto custom-scrollbar font-body-md antialiased [text-rendering:optimizeLegibility]"
     >
-      <div className="w-full max-w-[1500px] mx-auto px-4 sm:px-6 lg:px-8 py-8 md:py-10">
+      <div className="w-full max-w-[1500px] mx-auto px-4 sm:px-6 lg:px-8 py-7 md:py-9">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-full bg-red-500/10 text-red-400 flex items-center justify-center">
-              <span className="material-symbols-outlined text-[24px]">video_library</span>
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-urgent-red/10 text-urgent-red flex items-center justify-center border border-urgent-red/10">
+              <span className="material-symbols-outlined text-[23px]">video_library</span>
             </div>
             <div>
-              <h1 className="text-2xl md:text-3xl font-medium tracking-tight">Video Library</h1>
-              <p className="text-sm text-text-muted mt-1">Unique video creatives discovered while Atlas scans Google Ads.</p>
+              <h1 className="font-headline-lg text-[26px] md:text-[31px] font-semibold tracking-[-0.025em] leading-tight">Video Library</h1>
+              <p className="text-[12px] md:text-[13px] leading-5 text-text-muted mt-1">Unique video creatives discovered while Atlas scans Google Ads.</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-text-muted"><b className="text-text-main">{items.length}</b> unique videos</span>
-            <button onClick={load} className="w-9 h-9 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main" title="Refresh library">
+          <div className="flex items-center gap-2.5">
+            <span className="text-[11px] text-text-muted"><b className="text-text-main font-semibold tabular-nums">{items.length}</b> unique videos</span>
+            <button onClick={load} className="w-9 h-9 rounded-full bg-surface-solid border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main hover:bg-input-bg transition-colors" title="Refresh library" aria-label="Refresh video library">
               <span className="material-symbols-outlined text-[18px]">refresh</span>
             </button>
-            <button onClick={onClose} className="w-9 h-9 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main md:hidden" title="Close">
+            <button onClick={onClose} className="w-9 h-9 rounded-full bg-surface-solid border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main hover:bg-input-bg transition-colors md:hidden" title="Close" aria-label="Close Video Library">
               <span className="material-symbols-outlined text-[18px]">close</span>
             </button>
           </div>
         </div>
 
-        <div className="mt-7 bg-surface-solid border border-border-subtle rounded-[22px] p-3 md:p-4 flex flex-col lg:flex-row gap-3">
-          <div className="flex-1 h-11 bg-input-bg rounded-xl border border-border-subtle flex items-center gap-2 px-3">
+        <div className="mt-7 bg-surface-solid border border-border-subtle rounded-[24px] p-2.5 md:p-3 flex flex-col lg:flex-row lg:items-center gap-2.5 shadow-sm">
+          <div className="flex-1 h-11 bg-input-bg rounded-[14px] flex items-center gap-2.5 px-3.5 border border-transparent focus-within:border-electric-blue/25 focus-within:bg-surface-solid transition-colors">
             <span className="material-symbols-outlined text-text-muted text-[18px]">search</span>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search game, package, publisher, competitor, YouTube ID..." className="flex-1 min-w-0 bg-transparent outline-none text-sm text-text-main placeholder:text-text-muted" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search game, package, publisher, competitor, YouTube ID…" className="flex-1 min-w-0 bg-transparent outline-none text-[12px] md:text-[13px] text-text-main placeholder:text-text-muted/80" />
           </div>
-          <div className="flex gap-1 overflow-x-auto custom-scrollbar">
+
+          <div className="flex items-center gap-1 rounded-[14px] bg-input-bg p-1 overflow-x-auto custom-scrollbar">
             {[['all','All'],['youtube','YouTube'],['direct','Direct video']].map(([id,label]) => (
-              <button key={id} onClick={() => setSource(id)} className={`h-11 px-4 rounded-xl border text-xs font-medium whitespace-nowrap ${source === id ? 'bg-primary-container text-on-primary-container border-transparent' : 'bg-surface-solid border-border-subtle text-text-muted hover:text-text-main'}`}>{label}</button>
+              <button
+                key={id}
+                onClick={() => setSource(id)}
+                className={`h-9 px-3.5 rounded-[11px] text-[11px] font-medium whitespace-nowrap transition-all ${source === id ? 'bg-surface-solid text-text-main shadow-sm' : 'text-text-muted hover:text-text-main'}`}
+              >
+                {label}
+              </button>
             ))}
           </div>
-          <select value={sort} onChange={e => setSort(e.target.value)} className="h-11 px-3 rounded-xl bg-surface-solid border border-border-subtle text-xs text-text-main outline-none">
+
+          <select value={sort} onChange={e => setSort(e.target.value)} className="h-11 px-3.5 rounded-[14px] bg-input-bg border border-transparent hover:border-border-subtle text-[11px] text-text-main outline-none transition-colors">
             <option value="recent">Most recently seen</option>
             <option value="reused">Most reused</option>
             <option value="duration">Longest duration</option>
@@ -142,67 +150,108 @@ function VideoLibrary({ onClose }) {
 
         {loading ? (
           <div className="min-h-[360px] flex flex-col items-center justify-center text-text-muted">
-            <span className="material-symbols-outlined animate-spin text-[32px] text-electric-blue">progress_activity</span>
-            <p className="text-sm mt-3">Loading video creatives…</p>
+            <span className="material-symbols-outlined animate-spin text-[30px] text-electric-blue">progress_activity</span>
+            <p className="text-[12px] mt-3">Loading video creatives…</p>
           </div>
         ) : error ? (
           <div className="min-h-[360px] flex flex-col items-center justify-center text-center">
             <span className="material-symbols-outlined text-urgent-red text-[34px]">error</span>
-            <p className="text-sm text-text-main mt-3">Video library unavailable</p>
-            <p className="text-xs text-text-muted mt-1">{error}</p>
+            <p className="text-sm text-text-main font-medium mt-3">Video library unavailable</p>
+            <p className="text-[11px] text-text-muted mt-1">{error}</p>
           </div>
         ) : visible.length === 0 ? (
           <div className="mt-6 min-h-[340px] rounded-[24px] border border-dashed border-border-subtle bg-surface-solid flex flex-col items-center justify-center text-center px-6">
-            <span className="material-symbols-outlined text-[38px] text-text-muted">video_library</span>
-            <h2 className="text-base font-medium mt-3">{items.length ? 'No videos match these filters' : 'No video creatives captured yet'}</h2>
-            <p className="text-xs text-text-muted mt-2 max-w-lg">Video detection happens automatically during normal Google Ads scans. Existing historical ads are not backfilled until they are scanned again.</p>
+            <div className="w-12 h-12 rounded-2xl bg-input-bg flex items-center justify-center text-text-muted">
+              <span className="material-symbols-outlined text-[27px]">video_library</span>
+            </div>
+            <h2 className="text-sm font-semibold mt-4">{items.length ? 'No videos match these filters' : 'No video creatives captured yet'}</h2>
+            <p className="text-[11px] leading-5 text-text-muted mt-1.5 max-w-lg">Video detection happens automatically during normal Google Ads scans. Existing historical ads are backfilled the next time those creatives are scanned.</p>
           </div>
         ) : (
-          <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="mt-5 grid grid-cols-1 xl:grid-cols-2 gap-4">
             {visible.map(asset => {
               const game = (asset.games || [])[0] || {};
               const watchUrl = asset.youtubeUrl || (!asset.mediaUrlExpired ? asset.mediaUrl : null);
+              const playStoreUrl = game.packageName
+                ? `https://play.google.com/store/apps/details?id=${encodeURIComponent(game.packageName)}`
+                : null;
               const duration = formatDuration(asset.durationSeconds);
+              const sourceLabel = asset.source === 'youtube' ? 'YouTube' : 'Direct video';
+
               return (
-                <article key={asset.assetKey || asset.id} className="bg-surface-solid border border-border-subtle rounded-[22px] overflow-hidden shadow-sm">
-                  <div className="grid sm:grid-cols-[210px_1fr] min-h-[190px]">
-                    <div className="relative bg-black/90 min-h-[180px] overflow-hidden flex items-center justify-center">
+                <article key={asset.assetKey || asset.id} className="group bg-surface-solid border border-border-subtle rounded-[24px] overflow-hidden shadow-sm hover:shadow-md hover:border-text-muted/20 transition-all duration-200">
+                  <div className="grid sm:grid-cols-[220px_1fr] min-h-[205px]">
+                    <div className="relative bg-black min-h-[210px] sm:min-h-full overflow-hidden flex items-center justify-center">
                       {(asset.thumbnailUrl || game.headerImage || game.icon) ? (
-                        <img src={asset.thumbnailUrl || game.headerImage || game.icon} alt="Video creative" className="w-full h-full absolute inset-0 object-cover opacity-90" />
+                        <img src={asset.thumbnailUrl || game.headerImage || game.icon} alt="Video creative" className="w-full h-full absolute inset-0 object-cover opacity-95 transition-transform duration-300 group-hover:scale-[1.015]" />
                       ) : null}
-                      <div className="absolute inset-0 bg-black/15"></div>
-                      <span className="relative w-12 h-12 rounded-full bg-black/65 text-white flex items-center justify-center backdrop-blur-sm">
-                        <span className="material-symbols-outlined text-[28px]">play_arrow</span>
-                      </span>
-                      {duration && <span className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/75 text-white text-[10px] font-mono">{duration}</span>}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/5"></div>
+                      {watchUrl ? (
+                        <a href={watchUrl} target="_blank" rel="noreferrer" className="relative w-12 h-12 rounded-full bg-black/65 hover:bg-black/75 text-white flex items-center justify-center backdrop-blur-md border border-white/15 transition-transform hover:scale-105" title="Watch video" aria-label="Watch video">
+                          <span className="material-symbols-outlined text-[27px] ml-0.5">play_arrow</span>
+                        </a>
+                      ) : (
+                        <span className="relative w-12 h-12 rounded-full bg-black/45 text-white/60 flex items-center justify-center backdrop-blur-md border border-white/10">
+                          <span className="material-symbols-outlined text-[26px]">movie_off</span>
+                        </span>
+                      )}
+                      {duration && <span className="absolute bottom-2.5 right-2.5 px-2 py-1 rounded-lg bg-black/72 text-white text-[9px] font-mono backdrop-blur-sm">{duration}</span>}
                     </div>
 
                     <div className="p-4 md:p-5 min-w-0 flex flex-col">
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h2 className="text-sm md:text-base font-semibold truncate">{game.title || 'Video creative'}</h2>
-                            <span className={`px-2 py-0.5 rounded-full border text-[9px] font-medium ${asset.source === 'youtube' ? 'text-red-400 bg-red-500/10 border-red-500/20' : 'text-electric-blue bg-electric-blue/10 border-electric-blue/20'}`}>
-                              {asset.source === 'youtube' ? 'YouTube' : 'Direct video'}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap min-w-0">
+                            <h2 className="font-headline-lg text-[15px] md:text-[16px] font-semibold tracking-[-0.012em] leading-5 truncate">{game.title || 'Video creative'}</h2>
+                            <span className={`px-2 py-0.5 rounded-full border text-[8px] font-medium ${asset.source === 'youtube' ? 'text-urgent-red bg-urgent-red/10 border-urgent-red/20' : 'text-electric-blue bg-electric-blue/10 border-electric-blue/20'}`}>
+                              {sourceLabel}
                             </span>
                           </div>
-                          <p className="text-[10px] md:text-xs text-text-muted mt-1 truncate">{game.publisherName || 'Publisher unavailable'}{game.competitorName ? ` · ${game.competitorName}` : ''}</p>
-                          <p className="text-[9px] text-text-muted font-mono mt-1 truncate">{game.packageName || asset.youtubeId || asset.assetKey}</p>
+                          <p className="text-[10px] md:text-[11px] leading-4 text-text-muted mt-1.5 truncate">
+                            {game.publisherName || 'Publisher unavailable'}{game.competitorName ? ` · ${game.competitorName}` : ''}
+                          </p>
+                          <p className="text-[9px] leading-4 text-text-muted/90 font-mono mt-0.5 truncate">{game.packageName || asset.youtubeId || asset.assetKey}</p>
                         </div>
-                        <span className="px-2.5 py-1 rounded-full bg-input-bg border border-border-subtle text-[9px] text-text-muted flex-shrink-0">{asset.adCount || 0} ads</span>
+                        <span className="px-2.5 py-1 rounded-full bg-input-bg text-[9px] font-medium text-text-muted flex-shrink-0 tabular-nums">{asset.adCount || 0} ads</span>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 mt-4 text-[9px]">
-                        <div className="bg-input-bg rounded-lg px-2.5 py-2"><span className="text-text-muted">First seen</span><div className="text-text-main font-medium mt-0.5">{formatDate(asset.firstSeenAt)}</div></div>
-                        <div className="bg-input-bg rounded-lg px-2.5 py-2"><span className="text-text-muted">Last seen</span><div className="text-text-main font-medium mt-0.5">{formatDate(asset.lastSeenAt)}</div></div>
-                        {(asset.width || asset.height) && <div className="bg-input-bg rounded-lg px-2.5 py-2"><span className="text-text-muted">Resolution</span><div className="text-text-main font-medium mt-0.5">{asset.width || '?'}×{asset.height || '?'}</div></div>}
-                        {asset.youtubeId && <div className="bg-input-bg rounded-lg px-2.5 py-2"><span className="text-text-muted">YouTube ID</span><div className="text-text-main font-mono mt-0.5 truncate">{asset.youtubeId}</div></div>}
+                      <div className="grid grid-cols-2 gap-x-5 gap-y-3 mt-4 pt-4 border-t border-border-subtle text-[9px]">
+                        <div>
+                          <div className="text-text-muted">First seen</div>
+                          <div className="text-text-main font-medium mt-0.5 tabular-nums">{formatDate(asset.firstSeenAt)}</div>
+                        </div>
+                        <div>
+                          <div className="text-text-muted">Last seen</div>
+                          <div className="text-text-main font-medium mt-0.5 tabular-nums">{formatDate(asset.lastSeenAt)}</div>
+                        </div>
+                        {(asset.width || asset.height) && (
+                          <div>
+                            <div className="text-text-muted">Resolution</div>
+                            <div className="text-text-main font-medium mt-0.5">{asset.width || '?'} × {asset.height || '?'}</div>
+                          </div>
+                        )}
+                        {asset.youtubeId && (
+                          <div className="min-w-0">
+                            <div className="text-text-muted">YouTube ID</div>
+                            <div className="text-text-main font-mono mt-0.5 truncate">{asset.youtubeId}</div>
+                          </div>
+                        )}
                       </div>
 
                       <div className="mt-auto pt-4 flex flex-wrap items-center gap-2">
-                        {watchUrl && <a href={watchUrl} target="_blank" rel="noreferrer" className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium flex items-center gap-1.5"><span className="material-symbols-outlined text-[16px]">play_circle</span>Watch</a>}
-                        {asset.youtubeUrl && <a href={asset.youtubeUrl} target="_blank" rel="noreferrer" className="h-9 px-3 rounded-full bg-input-bg border border-border-subtle text-text-main text-[10px] font-medium flex items-center gap-1.5"><span className="material-symbols-outlined text-[16px]">open_in_new</span>YouTube</a>}
-                        {asset.source === 'direct' && asset.mediaUrlExpired && <span className="text-[9px] text-amber-500">Stored media link expired · rescan to refresh</span>}
+                        {watchUrl && (
+                          <a href={watchUrl} target="_blank" rel="noreferrer" className="h-9 px-3.5 rounded-full bg-[#1a73e8] hover:bg-[#1765cc] text-white text-[10px] font-medium flex items-center gap-1.5 transition-colors shadow-sm">
+                            <span className="material-symbols-outlined text-[16px]">play_circle</span>
+                            Watch
+                          </a>
+                        )}
+                        {playStoreUrl && (
+                          <a href={playStoreUrl} target="_blank" rel="noreferrer" className="h-9 px-3.5 rounded-full bg-surface-solid hover:bg-input-bg border border-border-subtle text-text-main text-[10px] font-medium flex items-center gap-1.5 transition-colors">
+                            <span className="material-symbols-outlined text-[16px]">shop</span>
+                            Play Store
+                          </a>
+                        )}
+                        {asset.source === 'direct' && asset.mediaUrlExpired && <span className="text-[9px] text-amber-500">Media link expired · rescan to refresh</span>}
                         {(asset.games || []).length > 1 && <span className="text-[9px] text-text-muted ml-auto">+{asset.games.length - 1} linked games</span>}
                       </div>
                     </div>
@@ -236,7 +285,7 @@ function KeywordPanel({ packageName, title, onClose }) {
   const rows = tab === "phrases" ? (data?.phrases || []) : (data?.words || []);
 
   return createPortal(
-    <div className="fixed inset-0 z-[130] flex justify-end">
+    <div className="atlas-google-shell fixed inset-0 z-[130] flex justify-end font-body-md antialiased [text-rendering:optimizeLegibility]">
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/65" onClick={onClose} />
       <motion.aside initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} transition={{ type: 'tween', duration: 0.22 }} className="relative w-full sm:w-[500px] h-full bg-surface-solid border-l border-border-subtle shadow-2xl flex flex-col">
         <div className="p-5 border-b border-border-subtle flex items-start justify-between gap-4">

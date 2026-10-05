@@ -2,7 +2,10 @@ const { chromium } = require('playwright');
 const { Pool } = require('pg');
 const {
   initializeIntelligenceFeatures,
-  persistVideoAssets
+  persistVideoAssets,
+  getCreativeExtractionCache,
+  persistCreativeExtractionCache,
+  touchCreativeVideoAssets
 } = require('./IntelligenceFeatures');
 
 const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
@@ -11,6 +14,14 @@ const videoPool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 let videoDbReady = false;
+
+const MAX_CREATIVE_WORKERS = 2;
+const configuredWorkers = Math.max(
+  1,
+  Math.min(MAX_CREATIVE_WORKERS, Number(process.env.ATLAS_AD_SCAN_CONCURRENCY) || 2)
+);
+const CREATIVE_CHECKPOINTS_MS = [650, 1250, 2100, 3200, 4400, 5600];
+const CREATIVE_SETTLE_AFTER_PACKAGE_MS = 1250;
 
 async function ensureVideoDb() {
   if (videoDbReady) return;
@@ -220,7 +231,7 @@ function extractVideoAssets(value) {
   return [...assets.values()];
 }
 
-async function persistCreativeVideos(creativeId, packageNames, assets) {
+async function persistCreativeVideos(creativeId, packageNames, assets, advertiserId) {
   if (!assets.length || !packageNames.length) return;
   try {
     await ensureVideoDb();
@@ -230,12 +241,135 @@ async function persistCreativeVideos(creativeId, packageNames, assets) {
         packageName,
         gameId: null,
         competitorId: null,
+        advertiserId,
         assets
       });
     }
   } catch (error) {
     console.error('🎬 [Video] Failed to persist creative video:', creativeId, error.message);
   }
+}
+
+async function inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap) {
+  const creativeFrames = adPage.frames().filter(frame => {
+    if (frame === adPage.mainFrame()) return false;
+    return !(frame.url() || '').includes('/sadbundle/');
+  });
+
+  for (const frame of creativeFrames) {
+    try {
+      const html = await frame.content();
+      extractStorePackages(html).forEach(pkg => primaryPackages.add(pkg));
+      extractVideoAssets(html).forEach(asset => mergeVideoAsset(videoMap, asset));
+    } catch {}
+  }
+
+  if (!primaryPackages.size) {
+    for (const frame of creativeFrames) {
+      try {
+        const html = await frame.content();
+        extractPackageKeys(html).forEach(pkg => primaryPackages.add(pkg));
+      } catch {}
+    }
+  }
+
+  try {
+    const mainHtml = await adPage.mainFrame().content();
+    extractVideoAssets(mainHtml).forEach(asset => mergeVideoAsset(videoMap, asset));
+    if (!primaryPackages.size) extractStorePackages(mainHtml).forEach(pkg => fallbackPackages.add(pkg));
+  } catch {}
+
+  return {
+    packageCount: primaryPackages.size || fallbackPackages.size,
+    videoCount: videoMap.size,
+    frameCount: creativeFrames.length
+  };
+}
+
+async function waitForCreativeSignals(adPage, primaryPackages, fallbackPackages, videoMap) {
+  const startedAt = Date.now();
+  let packageDetectedAt = null;
+
+  for (const checkpoint of CREATIVE_CHECKPOINTS_MS) {
+    const elapsed = Date.now() - startedAt;
+    if (checkpoint > elapsed) await adPage.waitForTimeout(checkpoint - elapsed);
+
+    const state = await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap);
+    if (state.packageCount > 0 && packageDetectedAt === null) packageDetectedAt = Date.now();
+
+    if (packageDetectedAt !== null) {
+      const settleElapsed = Date.now() - packageDetectedAt;
+      if (settleElapsed < CREATIVE_SETTLE_AFTER_PACKAGE_MS) {
+        await adPage.waitForTimeout(CREATIVE_SETTLE_AFTER_PACKAGE_MS - settleElapsed);
+      }
+      await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap);
+      return;
+    }
+  }
+
+  await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap);
+}
+
+async function discoverCreativeIds(searchPage, adIds, maxAdsToTest, isCancelled, emitProgress) {
+  let previousSize = adIds.size;
+  let idleRounds = 0;
+  let rounds = 0;
+  const maxIdleRounds = 7;
+
+  while (adIds.size < maxAdsToTest && idleRounds < maxIdleRounds) {
+    if (isCancelled()) break;
+    rounds += 1;
+
+    if (idleRounds === 2 || idleRounds === 5) {
+      await searchPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+    } else {
+      await searchPage.mouse.wheel(0, idleRounds > 0 ? 4800 : 3600);
+    }
+
+    await searchPage.waitForTimeout(idleRounds > 0 ? 2100 : 1400);
+
+    if (adIds.size > previousSize) {
+      previousSize = adIds.size;
+      idleRounds = 0;
+    } else {
+      idleRounds += 1;
+
+      // A short reverse/forward movement often wakes Google's virtualized
+      // lazy loader when a straight run to the bottom temporarily stalls.
+      if (idleRounds === 3 || idleRounds === 6) {
+        await searchPage.mouse.wheel(0, -1200);
+        await searchPage.waitForTimeout(350);
+        await searchPage.mouse.wheel(0, 5200);
+        await searchPage.waitForTimeout(1200);
+        if (adIds.size > previousSize) {
+          previousSize = adIds.size;
+          idleRounds = 0;
+        }
+      }
+    }
+
+    if (rounds % 8 === 0) {
+      emitProgress(0, maxAdsToTest, `> 🎧 Discovered ${adIds.size} ads so far...`);
+    }
+  }
+
+  return { exhausted: idleRounds >= maxIdleRounds, discovered: adIds.size };
+}
+
+async function createCreativeWorkerPage(context) {
+  const page = await context.newPage();
+  page.setDefaultTimeout(12000);
+  page.setDefaultNavigationTimeout(30000);
+
+  // Request events fire before abort, so media URLs remain observable while
+  // heavy video/image/font/style bytes never need to download during scanning.
+  await page.route('**/*', route => {
+    const type = route.request().resourceType();
+    if (['image', 'media', 'font', 'stylesheet'].includes(type)) route.abort();
+    else route.continue();
+  });
+
+  return page;
 }
 
 async function scanCompetitor(
@@ -307,7 +441,7 @@ async function scanCompetitor(
       arId = query.toUpperCase();
       hasClicked = true;
       await searchPage.goto(`https://adstransparency.google.com/advertiser/${arId}?region=any`, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await searchPage.waitForTimeout(4000);
+      await searchPage.waitForTimeout(2500);
     } else {
       emitProgress(0, maxAdsToTest, `> 🔎 Searching Google Ads for "${query}"...`);
       await searchPage.goto('https://adstransparency.google.com/?region=any', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -315,7 +449,7 @@ async function scanCompetitor(
       await searchBox.waitFor({ state: 'visible', timeout: 15000 });
       await searchBox.click();
       await searchBox.fill(query);
-      await searchPage.waitForTimeout(2000);
+      await searchPage.waitForTimeout(1600);
 
       const options = await searchPage.locator('[role="option"]').all();
       let matchedOption = null;
@@ -335,8 +469,8 @@ async function scanCompetitor(
       let waited = 0;
       while (!arId && waited < 15000) {
         if (isCancelled()) break;
-        await searchPage.waitForTimeout(1000);
-        waited += 1000;
+        await searchPage.waitForTimeout(750);
+        waited += 750;
       }
       if (isCancelled()) throw new Error('Scan aborted by user.');
       if (!arId) {
@@ -346,16 +480,8 @@ async function scanCompetitor(
       }
     }
 
-    emitProgress(0, maxAdsToTest, `> 🎧 Scrolling to intercept ${maxAdsToTest} ads...`);
-    let strikes = 0;
-    let previousSize = 0;
-    while (adIds.size < maxAdsToTest && strikes < 3) {
-      if (isCancelled()) break;
-      await searchPage.mouse.wheel(0, 3000);
-      await searchPage.waitForTimeout(2500);
-      if (adIds.size === previousSize) strikes += 1;
-      else { strikes = 0; previousSize = adIds.size; }
-    }
+    emitProgress(0, maxAdsToTest, `> 🎧 Scrolling to intercept up to ${maxAdsToTest} ads...`);
+    const discovery = await discoverCreativeIds(searchPage, adIds, maxAdsToTest, isCancelled, emitProgress);
     if (isCancelled()) throw new Error('Scan aborted by user.');
     await searchPage.close();
 
@@ -365,109 +491,163 @@ async function scanCompetitor(
       return [];
     }
 
-    emitProgress(0, idArray.length, `> ✅ Intercepted ${idArray.length} ads! Moving to deep extraction...`);
-    const allFoundPackagesArray = [];
-
-    for (let i = 0; i < idArray.length; i += 1) {
-      if (isCancelled()) break;
-      const adId = idArray[i];
-      const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
-      const adPage = await context.newPage();
-      const primaryPackages = new Set();
-      const fallbackPackages = new Set();
-      const videoMap = new Map();
-
-      adPage.on('request', req => {
-        const requestUrl = req.url();
-        const mediaAsset = /googlevideo\.com\/videoplayback|\.(?:mp4|webm)(?:\?|$)/i.test(requestUrl)
-          ? parseMediaUrl(requestUrl)
-          : null;
-        if (mediaAsset) mergeVideoAsset(videoMap, mediaAsset);
-
-        const packages = extractStorePackages(requestUrl);
-        if (!packages.length) return;
-        let frame = null;
-        try { frame = req.frame(); } catch {}
-        const frameUrl = frame ? frame.url() || '' : '';
-        if (frameUrl.includes('/sadbundle/')) return;
-        const bucket = frame && frame !== adPage.mainFrame() ? primaryPackages : fallbackPackages;
-        packages.forEach(pkg => bucket.add(pkg));
-      });
-
-      // Request events still fire before abort, so media URLs are observable
-      // without actually downloading heavy video bytes during every scan.
-      await adPage.route('**/*', route => {
-        const type = route.request().resourceType();
-        if (['image', 'media', 'font', 'stylesheet'].includes(type)) route.abort(); else route.continue();
-      });
-
-      try {
-        console.log(`\n🟢 [DEBUG] [Ad ${i + 1}/${idArray.length}] ${url}`);
-        try {
-          await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        } catch {
-          console.log(`🟡 [DEBUG] [Ad ${i + 1}] Navigation timed out; inspecting loaded creative.`);
-        }
-        await adPage.waitForTimeout(8000);
-
-        const creativeFrames = adPage.frames().filter(frame => {
-          if (frame === adPage.mainFrame()) return false;
-          return !(frame.url() || '').includes('/sadbundle/');
-        });
-
-        for (const frame of creativeFrames) {
-          try {
-            const html = await frame.content();
-            extractStorePackages(html).forEach(pkg => primaryPackages.add(pkg));
-            extractVideoAssets(html).forEach(asset => mergeVideoAsset(videoMap, asset));
-          } catch {}
-        }
-
-        if (!primaryPackages.size) {
-          for (const frame of creativeFrames) {
-            try {
-              const html = await frame.content();
-              extractPackageKeys(html).forEach(pkg => primaryPackages.add(pkg));
-            } catch {}
-          }
-        }
-
-        try {
-          const mainHtml = await adPage.mainFrame().content();
-          extractVideoAssets(mainHtml).forEach(asset => mergeVideoAsset(videoMap, asset));
-          if (!primaryPackages.size) extractStorePackages(mainHtml).forEach(pkg => fallbackPackages.add(pkg));
-        } catch {}
-
-        const uniqueInAd = [...(primaryPackages.size ? primaryPackages : fallbackPackages)];
-        const videoAssets = [...videoMap.values()];
-
-        if (uniqueInAd.length) {
-          if (videoAssets.length) {
-            console.log(`🎬 [Video] Ad ${i + 1}: detected ${videoAssets.length} video asset(s).`);
-            await persistCreativeVideos(adId, uniqueInAd, videoAssets);
-          }
-
-          emitProgress(
-            i + 1,
-            idArray.length,
-            `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}${videoAssets.length ? ` · 🎬 ${videoAssets.length} video` : ''}`
-          );
-          for (const pkg of uniqueInAd) {
-            allFoundPackagesArray.push({ creativeId: adId, package: pkg, videoAssets });
-            await onPackageFound(pkg);
-          }
-        } else {
-          emitProgress(i + 1, idArray.length, `> ❌ Ad ${i + 1}: No mobile package.`);
-        }
-      } catch (error) {
-        console.error(`🔴 [DEBUG] [Ad ${i + 1}] Error:`, error.message);
-        emitProgress(i + 1, idArray.length, `> ⚠️ Ad ${i + 1}: Error, continuing.`);
-      } finally {
-        await adPage.close();
-      }
+    if (discovery.exhausted && idArray.length < maxAdsToTest) {
+      emitProgress(0, idArray.length, `> ℹ️ Google stopped yielding new creatives at ${idArray.length}; scanning every ad discovered.`);
+    } else {
+      emitProgress(0, idArray.length, `> ✅ Intercepted ${idArray.length} ads! Moving to deep extraction...`);
     }
 
-    emitProgress(idArray.length, idArray.length, '> 🎉 Finished! Extracted data mapped to DB.');
+    let cacheMap = new Map();
+    try {
+      await ensureVideoDb();
+      cacheMap = await getCreativeExtractionCache(videoPool, idArray);
+    } catch (error) {
+      console.warn('⚡ [Scan Cache] Cache unavailable; continuing with full extraction:', error.message);
+    }
+
+    const allFoundPackagesArray = [];
+    let nextIndex = 0;
+    let completed = 0;
+    let cacheHits = 0;
+    const workerCount = idArray.length >= 40
+      ? Math.min(configuredWorkers, idArray.length)
+      : 1;
+
+    console.log(`⚡ [Scanner] Deep extraction using ${workerCount} worker${workerCount === 1 ? '' : 's'}; adaptive creative waits enabled.`);
+
+    const runWorker = async (workerId) => {
+      const adPage = await createCreativeWorkerPage(context);
+      try {
+        if (workerId > 0) await adPage.waitForTimeout(workerId * 500);
+
+        while (!isCancelled()) {
+          const i = nextIndex;
+          nextIndex += 1;
+          if (i >= idArray.length) break;
+
+          const adId = idArray[i];
+          const cached = cacheMap.get(adId);
+
+          if (cached?.videoCheckedAt) {
+            cacheHits += 1;
+            try { await touchCreativeVideoAssets(videoPool, adId); } catch {}
+
+            for (const pkg of cached.packageNames || []) {
+              allFoundPackagesArray.push({ creativeId: adId, package: pkg, videoAssets: [], cached: true });
+              await onPackageFound(pkg);
+            }
+
+            completed += 1;
+            emitProgress(
+              completed,
+              idArray.length,
+              `> ⚡ Ad ${i + 1}: Reused saved extraction${cached.packageNames?.length ? ` · ${cached.packageNames.length} package${cached.packageNames.length === 1 ? '' : 's'}` : ' · no mobile package'}`
+            );
+            continue;
+          }
+
+          const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
+          const primaryPackages = new Set();
+          const fallbackPackages = new Set();
+          const videoMap = new Map();
+
+          await adPage.goto('about:blank', { waitUntil: 'commit', timeout: 5000 }).catch(() => {});
+
+          const requestHandler = req => {
+            const requestUrl = req.url();
+            const mediaAsset = /googlevideo\.com\/videoplayback|\.(?:mp4|webm)(?:\?|$)/i.test(requestUrl)
+              ? parseMediaUrl(requestUrl)
+              : null;
+            if (mediaAsset) mergeVideoAsset(videoMap, mediaAsset);
+
+            const packages = extractStorePackages(requestUrl);
+            if (!packages.length) return;
+            let frame = null;
+            try { frame = req.frame(); } catch {}
+            const frameUrl = frame ? frame.url() || '' : '';
+            if (frameUrl.includes('/sadbundle/')) return;
+            const bucket = frame && frame !== adPage.mainFrame() ? primaryPackages : fallbackPackages;
+            packages.forEach(pkg => bucket.add(pkg));
+          };
+
+          adPage.on('request', requestHandler);
+
+          try {
+            console.log(`\n🟢 [DEBUG] [Ad ${i + 1}/${idArray.length}] ${url}`);
+            try {
+              await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            } catch {
+              console.log(`🟡 [DEBUG] [Ad ${i + 1}] Navigation timed out; inspecting loaded creative.`);
+            }
+
+            await waitForCreativeSignals(adPage, primaryPackages, fallbackPackages, videoMap);
+
+            const uniqueInAd = [...(primaryPackages.size ? primaryPackages : fallbackPackages)];
+            const videoAssets = [...videoMap.values()];
+
+            if (uniqueInAd.length && videoAssets.length) {
+              console.log(`🎬 [Video] Ad ${i + 1}: detected ${videoAssets.length} video asset(s).`);
+              await persistCreativeVideos(adId, uniqueInAd, videoAssets, arId);
+            }
+
+            try {
+              await persistCreativeExtractionCache(videoPool, {
+                creativeId: adId,
+                packageNames: uniqueInAd,
+                videoCount: videoAssets.length
+              });
+              cacheMap.set(adId, {
+                creativeId: adId,
+                packageNames: uniqueInAd,
+                videoCheckedAt: new Date().toISOString(),
+                videoCount: videoAssets.length
+              });
+            } catch (error) {
+              console.warn('⚡ [Scan Cache] Could not cache creative:', adId, error.message);
+            }
+
+            if (uniqueInAd.length) {
+              for (const pkg of uniqueInAd) {
+                allFoundPackagesArray.push({ creativeId: adId, package: pkg, videoAssets });
+                await onPackageFound(pkg);
+              }
+
+              completed += 1;
+              emitProgress(
+                completed,
+                idArray.length,
+                `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}${videoAssets.length ? ` · 🎬 ${videoAssets.length} video` : ''}`
+              );
+            } else {
+              completed += 1;
+              emitProgress(completed, idArray.length, `> ❌ Ad ${i + 1}: No mobile package.`);
+            }
+          } catch (error) {
+            completed += 1;
+            console.error(`🔴 [DEBUG] [Ad ${i + 1}] Error:`, error.message);
+            emitProgress(completed, idArray.length, `> ⚠️ Ad ${i + 1}: Error, continuing.`);
+          } finally {
+            adPage.off('request', requestHandler);
+          }
+
+          // A tiny gap keeps the two-worker mode from producing a sharp burst
+          // while still being far quicker than the previous fixed 8s delay.
+          await adPage.waitForTimeout(150 + workerId * 90);
+        }
+      } finally {
+        await adPage.close().catch(() => {});
+      }
+    };
+
+    await Promise.all(Array.from({ length: workerCount }, (_, workerId) => runWorker(workerId)));
+
+    if (isCancelled()) throw new Error('Scan aborted by user.');
+
+    emitProgress(
+      idArray.length,
+      idArray.length,
+      `> 🎉 Finished! Extracted data mapped to DB.${cacheHits ? ` Reused ${cacheHits} saved creative extraction${cacheHits === 1 ? '' : 's'}.` : ''}`
+    );
     return allFoundPackagesArray;
   } catch (error) {
     console.error('❌ Scanner crashed/aborted:', error.message);
