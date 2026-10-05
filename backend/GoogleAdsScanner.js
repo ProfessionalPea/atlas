@@ -1,4 +1,66 @@
 const { chromium } = require('playwright');
+const { Pool } = require('pg');
+const crypto = require('crypto');
+
+const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
+const videoPool = cleanConnectionString
+  ? new Pool({ connectionString: cleanConnectionString, ssl: { rejectUnauthorized: false } })
+  : null;
+
+let videoTablesReady = false;
+let videoTablesPromise = null;
+
+async function ensureVideoTables() {
+  if (!videoPool || videoTablesReady) return;
+  if (videoTablesPromise) return videoTablesPromise;
+
+  videoTablesPromise = videoPool.query(`
+    CREATE TABLE IF NOT EXISTS video_assets (
+      id BIGSERIAL PRIMARY KEY,
+      asset_key TEXT UNIQUE NOT NULL,
+      asset_type TEXT NOT NULL,
+      youtube_id TEXT,
+      youtube_url TEXT,
+      media_url TEXT,
+      thumbnail_url TEXT,
+      mime_type TEXT,
+      width INTEGER,
+      height INTEGER,
+      duration_seconds NUMERIC(10,3),
+      source_host TEXT,
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS ad_video_assets (
+      id BIGSERIAL PRIMARY KEY,
+      creative_id TEXT NOT NULL,
+      package_name TEXT NOT NULL,
+      video_asset_id BIGINT NOT NULL REFERENCES video_assets(id) ON DELETE CASCADE,
+      transparency_url TEXT,
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (creative_id, package_name, video_asset_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_assets_youtube_id
+      ON video_assets(youtube_id)
+      WHERE youtube_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_ad_video_assets_package
+      ON ad_video_assets(package_name, last_seen_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_ad_video_assets_creative
+      ON ad_video_assets(creative_id, last_seen_at DESC);
+  `).then(() => {
+    videoTablesReady = true;
+  }).catch((error) => {
+    videoTablesPromise = null;
+    console.error('⚠️ [Video Library] Failed to initialize video tables:', error.message);
+  });
+
+  return videoTablesPromise;
+}
 
 function isValidPackage(pkg) {
   if (!pkg || typeof pkg !== 'string') return false;
@@ -8,7 +70,7 @@ function isValidPackage(pkg) {
   if (!validPrefixes.some(prefix => lower.startsWith(prefix))) return false;
 
   const blacklist = [
-    'goog.', 'com.google.', 'com.android.', 'com.apple.', 
+    'goog.', 'com.google.', 'com.android.', 'com.apple.',
     'org.w3c.', 'org.apache.', 'io.github.'
   ];
   if (blacklist.some(bad => lower.startsWith(bad))) return false;
@@ -22,7 +84,6 @@ function isValidPackage(pkg) {
 
   return true;
 }
-
 
 function decodeForStoreInspection(value) {
   let decoded = String(value || '');
@@ -76,17 +137,221 @@ function extractPackageKeys(value) {
   return [...found];
 }
 
+function decodeVideoEvidence(value) {
+  return String(value || '')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+}
+
+function normalizeMediaUrl(value) {
+  let url = decodeVideoEvidence(value).trim().replace(/^['"]|['"]$/g, '');
+  if (!url) return null;
+  if (url.startsWith('//')) url = `https:${url}`;
+  if (!/^https?:\/\//i.test(url)) return null;
+  return url;
+}
+
+function safeUrl(value) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function parseDurationFromUrl(mediaUrl) {
+  const parsed = safeUrl(mediaUrl);
+  if (!parsed) return null;
+  const value = Number(parsed.searchParams.get('dur'));
+  return Number.isFinite(value) && value > 0 ? Number(value.toFixed(3)) : null;
+}
+
+function extractVideoAssets(evidenceParts, creativeId) {
+  const raw = decodeVideoEvidence((evidenceParts || []).filter(Boolean).join('\n'));
+  if (!raw.trim()) return [];
+
+  const youtubeIds = new Set();
+  const youtubePatterns = [
+    /(?:i\d+\.)?ytimg\.com\/vi\/([A-Za-z0-9_-]{11})(?:\/|\?|['"<\s])/gi,
+    /youtube\.com\/(?:watch\?[^"'<>\s]*?v=|embed\/|shorts\/)([A-Za-z0-9_-]{11})/gi,
+    /youtu\.be\/([A-Za-z0-9_-]{11})/gi,
+  ];
+  for (const pattern of youtubePatterns) {
+    for (const match of raw.matchAll(pattern)) youtubeIds.add(match[1]);
+  }
+
+  const mediaCandidates = [];
+
+  // VAST MediaFile entries expose the strongest direct-media metadata.
+  const vastRegex = /<MediaFile\b([^>]*)>(?:<!\[CDATA\[)?\s*([^<\]]+?)(?:\]\]>)?\s*<\/MediaFile>/gi;
+  for (const match of raw.matchAll(vastRegex)) {
+    const attrs = match[1] || '';
+    const mediaUrl = normalizeMediaUrl(match[2]);
+    if (!mediaUrl) continue;
+    const width = Number((attrs.match(/\bwidth=["']?(\d+)/i) || [])[1]) || null;
+    const height = Number((attrs.match(/\bheight=["']?(\d+)/i) || [])[1]) || null;
+    const mimeType = (attrs.match(/\btype=["']([^"']+)/i) || [])[1] || null;
+    mediaCandidates.push({ mediaUrl, width, height, mimeType });
+  }
+
+  // Live video elements and serialized VAST often expose the same signed URL
+  // through a different representation. Deduplication below collapses them.
+  const srcRegex = /<video\b[^>]*\bsrc=["']([^"']+)["']/gi;
+  for (const match of raw.matchAll(srcRegex)) {
+    const mediaUrl = normalizeMediaUrl(match[1]);
+    if (mediaUrl) mediaCandidates.push({ mediaUrl, width: null, height: null, mimeType: null });
+  }
+
+  const directUrlRegex = /(?:https?:)?\/\/[A-Za-z0-9._-]+\/(?:[^\s"'<>]*?(?:videoplayback|\.mp4|\.webm))(?:[^\s"'<>]*)/gi;
+  for (const match of raw.matchAll(directUrlRegex)) {
+    const mediaUrl = normalizeMediaUrl(match[0]);
+    if (mediaUrl) mediaCandidates.push({ mediaUrl, width: null, height: null, mimeType: null });
+  }
+
+  const uniqueMedia = new Map();
+  for (const item of mediaCandidates) {
+    if (!uniqueMedia.has(item.mediaUrl)) uniqueMedia.set(item.mediaUrl, item);
+  }
+
+  const mediaRows = [...uniqueMedia.values()];
+  const youtubeIdList = [...youtubeIds];
+  const youtubeMedia = mediaRows.find(item => {
+    const parsed = safeUrl(item.mediaUrl);
+    return parsed?.searchParams.get('source') === 'youtube' || /googlevideo\.com$/i.test(parsed?.hostname || '');
+  }) || null;
+
+  const assets = youtubeIdList.map(youtubeId => ({
+    assetKey: `youtube:${youtubeId}`,
+    assetType: 'youtube',
+    youtubeId,
+    youtubeUrl: `https://www.youtube.com/watch?v=${youtubeId}`,
+    mediaUrl: youtubeMedia?.mediaUrl || null,
+    thumbnailUrl: `https://i1.ytimg.com/vi/${youtubeId}/hqdefault.jpg`,
+    mimeType: youtubeMedia?.mimeType || 'video/mp4',
+    width: youtubeMedia?.width || null,
+    height: youtubeMedia?.height || null,
+    durationSeconds: youtubeMedia?.mediaUrl ? parseDurationFromUrl(youtubeMedia.mediaUrl) : null,
+    sourceHost: youtubeMedia?.mediaUrl ? safeUrl(youtubeMedia.mediaUrl)?.hostname || 'youtube.com' : 'youtube.com'
+  }));
+
+  // A googlevideo playback URL with source=youtube is intentionally NOT saved
+  // as a separate direct asset when a stable YouTube ID was found. Those URLs
+  // are signed and expire; the permanent YouTube ID is the durable reference.
+  for (let index = 0; index < mediaRows.length; index++) {
+    const item = mediaRows[index];
+    const parsed = safeUrl(item.mediaUrl);
+    const looksYoutube = parsed?.searchParams.get('source') === 'youtube' || /googlevideo\.com$/i.test(parsed?.hostname || '');
+    if (looksYoutube && youtubeIdList.length > 0) continue;
+
+    let stableIdentity = item.mediaUrl;
+    if (parsed && !/googlevideo\.com$/i.test(parsed.hostname)) {
+      stableIdentity = `${parsed.origin}${parsed.pathname}`;
+    } else if (looksYoutube) {
+      stableIdentity = `${creativeId}:${index}`;
+    }
+
+    assets.push({
+      assetKey: `direct:${crypto.createHash('sha256').update(stableIdentity).digest('hex')}`,
+      assetType: 'direct',
+      youtubeId: null,
+      youtubeUrl: null,
+      mediaUrl: item.mediaUrl,
+      thumbnailUrl: null,
+      mimeType: item.mimeType || (/\.webm(?:\?|$)/i.test(item.mediaUrl) ? 'video/webm' : 'video/mp4'),
+      width: item.width || null,
+      height: item.height || null,
+      durationSeconds: parseDurationFromUrl(item.mediaUrl),
+      sourceHost: parsed?.hostname || null
+    });
+  }
+
+  const byKey = new Map();
+  for (const asset of assets) {
+    if (!byKey.has(asset.assetKey)) byKey.set(asset.assetKey, asset);
+  }
+  return [...byKey.values()];
+}
+
+async function persistVideoAssets(creativeId, packages, assets, transparencyUrl) {
+  if (!videoPool || !creativeId || !Array.isArray(packages) || packages.length === 0 || !Array.isArray(assets) || assets.length === 0) return;
+  await ensureVideoTables();
+  if (!videoTablesReady) return;
+
+  for (const asset of assets) {
+    try {
+      const { rows } = await videoPool.query(
+        `INSERT INTO video_assets (
+           asset_key, asset_type, youtube_id, youtube_url, media_url,
+           thumbnail_url, mime_type, width, height, duration_seconds,
+           source_host, first_seen_at, last_seen_at
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now(),now())
+         ON CONFLICT (asset_key) DO UPDATE SET
+           youtube_url = COALESCE(EXCLUDED.youtube_url, video_assets.youtube_url),
+           media_url = COALESCE(EXCLUDED.media_url, video_assets.media_url),
+           thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, video_assets.thumbnail_url),
+           mime_type = COALESCE(EXCLUDED.mime_type, video_assets.mime_type),
+           width = COALESCE(EXCLUDED.width, video_assets.width),
+           height = COALESCE(EXCLUDED.height, video_assets.height),
+           duration_seconds = COALESCE(EXCLUDED.duration_seconds, video_assets.duration_seconds),
+           source_host = COALESCE(EXCLUDED.source_host, video_assets.source_host),
+           last_seen_at = now()
+         RETURNING id`,
+        [
+          asset.assetKey,
+          asset.assetType,
+          asset.youtubeId,
+          asset.youtubeUrl,
+          asset.mediaUrl,
+          asset.thumbnailUrl,
+          asset.mimeType,
+          asset.width,
+          asset.height,
+          asset.durationSeconds,
+          asset.sourceHost
+        ]
+      );
+
+      const videoAssetId = rows[0]?.id;
+      if (!videoAssetId) continue;
+
+      for (const pkg of packages) {
+        await videoPool.query(
+          `INSERT INTO ad_video_assets (
+             creative_id, package_name, video_asset_id, transparency_url,
+             first_seen_at, last_seen_at
+           )
+           VALUES ($1,$2,$3,$4,now(),now())
+           ON CONFLICT (creative_id, package_name, video_asset_id) DO UPDATE SET
+             transparency_url = COALESCE(EXCLUDED.transparency_url, ad_video_assets.transparency_url),
+             last_seen_at = now()`,
+          [creativeId, pkg, videoAssetId, transparencyUrl]
+        );
+      }
+    } catch (error) {
+      console.error(`⚠️ [Video Library] Failed to persist video for ${creativeId}:`, error.message);
+    }
+  }
+}
+
 async function scanCompetitor(
-  searchQuery, 
-  targetCountry, 
-  maxAdsToTest = 500, 
-  onProgress = () => {}, 
-  onPackageFound = async () => {}, 
+  searchQuery,
+  targetCountry,
+  maxAdsToTest = 500,
+  onProgress = () => {},
+  onPackageFound = async () => {},
   isCancelled = () => false
 ) {
   const query = searchQuery.trim();
   console.log(`\n🚀 [Master Scanner] Starting full pipeline for: "${query}"`);
-  
+
   const startTime = Date.now();
   const emitProgress = (current, total, logMsg) => {
     let timeRemaining = "Calculating...";
@@ -180,19 +445,19 @@ async function scanCompetitor(
       console.log(`🟢 [DEBUG] 5. Direct AR ID detected (${arId}). Bypassing search phase...`);
       emitProgress(0, maxAdsToTest, `> ✅ Direct ID detected: ${arId}. Bypassing search...`);
       hasClicked = true;
-      
+
       console.log(`🟢 [DEBUG] 5A. Navigating to Advertiser page...`);
-      await searchPage.goto(`https://adstransparency.google.com/advertiser/${arId}?region=any`, { 
-        waitUntil: 'domcontentloaded', 
-        timeout: 45000 
+      await searchPage.goto(`https://adstransparency.google.com/advertiser/${arId}?region=any`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000
       });
       await searchPage.waitForTimeout(4000);
     } else {
       console.log(`🟢 [DEBUG] 5. Search query detected ("${query}"). Navigating to Google Ads Transparency search...`);
       emitProgress(0, maxAdsToTest, `> 🔎 Searching Google Ads for "${query}"...`);
-      await searchPage.goto('https://adstransparency.google.com/?region=any', { 
-        waitUntil: 'domcontentloaded', 
-        timeout: 45000 
+      await searchPage.goto('https://adstransparency.google.com/?region=any', {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000
       });
 
       const searchBox = searchPage.getByRole('textbox').first();
@@ -242,7 +507,7 @@ async function scanCompetitor(
         await searchPage.close();
         return [];
       }
-      
+
       console.log(`🟢 [DEBUG] 5E. Successfully locked onto Advertiser ID: ${arId}`);
       emitProgress(0, maxAdsToTest, `> ✅ Locked onto Advertiser ID: ${arId}`);
     }
@@ -275,11 +540,11 @@ async function scanCompetitor(
 
     if (isCancelled()) throw new Error('Scan aborted by user.');
 
-    await searchPage.close(); 
+    await searchPage.close();
     console.log(`🟢 [DEBUG] Closed search page to free RAM.`);
 
     const idArray = Array.from(adIds).slice(0, maxAdsToTest);
-    
+
     if (idArray.length === 0) {
       console.log(`ℹ️ [SCAN] Zero ads found for advertiser ${arId}.`);
       emitProgress(0, 0, `> ℹ️ No active ads found for this target.`);
@@ -305,9 +570,16 @@ async function scanCompetitor(
       const adPage = await context.newPage();
       const primaryPackages = new Set();
       const fallbackPackages = new Set();
+      const videoRequestUrls = new Set();
 
       adPage.on('request', req => {
-        const packages = extractStorePackages(req.url());
+        const requestUrl = req.url();
+        const resourceType = req.resourceType();
+        if (resourceType === 'media' || /googlevideo\.com\/videoplayback|\.(?:mp4|webm)(?:\?|$)/i.test(requestUrl)) {
+          videoRequestUrls.add(requestUrl);
+        }
+
+        const packages = extractStorePackages(requestUrl);
         if (packages.length === 0) return;
 
         let frame = null;
@@ -328,7 +600,9 @@ async function scanCompetitor(
         packages.forEach(pkg => bucket.add(pkg));
       });
 
-      // Keep scripts/XHR alive, but block heavy visual assets.
+      // Keep scripts/XHR alive, but block heavy visual assets. Media requests
+      // are still observed by the request listener before they are aborted, so
+      // Atlas can preserve the URL/metadata without downloading the full video.
       await adPage.route('**/*', (route) => {
         const resourceType = route.request().resourceType();
         if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
@@ -358,15 +632,19 @@ async function scanCompetitor(
         // consistently report the same package across unrelated ads.
         const creativeFrames = frames.filter(frame => {
           if (frame === adPage.mainFrame()) return false;
-          const url = frame.url() || '';
-          return !url.includes('/sadbundle/');
+          const frameUrl = frame.url() || '';
+          return !frameUrl.includes('/sadbundle/');
         });
 
+        const creativeHtmlParts = [];
+
         // Highest-confidence source: explicit Play Store URLs inside the nested
-        // creative frames.
+        // creative frames. The same HTML also carries video_config/video_fields,
+        // VAST MediaFile data and ytimg thumbnails for video creatives.
         for (const frame of creativeFrames) {
           try {
             const html = await frame.content();
+            creativeHtmlParts.push(html);
             extractStorePackages(html).forEach(pkg => primaryPackages.add(pkg));
           } catch {}
         }
@@ -375,33 +653,47 @@ async function scanCompetitor(
         // Play Store URL. Only inspect CHILD frames for this fallback; do not scan
         // the advertiser page's giant serialized metadata blob.
         if (primaryPackages.size === 0) {
-          for (const frame of creativeFrames) {
-            try {
-              const html = await frame.content();
-              extractPackageKeys(html).forEach(pkg => primaryPackages.add(pkg));
-            } catch {}
+          for (const html of creativeHtmlParts) {
+            extractPackageKeys(html).forEach(pkg => primaryPackages.add(pkg));
           }
         }
 
         // Last-resort fallback: explicit Play Store URLs from the main page or
         // main-frame requests. We intentionally removed the old generic dotted-
         // string regex because it was the source of most multi-package pollution.
+        let mainHtml = '';
         if (primaryPackages.size === 0) {
           try {
-            const mainHtml = await adPage.mainFrame().content();
+            mainHtml = await adPage.mainFrame().content();
             extractStorePackages(mainHtml).forEach(pkg => fallbackPackages.add(pkg));
           } catch {}
         }
 
         const uniqueInAd = [...(primaryPackages.size > 0 ? primaryPackages : fallbackPackages)];
+        const videoAssets = extractVideoAssets(
+          [...creativeHtmlParts, mainHtml, ...videoRequestUrls],
+          adId
+        );
 
         if (uniqueInAd.length > 0) {
           console.log(`🟢 [DEBUG] [Ad ${i + 1}] SUCCESS: Found ${uniqueInAd.length} packages:`, uniqueInAd);
-          emitProgress(i + 1, idArray.length, `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} packages`);
-          
+          if (videoAssets.length > 0) {
+            const youtubeCount = videoAssets.filter(asset => asset.assetType === 'youtube').length;
+            console.log(`🎬 [Video Library] [Ad ${i + 1}] Found ${videoAssets.length} video asset(s)${youtubeCount ? ` (${youtubeCount} YouTube)` : ''}.`);
+          }
+          emitProgress(
+            i + 1,
+            idArray.length,
+            videoAssets.length > 0
+              ? `> 🎬 Ad ${i + 1}: Found ${uniqueInAd.length} packages + ${videoAssets.length} video${videoAssets.length === 1 ? '' : 's'}`
+              : `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} packages`
+          );
+
+          await persistVideoAssets(adId, uniqueInAd, videoAssets, url);
+
           for (const pkg of uniqueInAd) {
-            allFoundPackagesArray.push({ creativeId: adId, package: pkg });
-            await onPackageFound(pkg); 
+            allFoundPackagesArray.push({ creativeId: adId, package: pkg, videoAssets });
+            await onPackageFound(pkg);
           }
         } else {
           console.log(`🟡 [DEBUG] [Ad ${i + 1}] FAILURE: No valid packages found.`);
@@ -419,7 +711,8 @@ async function scanCompetitor(
     console.log(`\n🟢 [DEBUG] 9. PIPELINE COMPLETE!`);
     emitProgress(idArray.length, idArray.length, `> 🎉 Finished! Extracted data mapped to DB.`);
 
-    // Returns { creativeId, package }[] — see comment above allFoundPackagesArray.
+    // Returns { creativeId, package, videoAssets }[]. Existing callers that only
+    // use creativeId/package remain fully compatible.
     return allFoundPackagesArray;
   } catch (error) {
     console.error('❌ Scanner crashed/aborted:', error.message);
@@ -431,4 +724,8 @@ async function scanCompetitor(
   }
 }
 
-module.exports = { scanCompetitor };
+module.exports = {
+  scanCompetitor,
+  extractVideoAssets,
+  persistVideoAssets
+};
