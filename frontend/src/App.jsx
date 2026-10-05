@@ -1935,7 +1935,8 @@ function App() {
     return countryScanLibrary.filter(item =>
       String(item.appTitle || "").toLowerCase().includes(query) ||
       String(item.developer || "").toLowerCase().includes(query) ||
-      String(item.packageName || "").toLowerCase().includes(query)
+      String(item.packageName || "").toLowerCase().includes(query) ||
+      (item.competitors || []).some(name => String(name || "").toLowerCase().includes(query))
     );
   }, [countryScanLibrary, countryLibrarySearch]);
 
@@ -3326,7 +3327,7 @@ function App() {
                   <input
                     value={countryLibrarySearch}
                     onChange={(event) => setCountryLibrarySearch(event.target.value)}
-                    placeholder="Search title, developer, or package..."
+                    placeholder="Search title, developer, competitor, or package..."
                     className="w-full h-11 bg-surface-solid text-text-main border border-border-subtle rounded-xl pl-11 pr-10 outline-none focus:ring-2 focus:ring-electric-blue/30 text-xs md:text-sm shadow-sm"
                   />
                   {countryLibrarySearch && (
@@ -3387,6 +3388,20 @@ function App() {
                                 </div>
                                 {item.developer && (
                                   <p className="text-[10px] md:text-xs text-text-muted mt-0.5 truncate">{item.developer}</p>
+                                )}
+                                {(item.competitors || []).length > 0 && (
+                                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                    {(item.competitors || []).map(name => (
+                                      <span
+                                        key={name}
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 text-[8px] md:text-[9px] font-medium"
+                                        title={`Atlas competitor: ${name}`}
+                                      >
+                                        <span className="material-symbols-outlined text-[11px]">track_changes</span>
+                                        {name}
+                                      </span>
+                                    ))}
+                                  </div>
                                 )}
                                 <p className="text-[9px] md:text-[10px] text-text-muted font-mono mt-1 truncate">{item.packageName}</p>
                               </div>
