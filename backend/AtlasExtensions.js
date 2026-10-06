@@ -6,6 +6,10 @@ const {
   initializeIntelligenceFeatures,
   registerIntelligenceRoutes
 } = require('./IntelligenceFeatures');
+const {
+  initializeVideoLifecycle,
+  registerVideoLifecycleRoutes
+} = require('./VideoLifecycle');
 
 const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
 const extensionPool = new Pool({
@@ -21,6 +25,7 @@ async function initialize() {
   initialized = true;
   try {
     await initializeIntelligenceFeatures(extensionPool);
+    await initializeVideoLifecycle(extensionPool);
     console.log('🎬 [Atlas Intelligence] Video library + keyword storage ready.');
   } catch (error) {
     initialized = false;
@@ -28,15 +33,12 @@ async function initialize() {
   }
 }
 
-// server_impl.js owns the Express app and database pool privately. Register the
-// additive intelligence routes immediately before that app begins listening.
-// At that point Atlas's existing /api authentication middleware is already in
-// the stack, so these endpoints inherit the exact same access controls.
 const originalListen = express.application.listen;
 express.application.listen = function atlasExtensionListen(...args) {
   if (!registered) {
     registered = true;
     registerIntelligenceRoutes({ app: this, pool: extensionPool, gplay });
+    registerVideoLifecycleRoutes({ app: this, pool: extensionPool });
   }
   void initialize();
   return originalListen.apply(this, args);
