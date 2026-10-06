@@ -1,5 +1,8 @@
 const { analyzeGameKeywords } = require('./KeywordAnalyzer');
 
+const VIDEO_ATTRIBUTION_VERSION = 2;
+const clearedCreativeLinks = new Set();
+
 function normalizeHttpUrl(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -76,12 +79,36 @@ async function initializeIntelligenceFeatures(pool) {
       package_names JSONB NOT NULL DEFAULT '[]'::jsonb,
       video_checked_at TIMESTAMPTZ,
       last_deep_scanned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_video_count INTEGER NOT NULL DEFAULT 0
+      last_video_count INTEGER NOT NULL DEFAULT 0,
+      extraction_version INTEGER NOT NULL DEFAULT 0
     );
+
+    ALTER TABLE creative_extraction_cache
+      ADD COLUMN IF NOT EXISTS extraction_version INTEGER NOT NULL DEFAULT 0;
 
     CREATE INDEX IF NOT EXISTS idx_creative_extraction_cache_checked
       ON creative_extraction_cache(video_checked_at DESC);
   `);
+}
+
+async function resetStaleCreativeLinks(pool, creativeId) {
+  const id = String(creativeId || '').trim();
+  if (!id || clearedCreativeLinks.has(id)) return;
+
+  const { rows } = await pool.query(
+    `SELECT extraction_version
+     FROM creative_extraction_cache
+     WHERE creative_id = $1
+     LIMIT 1`,
+    [id]
+  );
+
+  const storedVersion = Number(rows[0]?.extraction_version) || 0;
+  if (storedVersion !== VIDEO_ATTRIBUTION_VERSION) {
+    await pool.query(`DELETE FROM ad_video_links WHERE creative_id = $1`, [id]);
+  }
+
+  clearedCreativeLinks.add(id);
 }
 
 async function persistVideoAssets(pool, {
@@ -94,6 +121,8 @@ async function persistVideoAssets(pool, {
   assets
 }) {
   if (!creativeId || !Array.isArray(assets) || assets.length === 0) return;
+
+  await resetStaleCreativeLinks(pool, creativeId);
 
   const creativeUrl = explicitCreativeUrl || (advertiserId
     ? `https://adstransparency.google.com/advertiser/${advertiserId}/creative/${creativeId}?region=any`
@@ -170,19 +199,69 @@ async function getCreativeExtractionCache(pool, creativeIds) {
   if (!ids.length) return new Map();
 
   const { rows } = await pool.query(
-    `SELECT creative_id, package_names, video_checked_at, last_deep_scanned_at, last_video_count
+    `SELECT creative_id, package_names, video_checked_at, last_deep_scanned_at,
+            last_video_count, extraction_version
      FROM creative_extraction_cache
      WHERE creative_id = ANY($1::text[])`,
     [ids]
   );
 
-  return new Map(rows.map(row => [row.creative_id, {
-    creativeId: row.creative_id,
-    packageNames: Array.isArray(row.package_names) ? row.package_names.filter(Boolean) : [],
-    videoCheckedAt: row.video_checked_at || null,
-    lastDeepScannedAt: row.last_deep_scanned_at || null,
-    videoCount: Number(row.last_video_count) || 0
-  }]));
+  return new Map(rows.map(row => {
+    const extractionVersion = Number(row.extraction_version) || 0;
+    const isCurrent = extractionVersion === VIDEO_ATTRIBUTION_VERSION;
+    return [row.creative_id, {
+      creativeId: row.creative_id,
+      packageNames: Array.isArray(row.package_names) ? row.package_names.filter(Boolean) : [],
+      videoCheckedAt: isCurrent ? (row.video_checked_at || null) : null,
+      lastDeepScannedAt: row.last_deep_scanned_at || null,
+      videoCount: Number(row.last_video_count) || 0,
+      extractionVersion
+    }];
+  }));
+}
+
+async function collapseAmbiguousCreativeLinks(pool, creativeId) {
+  const id = String(creativeId || '').trim();
+  if (!id) return;
+
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (asset_id)
+       asset_id, creative_id, competitor_id, creative_url, first_seen_at, last_seen_at
+     FROM ad_video_links
+     WHERE creative_id = $1
+     ORDER BY asset_id, last_seen_at DESC`,
+    [id]
+  );
+
+  for (const row of rows) {
+    await pool.query(
+      `INSERT INTO ad_video_links (
+         asset_id, creative_id, package_name, game_id, competitor_id,
+         creative_url, first_seen_at, last_seen_at
+       )
+       VALUES ($1,$2,'',NULL,$3,$4,$5,$6)
+       ON CONFLICT (asset_id, creative_id, package_name) DO UPDATE SET
+         game_id = NULL,
+         competitor_id = COALESCE(EXCLUDED.competitor_id, ad_video_links.competitor_id),
+         creative_url = COALESCE(EXCLUDED.creative_url, ad_video_links.creative_url),
+         first_seen_at = LEAST(ad_video_links.first_seen_at, EXCLUDED.first_seen_at),
+         last_seen_at = GREATEST(ad_video_links.last_seen_at, EXCLUDED.last_seen_at)`,
+      [
+        row.asset_id,
+        row.creative_id,
+        row.competitor_id || null,
+        row.creative_url || null,
+        row.first_seen_at || new Date(),
+        row.last_seen_at || new Date()
+      ]
+    );
+  }
+
+  await pool.query(
+    `DELETE FROM ad_video_links
+     WHERE creative_id = $1 AND COALESCE(package_name, '') <> ''`,
+    [id]
+  );
 }
 
 async function persistCreativeExtractionCache(pool, {
@@ -199,18 +278,39 @@ async function persistCreativeExtractionCache(pool, {
       .filter(Boolean)
   )];
 
+  // A creative that exposes more than one mobile package is ambiguous: the
+  // page can contain recommendation/companion links that do not own the video.
+  // Keep the asset in the global Video Library, but do not claim it belongs to
+  // any individual game. A later, more precise extractor can safely rebuild it.
+  if (normalizedPackages.length > 1 && Number(videoCount) > 0) {
+    await collapseAmbiguousCreativeLinks(pool, id);
+  } else if (normalizedPackages.length === 0 || Number(videoCount) <= 0) {
+    // If the fresh deep scan no longer sees a usable video/package pairing,
+    // remove historical links so stale attribution cannot survive forever.
+    await pool.query(`DELETE FROM ad_video_links WHERE creative_id = $1`, [id]);
+  }
+
   await pool.query(
     `INSERT INTO creative_extraction_cache (
-       creative_id, package_names, video_checked_at, last_deep_scanned_at, last_video_count
+       creative_id, package_names, video_checked_at, last_deep_scanned_at,
+       last_video_count, extraction_version
      )
-     VALUES ($1, $2::jsonb, now(), now(), $3)
+     VALUES ($1, $2::jsonb, now(), now(), $3, $4)
      ON CONFLICT (creative_id) DO UPDATE SET
        package_names = EXCLUDED.package_names,
        video_checked_at = now(),
        last_deep_scanned_at = now(),
-       last_video_count = EXCLUDED.last_video_count`,
-    [id, JSON.stringify(normalizedPackages), Math.max(0, Number(videoCount) || 0)]
+       last_video_count = EXCLUDED.last_video_count,
+       extraction_version = EXCLUDED.extraction_version`,
+    [
+      id,
+      JSON.stringify(normalizedPackages),
+      Math.max(0, Number(videoCount) || 0),
+      VIDEO_ATTRIBUTION_VERSION
+    ]
   );
+
+  clearedCreativeLinks.delete(id);
 }
 
 async function touchCreativeVideoAssets(pool, creativeId) {
@@ -255,7 +355,7 @@ async function getVideoLibrary(pool, packageName = null) {
           'installs', g.installs,
           'isPaid', g.is_paid,
           'priceText', g.price_text
-        )) FILTER (WHERE avl.package_name IS NOT NULL),
+        )) FILTER (WHERE NULLIF(avl.package_name, '') IS NOT NULL),
         '[]'::jsonb
       ) AS games
     FROM video_assets va
@@ -266,23 +366,26 @@ async function getVideoLibrary(pool, packageName = null) {
     LEFT JOIN account_games ag ON ag.game_id = g.id
     LEFT JOIN accounts a ON a.id = ag.account_id
     LEFT JOIN competitors c ON c.id = COALESCE(avl.competitor_id, a.competitor_id)
-    WHERE (
-      $1::text IS NULL
-      OR EXISTS (
-        SELECT 1
-        FROM ad_video_links package_link
-        WHERE package_link.asset_id = va.id
-          AND LOWER(package_link.package_name) = LOWER($1)
-          AND NOT EXISTS (
-            SELECT 1
-            FROM ad_video_links competing_link
-            WHERE competing_link.asset_id = package_link.asset_id
-              AND competing_link.creative_id = package_link.creative_id
-              AND COALESCE(competing_link.package_name, '') <> ''
-              AND LOWER(competing_link.package_name) <> LOWER(package_link.package_name)
-          )
-      )
+    WHERE EXISTS (
+      SELECT 1 FROM ad_video_links live_link WHERE live_link.asset_id = va.id
     )
+      AND (
+        $1::text IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM ad_video_links package_link
+          WHERE package_link.asset_id = va.id
+            AND LOWER(package_link.package_name) = LOWER($1)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ad_video_links competing_link
+              WHERE competing_link.asset_id = package_link.asset_id
+                AND competing_link.creative_id = package_link.creative_id
+                AND COALESCE(competing_link.package_name, '') <> ''
+                AND LOWER(competing_link.package_name) <> LOWER(package_link.package_name)
+            )
+        )
+      )
     GROUP BY va.id
     ORDER BY va.last_seen_at DESC, va.id DESC
   `, [packageName ? String(packageName).trim() : null]);
@@ -404,5 +507,6 @@ module.exports = {
   persistCreativeExtractionCache,
   touchCreativeVideoAssets,
   registerIntelligenceRoutes,
-  getAssetKey
+  getAssetKey,
+  VIDEO_ATTRIBUTION_VERSION
 };
