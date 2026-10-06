@@ -35,7 +35,7 @@ async function initializeCreativeOwnershipAccounting() {
           WHERE id = NEW.game_id;
         END IF;
 
-        RETURN COALESCE(NEW, OLD);
+        RETURN NULL;
       END;
       $$ LANGUAGE plpgsql;
 
