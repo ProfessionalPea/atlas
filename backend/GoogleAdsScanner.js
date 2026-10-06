@@ -2,7 +2,61 @@
 // Express app. The extension hooks app.listen so the routes inherit Atlas's
 // existing /api authentication middleware without changing server.js.
 const { extensionPool } = require('./AtlasExtensions');
-const scanner = require('./GoogleAdsScannerV2');
+const scanner = require('./GoogleAdsScannerV3');
+
+async function initializeCreativeOwnershipAccounting() {
+  try {
+    // games.ad_count used to be increment-only, so one creative accidentally
+    // attributed to several packages permanently inflated every affected game.
+    // Keep the display counter derived from the actual creative ownership table
+    // instead. Moving/deleting a creative automatically repairs both old/new
+    // owners as v4 re-resolves historical creatives.
+    await extensionPool.query(`
+      CREATE OR REPLACE FUNCTION atlas_refresh_game_ad_count()
+      RETURNS trigger AS $$
+      BEGIN
+        IF TG_OP <> 'INSERT' AND OLD.game_id IS NOT NULL THEN
+          UPDATE games
+          SET ad_count = (
+            SELECT COUNT(DISTINCT ac.creative_id)::int
+            FROM ad_creatives ac
+            WHERE ac.game_id = OLD.game_id
+          )
+          WHERE id = OLD.game_id;
+        END IF;
+
+        IF TG_OP <> 'DELETE' AND NEW.game_id IS NOT NULL THEN
+          UPDATE games
+          SET ad_count = (
+            SELECT COUNT(DISTINCT ac.creative_id)::int
+            FROM ad_creatives ac
+            WHERE ac.game_id = NEW.game_id
+          )
+          WHERE id = NEW.game_id;
+        END IF;
+
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS trg_atlas_refresh_game_ad_count ON ad_creatives;
+      CREATE TRIGGER trg_atlas_refresh_game_ad_count
+      AFTER INSERT OR UPDATE OF game_id, package_name OR DELETE ON ad_creatives
+      FOR EACH ROW EXECUTE FUNCTION atlas_refresh_game_ad_count();
+
+      UPDATE games g
+      SET ad_count = (
+        SELECT COUNT(DISTINCT ac.creative_id)::int
+        FROM ad_creatives ac
+        WHERE ac.game_id = g.id
+      );
+    `);
+  } catch (error) {
+    console.warn('📊 [Ads] Creative ownership accounting init skipped:', error.message);
+  }
+}
+
+void initializeCreativeOwnershipAccounting();
 
 async function reconcileVideoLinks() {
   try {
@@ -15,6 +69,7 @@ async function reconcileVideoLinks() {
       SET game_id = g.id
       FROM games g
       WHERE avl.game_id IS NULL
+        AND NULLIF(avl.package_name, '') IS NOT NULL
         AND avl.package_name = g.package_name;
 
       UPDATE ad_video_links avl
@@ -23,6 +78,7 @@ async function reconcileVideoLinks() {
       JOIN account_games ag ON ag.game_id = g.id
       JOIN accounts a ON a.id = ag.account_id
       WHERE avl.competitor_id IS NULL
+        AND NULLIF(avl.package_name, '') IS NOT NULL
         AND avl.package_name = g.package_name
         AND a.competitor_id IS NOT NULL;
 
@@ -58,10 +114,11 @@ async function reconcileVideoLinks() {
 
 async function scanCompetitor(...args) {
   const result = await scanner.scanCompetitor(...args);
-  // server.js processes the returned package list immediately after this
-  // resolves, so defer the relationship pass slightly. The library query can
-  // also join by package_name meanwhile, so there is no user-visible gap.
+  // server.js processes returned packages immediately after this resolves. The
+  // relationship pass is best-effort; package-filtered Video Library queries
+  // can already join by package_name in the meantime.
   setTimeout(() => { void reconcileVideoLinks(); }, 5000);
+  setTimeout(() => { void reconcileVideoLinks(); }, 30000);
   return result;
 }
 
