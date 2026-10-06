@@ -660,6 +660,8 @@ function App() {
   const [countryPerformanceSort, setCountryPerformanceSort] = useState("atlas_desc");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
   const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
+  const [selectedGameVideos, setSelectedGameVideos] = useState([]);
+  const [selectedGameVideosLoading, setSelectedGameVideosLoading] = useState(false);
   const [countryScanLibrary, setCountryScanLibrary] = useState([]);
   const [countryLibrarySearch, setCountryLibrarySearch] = useState("");
 
@@ -812,7 +814,9 @@ function App() {
 
     if (status.running || state === "starting" || state === "running" || state === "cancelling") {
       setIsScanning(true);
-      setViewMode("latest");
+      // Background progress polling must not steal the user's All time / Latest
+      // choice. Keeping All time selected makes the rest of Atlas usable while
+      // a long scan is running.
       return;
     }
 
@@ -1557,7 +1561,9 @@ function App() {
     if (targetCompId) localStorage.setItem("atlas_latest_comp_id", targetCompId);
     else localStorage.removeItem("atlas_latest_comp_id");
 
-    setViewMode("latest");
+    // Keep historical data visible while the new scan snapshot is still being
+    // built. Latest remains available if the user explicitly chooses it.
+    setViewMode("all");
     setIsScanning(true);
     setIsScanMinimized(false);
 
@@ -1841,6 +1847,35 @@ function App() {
   }, [isDrawerOpen, selectedGame?.package_name, selectedGame?.is_suspended, selectedGame?.suspension_country_scan, fetchLatestCountryScan]);
 
   useEffect(() => {
+    if (!isDrawerOpen || !selectedGame?.package_name) {
+      setSelectedGameVideos([]);
+      setSelectedGameVideosLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const packageName = selectedGame.package_name;
+    setSelectedGameVideos([]);
+    setSelectedGameVideosLoading(true);
+
+    fetchJson(API_BASE + "/api/video-assets?packageName=" + encodeURIComponent(packageName))
+      .then(payload => {
+        if (!cancelled) setSelectedGameVideos(Array.isArray(payload) ? payload : []);
+      })
+      .catch(error => {
+        if (!cancelled) {
+          console.warn("Game video lookup failed:", error?.message || error);
+          setSelectedGameVideos([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedGameVideosLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [isDrawerOpen, selectedGame?.package_name]);
+
+  useEffect(() => {
     const scanId = countryScanJob?.scanId;
     if (!scanId) return undefined;
 
@@ -2041,6 +2076,7 @@ function App() {
 
   const handleGameClick = useCallback((game) => {
     setSelectedGameCountryScan(null);
+    setSelectedGameVideos([]);
     setSelectedGame(game);
     setIsDrawerOpen(true);
   }, []);
@@ -2058,6 +2094,8 @@ function App() {
   const openGameFromStatPanel = useCallback((game) => {
     setActiveStatPanel(null);
     setStatPanelSearch("");
+    setSelectedGameCountryScan(null);
+    setSelectedGameVideos([]);
     setSelectedGame(game);
     setIsDrawerOpen(true);
   }, []);
@@ -4046,6 +4084,69 @@ function App() {
                   </div>
                 )}
               </div>
+
+              {(selectedGameVideosLoading || selectedGameVideos.length > 0) && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-xs text-text-muted flex items-center gap-2 font-bold">
+                      <span className="material-symbols-outlined text-[17px] text-electric-blue">video_library</span>
+                      Video creatives
+                    </h3>
+                    {!selectedGameVideosLoading && (
+                      <span className="font-mono text-[9px] text-text-muted bg-input-bg px-2.5 py-1 rounded-full border border-border-subtle">
+                        {selectedGameVideos.length} found
+                      </span>
+                    )}
+                  </div>
+
+                  {selectedGameVideosLoading ? (
+                    <div className="h-28 rounded-2xl border border-border-subtle bg-surface-glass flex items-center justify-center gap-2 text-xs text-text-muted">
+                      <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+                      Loading video creatives...
+                    </div>
+                  ) : (
+                    <div className="flex overflow-x-auto gap-3 pb-2 snap-x snap-mandatory custom-scrollbar">
+                      {selectedGameVideos.map((asset) => {
+                        const watchUrl = asset.youtubeUrl || (!asset.mediaUrlExpired ? asset.mediaUrl : null);
+                        const thumbnail = asset.thumbnailUrl || selectedGame.header_image || selectedGame.icon;
+                        return (
+                          <a
+                            key={asset.assetKey || asset.id}
+                            href={watchUrl || "#"}
+                            target={watchUrl ? "_blank" : undefined}
+                            rel={watchUrl ? "noreferrer" : undefined}
+                            onClick={(event) => { if (!watchUrl) event.preventDefault(); }}
+                            className="group/video relative w-[180px] h-[112px] flex-shrink-0 rounded-2xl overflow-hidden snap-start border border-border-subtle bg-black shadow-sm"
+                            title={watchUrl ? "Watch video creative" : "Video link unavailable"}
+                          >
+                            {thumbnail ? (
+                              <img loading="lazy" decoding="async" src={thumbnail} alt="Video creative" className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/video:scale-[1.02] transition-transform duration-200" />
+                            ) : (
+                              <div className="absolute inset-0 flex items-center justify-center text-white/60">
+                                <span className="material-symbols-outlined text-[30px]">movie</span>
+                              </div>
+                            )}
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/5 to-black/10" />
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="w-10 h-10 rounded-full bg-black/60 border border-white/20 backdrop-blur-sm text-white flex items-center justify-center">
+                                <span className="material-symbols-outlined text-[24px] ml-0.5">play_arrow</span>
+                              </span>
+                            </div>
+                            <div className="absolute left-2.5 right-2.5 bottom-2 flex items-center justify-between gap-2 text-white">
+                              <span className="text-[9px] font-medium truncate">
+                                {asset.source === "youtube" ? "YouTube" : "Direct video"}
+                              </span>
+                              <span className="text-[8px] bg-black/55 rounded-full px-1.5 py-0.5 flex-shrink-0">
+                                {Number(asset.adCount) || 0} ads
+                              </span>
+                            </div>
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {selectedGame.screenshots && (
                 <div className="flex flex-col gap-4">
