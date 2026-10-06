@@ -51,12 +51,19 @@ async function initializeCreativeOwnershipAccounting() {
         WHERE ac.game_id = g.id
       );
     `);
+    return true;
   } catch (error) {
     console.warn('📊 [Ads] Creative ownership accounting init skipped:', error.message);
+    return false;
   }
 }
 
-void initializeCreativeOwnershipAccounting();
+// server.js creates ad_creatives in its own startup initializer. Existing Atlas
+// databases have it already, while a fresh install can race this module import;
+// retry once after startup so the trigger is present in both cases.
+void initializeCreativeOwnershipAccounting().then(ok => {
+  if (!ok) setTimeout(() => { void initializeCreativeOwnershipAccounting(); }, 5000);
+});
 
 async function reconcileVideoLinks() {
   try {
