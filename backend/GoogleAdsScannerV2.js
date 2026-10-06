@@ -231,11 +231,95 @@ function extractVideoAssets(value) {
   return [...assets.values()];
 }
 
-async function persistCreativeVideos(creativeId, packageNames, assets, advertiserId) {
-  if (!assets.length || !packageNames.length) return;
+function getFrameEvidence(frameEvidence, frame) {
+  if (!frame) return null;
+  let evidence = frameEvidence.get(frame);
+  if (!evidence) {
+    evidence = {
+      packages: new Set(),
+      videos: new Map(),
+      url: frame.url() || ''
+    };
+    frameEvidence.set(frame, evidence);
+  }
+  return evidence;
+}
+
+function addFramePackages(frameEvidence, frame, packages) {
+  const evidence = getFrameEvidence(frameEvidence, frame);
+  if (!evidence) return;
+  for (const pkg of packages || []) evidence.packages.add(pkg);
+}
+
+function addFrameVideo(frameEvidence, frame, asset) {
+  const evidence = getFrameEvidence(frameEvidence, frame);
+  if (!evidence) return;
+  mergeVideoAsset(evidence.videos, asset);
+}
+
+function buildFrameScopedVideoAttribution(frameEvidence, allVideoMap) {
+  const claimsByAsset = new Map();
+
+  for (const evidence of frameEvidence.values()) {
+    // Attribution requires one explicit Play Store package and the video to be
+    // observed in the exact same creative iframe. Package keys from unrelated
+    // page state and videos in sibling frames are intentionally not combined.
+    if (evidence.packages.size !== 1 || evidence.videos.size === 0) continue;
+    const [packageName] = [...evidence.packages];
+
+    for (const [assetKey, asset] of evidence.videos.entries()) {
+      if (!assetKey) continue;
+      let claim = claimsByAsset.get(assetKey);
+      if (!claim) {
+        claim = { asset, packages: new Set() };
+        claimsByAsset.set(assetKey, claim);
+      } else {
+        claim.asset = { ...claim.asset, ...asset };
+      }
+      claim.packages.add(packageName);
+    }
+  }
+
+  const packageAssets = new Map();
+  const assignedAssetKeys = new Set();
+
+  for (const [assetKey, claim] of claimsByAsset.entries()) {
+    // If the same asset appears in two frames pointing at different apps, keep
+    // it global-only instead of guessing which app owns it.
+    if (claim.packages.size !== 1) continue;
+    const [packageName] = [...claim.packages];
+    if (!packageAssets.has(packageName)) packageAssets.set(packageName, new Map());
+    mergeVideoAsset(packageAssets.get(packageName), claim.asset);
+    assignedAssetKeys.add(assetKey);
+  }
+
+  const unassignedAssets = [];
+  for (const [assetKey, asset] of allVideoMap.entries()) {
+    if (!assignedAssetKeys.has(assetKey)) unassignedAssets.push(asset);
+  }
+
+  return {
+    packageAssets: new Map(
+      [...packageAssets.entries()].map(([packageName, assets]) => [packageName, [...assets.values()]])
+    ),
+    unassignedAssets,
+    assignedAssetCount: assignedAssetKeys.size
+  };
+}
+
+async function persistCreativeVideos(creativeId, packageAssets, allAssets, advertiserId) {
+  if (!Array.isArray(allAssets) || allAssets.length === 0) return;
+
   try {
     await ensureVideoDb();
-    for (const packageName of packageNames) {
+    const assignedKeys = new Set();
+
+    for (const [packageName, assets] of packageAssets.entries()) {
+      if (!assets.length) continue;
+      for (const asset of assets) {
+        const key = stableAssetKey(asset);
+        if (key) assignedKeys.add(key);
+      }
       await persistVideoAssets(videoPool, {
         creativeId,
         packageName,
@@ -245,12 +329,30 @@ async function persistCreativeVideos(creativeId, packageNames, assets, advertise
         assets
       });
     }
+
+    const unassignedAssets = allAssets.filter(asset => {
+      const key = stableAssetKey(asset);
+      return key && !assignedKeys.has(key);
+    });
+
+    if (unassignedAssets.length) {
+      // Keep uncertain videos available in the global Video Library without
+      // claiming they belong to a particular package/game.
+      await persistVideoAssets(videoPool, {
+        creativeId,
+        packageName: '',
+        gameId: null,
+        competitorId: null,
+        advertiserId,
+        assets: unassignedAssets
+      });
+    }
   } catch (error) {
     console.error('🎬 [Video] Failed to persist creative video:', creativeId, error.message);
   }
 }
 
-async function inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap) {
+async function inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap, frameEvidence) {
   const creativeFrames = adPage.frames().filter(frame => {
     if (frame === adPage.mainFrame()) return false;
     return !(frame.url() || '').includes('/sadbundle/');
@@ -259,8 +361,14 @@ async function inspectCreativePage(adPage, primaryPackages, fallbackPackages, vi
   for (const frame of creativeFrames) {
     try {
       const html = await frame.content();
-      extractStorePackages(html).forEach(pkg => primaryPackages.add(pkg));
-      extractVideoAssets(html).forEach(asset => mergeVideoAsset(videoMap, asset));
+      const storePackages = extractStorePackages(html);
+      storePackages.forEach(pkg => primaryPackages.add(pkg));
+      addFramePackages(frameEvidence, frame, storePackages);
+
+      for (const asset of extractVideoAssets(html)) {
+        mergeVideoAsset(videoMap, asset);
+        addFrameVideo(frameEvidence, frame, asset);
+      }
     } catch {}
   }
 
@@ -268,6 +376,9 @@ async function inspectCreativePage(adPage, primaryPackages, fallbackPackages, vi
     for (const frame of creativeFrames) {
       try {
         const html = await frame.content();
+        // Package keys help identify the game for Atlas discovery, but they are
+        // not strong enough to assign a video. Only an explicit Play Store link
+        // in the same iframe is used for video attribution.
         extractPackageKeys(html).forEach(pkg => primaryPackages.add(pkg));
       } catch {}
     }
@@ -286,7 +397,7 @@ async function inspectCreativePage(adPage, primaryPackages, fallbackPackages, vi
   };
 }
 
-async function waitForCreativeSignals(adPage, primaryPackages, fallbackPackages, videoMap) {
+async function waitForCreativeSignals(adPage, primaryPackages, fallbackPackages, videoMap, frameEvidence) {
   const startedAt = Date.now();
   let packageDetectedAt = null;
 
@@ -294,7 +405,7 @@ async function waitForCreativeSignals(adPage, primaryPackages, fallbackPackages,
     const elapsed = Date.now() - startedAt;
     if (checkpoint > elapsed) await adPage.waitForTimeout(checkpoint - elapsed);
 
-    const state = await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap);
+    const state = await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap, frameEvidence);
     if (state.packageCount > 0 && packageDetectedAt === null) packageDetectedAt = Date.now();
 
     if (packageDetectedAt !== null) {
@@ -302,12 +413,12 @@ async function waitForCreativeSignals(adPage, primaryPackages, fallbackPackages,
       if (settleElapsed < CREATIVE_SETTLE_AFTER_PACKAGE_MS) {
         await adPage.waitForTimeout(CREATIVE_SETTLE_AFTER_PACKAGE_MS - settleElapsed);
       }
-      await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap);
+      await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap, frameEvidence);
       return;
     }
   }
 
-  await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap);
+  await inspectCreativePage(adPage, primaryPackages, fallbackPackages, videoMap, frameEvidence);
 }
 
 async function discoverCreativeIds(searchPage, adIds, maxAdsToTest, isCancelled, emitProgress) {
@@ -550,24 +661,35 @@ async function scanCompetitor(
           const primaryPackages = new Set();
           const fallbackPackages = new Set();
           const videoMap = new Map();
+          const frameEvidence = new Map();
 
           await adPage.goto('about:blank', { waitUntil: 'commit', timeout: 5000 }).catch(() => {});
 
           const requestHandler = req => {
             const requestUrl = req.url();
-            const mediaAsset = /googlevideo\.com\/videoplayback|\.(?:mp4|webm)(?:\?|$)/i.test(requestUrl)
-              ? parseMediaUrl(requestUrl)
-              : null;
-            if (mediaAsset) mergeVideoAsset(videoMap, mediaAsset);
-
-            const packages = extractStorePackages(requestUrl);
-            if (!packages.length) return;
             let frame = null;
             try { frame = req.frame(); } catch {}
             const frameUrl = frame ? frame.url() || '' : '';
             if (frameUrl.includes('/sadbundle/')) return;
-            const bucket = frame && frame !== adPage.mainFrame() ? primaryPackages : fallbackPackages;
-            packages.forEach(pkg => bucket.add(pkg));
+            const isCreativeFrame = frame && frame !== adPage.mainFrame();
+
+            const mediaAsset = /googlevideo\.com\/videoplayback|\.(?:mp4|webm)(?:\?|$)/i.test(requestUrl)
+              ? parseMediaUrl(requestUrl)
+              : null;
+            if (mediaAsset) {
+              mergeVideoAsset(videoMap, mediaAsset);
+              if (isCreativeFrame) addFrameVideo(frameEvidence, frame, mediaAsset);
+            }
+
+            const packages = extractStorePackages(requestUrl);
+            if (!packages.length) return;
+
+            if (isCreativeFrame) {
+              packages.forEach(pkg => primaryPackages.add(pkg));
+              addFramePackages(frameEvidence, frame, packages);
+            } else {
+              packages.forEach(pkg => fallbackPackages.add(pkg));
+            }
           };
 
           adPage.on('request', requestHandler);
@@ -580,14 +702,18 @@ async function scanCompetitor(
               console.log(`🟡 [DEBUG] [Ad ${i + 1}] Navigation timed out; inspecting loaded creative.`);
             }
 
-            await waitForCreativeSignals(adPage, primaryPackages, fallbackPackages, videoMap);
+            await waitForCreativeSignals(adPage, primaryPackages, fallbackPackages, videoMap, frameEvidence);
 
             const uniqueInAd = [...(primaryPackages.size ? primaryPackages : fallbackPackages)];
             const videoAssets = [...videoMap.values()];
+            const attribution = buildFrameScopedVideoAttribution(frameEvidence, videoMap);
 
-            if (uniqueInAd.length && videoAssets.length) {
-              console.log(`🎬 [Video] Ad ${i + 1}: detected ${videoAssets.length} video asset(s).`);
-              await persistCreativeVideos(adId, uniqueInAd, videoAssets, arId);
+            if (videoAssets.length) {
+              console.log(
+                `🎬 [Video] Ad ${i + 1}: detected ${videoAssets.length} asset(s); ` +
+                `${attribution.assignedAssetCount} frame-attributed.`
+              );
+              await persistCreativeVideos(adId, attribution.packageAssets, videoAssets, arId);
             }
 
             try {
@@ -608,7 +734,8 @@ async function scanCompetitor(
 
             if (uniqueInAd.length) {
               for (const pkg of uniqueInAd) {
-                allFoundPackagesArray.push({ creativeId: adId, package: pkg, videoAssets });
+                const packageVideos = attribution.packageAssets.get(pkg) || [];
+                allFoundPackagesArray.push({ creativeId: adId, package: pkg, videoAssets: packageVideos });
                 await onPackageFound(pkg);
               }
 
@@ -616,7 +743,9 @@ async function scanCompetitor(
               emitProgress(
                 completed,
                 idArray.length,
-                `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}${videoAssets.length ? ` · 🎬 ${videoAssets.length} video` : ''}`
+                `> ✅ Ad ${i + 1}: Found ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}` +
+                `${videoAssets.length ? ` · 🎬 ${videoAssets.length} video${videoAssets.length === 1 ? '' : 's'}` : ''}` +
+                `${attribution.assignedAssetCount ? ` · ${attribution.assignedAssetCount} attributed` : ''}`
               );
             } else {
               completed += 1;
@@ -661,5 +790,6 @@ async function scanCompetitor(
 module.exports = {
   scanCompetitor,
   extractVideoAssets,
-  youtubeIdFromText
+  youtubeIdFromText,
+  buildFrameScopedVideoAttribution
 };
