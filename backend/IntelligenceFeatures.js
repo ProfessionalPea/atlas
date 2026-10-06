@@ -231,7 +231,7 @@ async function touchCreativeVideoAssets(pool, creativeId) {
   );
 }
 
-async function getVideoLibrary(pool) {
+async function getVideoLibrary(pool, packageName = null) {
   const { rows } = await pool.query(`
     SELECT
       va.id, va.asset_key, va.source, va.youtube_id, va.youtube_url,
@@ -266,9 +266,18 @@ async function getVideoLibrary(pool) {
     LEFT JOIN account_games ag ON ag.game_id = g.id
     LEFT JOIN accounts a ON a.id = ag.account_id
     LEFT JOIN competitors c ON c.id = COALESCE(avl.competitor_id, a.competitor_id)
+    WHERE (
+      $1::text IS NULL
+      OR EXISTS (
+        SELECT 1
+        FROM ad_video_links package_link
+        WHERE package_link.asset_id = va.id
+          AND LOWER(package_link.package_name) = LOWER($1)
+      )
+    )
     GROUP BY va.id
     ORDER BY va.last_seen_at DESC, va.id DESC
-  `);
+  `, [packageName ? String(packageName).trim() : null]);
 
   return rows.map(row => {
     const expiresAt = row.media_url_expires_at || null;
@@ -340,10 +349,11 @@ async function getGameKeywordAnalysis(pool, gplay, selector, value) {
 }
 
 function registerIntelligenceRoutes({ app, pool, gplay }) {
-  app.get('/api/video-assets', async (_req, res) => {
+  app.get('/api/video-assets', async (req, res) => {
     try {
+      const packageName = String(req.query.packageName || '').trim() || null;
       res.set('Cache-Control', 'no-store');
-      return res.json(await getVideoLibrary(pool));
+      return res.json(await getVideoLibrary(pool, packageName));
     } catch (error) {
       console.error('Video library fetch failed:', error);
       return res.status(500).json({ error: 'Unable to load video library.' });
