@@ -10,6 +10,7 @@ const {
   initializeVideoLifecycle,
   registerVideoLifecycleRoutes
 } = require('./VideoLifecycle');
+const { registerVideoMetadataRoutes } = require('./VideoLibraryMetadata');
 
 const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
 const extensionPool = new Pool({
@@ -37,6 +38,11 @@ const originalListen = express.application.listen;
 express.application.listen = function atlasExtensionListen(...args) {
   if (!registered) {
     registered = true;
+    // Register the canonical creative -> game metadata route before the legacy
+    // intelligence route so /api/video-assets resolves titles/publishers from
+    // ad_creatives even when strict frame attribution intentionally left the
+    // video link itself unassigned.
+    registerVideoMetadataRoutes({ app: this, pool: extensionPool });
     registerIntelligenceRoutes({ app: this, pool: extensionPool, gplay });
     registerVideoLifecycleRoutes({ app: this, pool: extensionPool });
   }
