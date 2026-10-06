@@ -1,6 +1,6 @@
 const { analyzeGameKeywords } = require('./KeywordAnalyzer');
 
-const VIDEO_ATTRIBUTION_VERSION = 2;
+const VIDEO_ATTRIBUTION_VERSION = 3;
 const clearedCreativeLinks = new Set();
 
 function normalizeHttpUrl(value) {
@@ -278,15 +278,11 @@ async function persistCreativeExtractionCache(pool, {
       .filter(Boolean)
   )];
 
-  // A creative that exposes more than one mobile package is ambiguous: the
-  // page can contain recommendation/companion links that do not own the video.
-  // Keep the asset in the global Video Library, but do not claim it belongs to
-  // any individual game. A later, more precise extractor can safely rebuild it.
-  if (normalizedPackages.length > 1 && Number(videoCount) > 0) {
-    await collapseAmbiguousCreativeLinks(pool, id);
-  } else if (normalizedPackages.length === 0 || Number(videoCount) <= 0) {
-    // If the fresh deep scan no longer sees a usable video/package pairing,
-    // remove historical links so stale attribution cannot survive forever.
+  // Video/package attribution is resolved by the scanner at iframe level.
+  // Multiple packages in the overall creative are therefore not enough to
+  // invalidate a package link if a particular video was proven inside one
+  // unambiguous frame. Only a fresh scan with no videos should clear links.
+  if (Number(videoCount) <= 0) {
     await pool.query(`DELETE FROM ad_video_links WHERE creative_id = $1`, [id]);
   }
 
