@@ -273,6 +273,14 @@ async function getVideoLibrary(pool, packageName = null) {
         FROM ad_video_links package_link
         WHERE package_link.asset_id = va.id
           AND LOWER(package_link.package_name) = LOWER($1)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ad_video_links competing_link
+            WHERE competing_link.asset_id = package_link.asset_id
+              AND competing_link.creative_id = package_link.creative_id
+              AND COALESCE(competing_link.package_name, '') <> ''
+              AND LOWER(competing_link.package_name) <> LOWER(package_link.package_name)
+          )
       )
     )
     GROUP BY va.id
