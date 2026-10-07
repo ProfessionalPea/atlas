@@ -26,7 +26,7 @@ function registerVideoMetadataRoutes({ app, pool }) {
                 NULLIF(avl.package_name, ''),
                 g.package_name
               ),
-              'publisherName', COALESCE(a.publisher_name, g.publisher_name),
+              'publisherName', a.publisher_name,
               'competitorName', c.name,
               'icon', g.icon,
               'headerImage', g.header_image,
