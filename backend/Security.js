@@ -3,7 +3,7 @@ const { Pool } = require("pg");
 
 const SCRYPT_KEY_LENGTH = 64;
 const SCRYPT_PARAMS = Object.freeze({ N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
-const MIN_PRODUCTION_SECRET_BYTES = 32;
+const MIN_SESSION_SECRET_BYTES = 32;
 const MIN_BOOTSTRAP_PASSWORD_LENGTH = 12;
 
 // SHA-256 digests of the historical public default passwords. Keeping only the
@@ -65,10 +65,13 @@ function createDatabaseConfig() {
 
   let ssl;
   if (["disable", "off", "false"].includes(requestedMode)) {
-    if (isProduction() && !allowInsecure) {
+    if (!localDatabase && !allowInsecure) {
       throw new Error(
-        "Refusing to disable database TLS in production. Use verified TLS or explicitly set ATLAS_ALLOW_INSECURE_DB_TLS=true for an exceptional trusted-network deployment."
+        "Refusing an unencrypted remote database connection. Use verified TLS or explicitly set ATLAS_ALLOW_INSECURE_DB_TLS=true for an exceptional trusted-network deployment."
       );
+    }
+    if (!localDatabase) {
+      console.warn("⚠️ [SECURITY] Remote database TLS is explicitly disabled.");
     }
     ssl = false;
   } else if (["no-verify", "insecure", "require"].includes(requestedMode)) {
@@ -103,7 +106,7 @@ function getSessionSecret() {
   const configured = String(process.env.ATLAS_SESSION_SECRET || "").trim();
   const configuredBytes = Buffer.byteLength(configured, "utf8");
 
-  if (configured && (!isProduction() || configuredBytes >= MIN_PRODUCTION_SECRET_BYTES)) {
+  if (configuredBytes >= MIN_SESSION_SECRET_BYTES) {
     return configured;
   }
 
@@ -112,7 +115,7 @@ function getSessionSecret() {
       throw new Error("ATLAS_SESSION_SECRET must be set in production.");
     }
     throw new Error(
-      `ATLAS_SESSION_SECRET must be at least ${MIN_PRODUCTION_SECRET_BYTES} bytes in production.`
+      `ATLAS_SESSION_SECRET must be at least ${MIN_SESSION_SECRET_BYTES} bytes in production.`
     );
   }
 
