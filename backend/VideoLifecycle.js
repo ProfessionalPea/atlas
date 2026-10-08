@@ -84,9 +84,85 @@ async function clearVideoLibrary(pool) {
   }
 }
 
+async function deleteVideoAsset(pool, assetId) {
+  const id = Number(assetId);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    const error = new Error('Invalid video asset id.');
+    error.code = 'INVALID_VIDEO_ASSET_ID';
+    throw error;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const assetResult = await client.query(`
+      SELECT
+        va.id,
+        va.asset_key,
+        va.source,
+        va.youtube_id,
+        (
+          SELECT COUNT(*)::int
+          FROM ad_video_links avl
+          WHERE avl.asset_id = va.id
+        ) AS link_count
+      FROM video_assets va
+      WHERE va.id = $1
+      FOR UPDATE
+    `, [id]);
+
+    const asset = assetResult.rows[0];
+    if (!asset) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    // ad_video_links.asset_id uses ON DELETE CASCADE, so deleting the asset
+    // removes only this video's relationships without touching the ad creative,
+    // game, publisher, competitor, or extraction cache records.
+    await client.query('DELETE FROM video_assets WHERE id = $1', [id]);
+    await client.query('COMMIT');
+
+    return {
+      id: Number(asset.id),
+      assetKey: asset.asset_key,
+      source: asset.source,
+      youtubeId: asset.youtube_id || null,
+      links: Number(asset.link_count) || 0
+    };
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function registerVideoLifecycleRoutes({ app, pool }) {
   // Admin-only automatically because Atlas's existing /api middleware has
   // already been registered before extension routes are attached.
+  app.delete('/api/video-assets/:assetId', async (req, res) => {
+    try {
+      const deleted = await deleteVideoAsset(pool, req.params.assetId);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Video asset not found.' });
+      }
+
+      return res.json({
+        status: 'success',
+        message: 'Video asset deleted.',
+        deleted
+      });
+    } catch (error) {
+      if (error?.code === 'INVALID_VIDEO_ASSET_ID') {
+        return res.status(400).json({ error: error.message });
+      }
+      console.error('Video asset delete failed:', error);
+      return res.status(500).json({ error: 'Unable to delete video asset.' });
+    }
+  });
+
   app.delete('/api/video-assets', async (_req, res) => {
     try {
       const deleted = await clearVideoLibrary(pool);
@@ -109,5 +185,6 @@ function registerVideoLifecycleRoutes({ app, pool }) {
 module.exports = {
   initializeVideoLifecycle,
   registerVideoLifecycleRoutes,
-  clearVideoLibrary
+  clearVideoLibrary,
+  deleteVideoAsset
 };
