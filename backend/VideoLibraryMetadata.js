@@ -15,7 +15,8 @@ function registerVideoMetadataRoutes({ app, pool }) {
               ''
             ) AS creative_package,
             CASE
-              WHEN cec.package_names IS NOT NULL
+              WHEN cec.extraction_version = 4
+                AND cec.package_names IS NOT NULL
                 AND jsonb_typeof(cec.package_names) = 'array'
                 AND jsonb_array_length(cec.package_names) = 1
               THEN NULLIF(LOWER(cec.package_names ->> 0), '')
@@ -103,11 +104,11 @@ function registerVideoMetadataRoutes({ app, pool }) {
           stats.creative_ids,
           stats.creative_urls,
           CASE
-            WHEN resolution.linked_package_count = 1 AND g.id IS NOT NULL THEN
+            WHEN resolution.linked_package_count = 1 THEN
               JSONB_BUILD_ARRAY(JSONB_BUILD_OBJECT(
                 'id', g.id,
-                'title', COALESCE(g.title, g.package_name),
-                'packageName', g.package_name,
+                'title', COALESCE(g.title, g.package_name, resolution.resolved_package),
+                'packageName', COALESCE(g.package_name, resolution.resolved_package),
                 'publisherName', owner.publisher_name,
                 'competitorName', owner.competitor_name,
                 'icon', g.icon,
