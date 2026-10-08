@@ -361,14 +361,6 @@ async function clearCreativeDerivedData(creativeId) {
   await pool.query('DELETE FROM ad_video_links WHERE creative_id = $1', [creativeId]);
 }
 
-async function clearUnresolvedCreativeOwnership(creativeId) {
-  try {
-    await pool.query('DELETE FROM ad_creatives WHERE creative_id = $1', [creativeId]);
-  } catch (error) {
-    console.warn('🧭 [Resolver] Could not clear unresolved creative ownership:', creativeId, error.message);
-  }
-}
-
 async function persistAsset(asset) {
   const key = stableAssetKey(asset);
   if (!key) return null;
@@ -796,7 +788,11 @@ async function scanCompetitor(
               );
             } else {
               unresolved += 1;
-              await clearUnresolvedCreativeOwnership(creativeId);
+              // A failed frame-level resolver must not erase Atlas's canonical
+              // creative ownership. The outer scan may already have a trusted
+              // creative -> game mapping, and Video Library metadata uses that
+              // as supporting evidence only when every signal for an asset
+              // agrees on one package.
               completed += 1;
               emitProgress(
                 completed,
