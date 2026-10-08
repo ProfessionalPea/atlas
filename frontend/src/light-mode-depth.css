@@ -1,0 +1,141 @@
+/* Atlas light-mode depth experiment -----------------------------------------
+   Dark mode intentionally remains untouched. This layer gives light mode a
+   more deliberate canvas/card/control hierarchy with restrained soft-depth
+   cues rather than full neumorphism. */
+
+:root:not(.dark) {
+  --bg-base: 244 247 251;
+  --surface-solid: 255 255 255;
+  --surface-glass: 249 251 254;
+  --input-bg: 241 245 249;
+
+  --text-main: 17 24 39;
+  --text-muted: 82 96 113;
+  --border-subtle: 214 221 230;
+
+  --primary-container: 231 239 253;
+  --on-primary-container: 29 78 150;
+
+  --shadow-main: 0 1px 2px rgba(15, 23, 42, 0.035), 0 12px 30px rgba(15, 23, 42, 0.055);
+  --shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.05), 0 16px 36px rgba(15, 23, 42, 0.08);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 5px 14px rgba(15, 23, 42, 0.045);
+  --shadow-sm-hover: 0 2px 4px rgba(15, 23, 42, 0.055), 0 8px 18px rgba(15, 23, 42, 0.065);
+}
+
+html:not(.dark),
+html:not(.dark) body {
+  background: rgb(var(--bg-base));
+}
+
+/* Persistent chrome should read as a separate product layer, not disappear
+   into the canvas. */
+html:not(.dark) .fixed.top-0.left-0.right-0.h-16 {
+  background: rgba(255, 255, 255, 0.92) !important;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.07), 0 4px 18px rgba(15, 23, 42, 0.035);
+}
+
+html:not(.dark) aside {
+  background: rgba(248, 250, 253, 0.96);
+  box-shadow: 1px 0 0 rgba(15, 23, 42, 0.07);
+}
+
+/* Large product surfaces get an ambient edge + soft lift. This is the small
+   amount of neumorphic depth: enough to define hierarchy, never enough to make
+   controls ambiguous. */
+html:not(.dark) main :is(section, article, div)[class*="rounded-[24px]"][class*="bg-surface-solid"],
+html:not(.dark) main :is(section, article, div)[class*="rounded-[22px]"][class*="bg-surface-solid"] {
+  border-color: rgba(203, 213, 225, 0.9) !important;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.035),
+    0 10px 28px rgba(15, 23, 42, 0.045) !important;
+}
+
+/* Compact dashboard/stat cards can carry slightly more lift so the bento
+   rhythm is visible against the tinted canvas. */
+html:not(.dark) main [class*="grid"] > [class*="rounded-[24px]"][class*="bg-surface-solid"] {
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 22px rgba(15, 23, 42, 0.05) !important;
+}
+
+/* Inputs read as inset controls instead of white cards inside white cards. */
+html:not(.dark) input.bg-input-bg,
+html:not(.dark) textarea.bg-input-bg,
+html:not(.dark) select.bg-input-bg {
+  background: rgb(var(--input-bg));
+  border-color: rgba(203, 213, 225, 0.82) !important;
+  box-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+html:not(.dark) input.bg-input-bg:focus,
+html:not(.dark) textarea.bg-input-bg:focus,
+html:not(.dark) select.bg-input-bg:focus {
+  background: #ffffff;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.10),
+    inset 0 1px 2px rgba(15, 23, 42, 0.025);
+}
+
+/* Raised icon actions get a tactile cue without turning into glossy skeuomorphs. */
+html:not(.dark) button.bg-surface-solid.border,
+html:not(.dark) a.bg-surface-solid.border {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.045), 0 3px 8px rgba(15, 23, 42, 0.035);
+}
+
+html:not(.dark) button.bg-surface-solid.border:hover,
+html:not(.dark) a.bg-surface-solid.border:hover {
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.055), 0 5px 12px rgba(15, 23, 42, 0.05);
+}
+
+/* Selected navigation remains blue, but is softer and more Apple/Google-like. */
+html:not(.dark) .bg-primary-container {
+  background-color: rgb(229 238 252 / 0.95);
+}
+
+/* Video Library lives in its own fixed surface. Give it the same tonal canvas
+   as the rest of Atlas so switching sections does not feel like another app. */
+html:not(.dark) .atlas-google-shell.fixed {
+  background: rgb(var(--bg-base)) !important;
+}
+
+html:not(.dark) .atlas-google-shell article.bg-surface-solid,
+html:not(.dark) .atlas-google-shell [class*="rounded-[24px]"][class*="bg-surface-solid"] {
+  border-color: rgba(203, 213, 225, 0.9) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035), 0 10px 28px rgba(15, 23, 42, 0.045);
+}
+
+/* Discovery Pulse bento ------------------------------------------------------ */
+html:not(.dark) .atlas-discovery-pulse {
+  border-color: rgba(203, 213, 225, 0.92) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035), 0 12px 30px rgba(15, 23, 42, 0.055) !important;
+}
+
+html:not(.dark) .atlas-pulse-intro {
+  background:
+    radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.12), transparent 52%),
+    rgb(247 250 255);
+  border-color: rgba(191, 219, 254, 0.9) !important;
+}
+
+html:not(.dark) .atlas-pulse-tile {
+  background: rgb(248 250 252);
+  border-color: rgba(203, 213, 225, 0.88) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+html:not(.dark) .atlas-pulse-tile[data-tone="positive"] {
+  background: linear-gradient(145deg, rgba(236, 253, 245, 0.9), rgba(248, 250, 252, 0.96));
+  border-color: rgba(167, 243, 208, 0.8) !important;
+}
+
+/* Scrollbars should belong to the canvas rather than forming a contrasting
+   strip at the right edge. */
+html:not(.dark) ::-webkit-scrollbar-track {
+  background: rgb(var(--bg-base));
+}
+
+html:not(.dark) .custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -43,50 +43,69 @@ const CompetitivePulse = memo(function CompetitivePulse({ historyData }) {
   }, [historyData]);
 
   return (
-    <section className="w-full rounded-[24px] border border-border-subtle bg-surface-solid shadow-sm px-4 py-4 md:px-5 md:py-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0 lg:max-w-[280px]">
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-electric-blue text-[20px]">insights</span>
-            <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Discovery pulse</h2>
+    <section className="atlas-discovery-pulse w-full rounded-[24px] border border-border-subtle bg-surface-solid p-3.5 shadow-sm md:p-4">
+      <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 lg:grid-cols-12">
+        <div className="atlas-pulse-intro rounded-2xl border border-border-subtle bg-input-bg/55 p-4 md:p-5 lg:col-span-4">
+          <div className="flex h-full min-h-[108px] flex-col justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-electric-blue/10 text-electric-blue">
+                  <span className="material-symbols-outlined text-[19px]">insights</span>
+                </span>
+                <div>
+                  <h2 className="text-sm font-semibold tracking-tight text-text-main md:text-base">Discovery pulse</h2>
+                  <p className="mt-0.5 text-[10px] text-text-muted">Competitive movement at a glance</p>
+                </div>
+              </div>
+            </div>
+            <p className="mt-4 text-[10px] leading-5 text-text-muted md:text-[11px]">
+              {pulse.ready
+                ? `Changes since the previous Atlas snapshot · ${pulse.latestLabel}`
+                : "Run at least two scans to see meaningful discovery changes."}
+            </p>
           </div>
-          <p className="mt-1 text-[10px] md:text-xs leading-5 text-text-muted">
-            {pulse.ready
-              ? `What changed since the previous Atlas snapshot · ${pulse.latestLabel}`
-              : "Run at least two scans to see meaningful discovery changes."}
-          </p>
         </div>
 
-        <div className="grid flex-1 grid-cols-2 gap-2.5 md:grid-cols-3 lg:max-w-[860px]">
-          <div className="rounded-2xl border border-border-subtle bg-input-bg/55 px-3.5 py-3">
-            <div className="text-[10px] text-text-muted">New discoveries</div>
-            <div className="mt-1 text-xl font-semibold tracking-tight text-text-main tabular-nums">
-              {pulse.ready ? formatDelta(pulse.newDiscoveries) : "—"}
+        <div className="atlas-pulse-tile rounded-2xl border border-border-subtle bg-input-bg/55 p-4 lg:col-span-2" data-tone="positive">
+          <div className="flex h-full min-h-[108px] flex-col justify-between">
+            <div className="text-[10px] font-medium text-text-muted">New discoveries</div>
+            <div>
+              <div className="text-[28px] font-semibold tracking-[-0.03em] text-text-main tabular-nums">
+                {pulse.ready ? formatDelta(pulse.newDiscoveries) : "—"}
+              </div>
+              <div className="mt-1 text-[9px] text-text-muted">since prior snapshot</div>
             </div>
-            <div className="mt-0.5 text-[9px] text-text-muted">since prior snapshot</div>
           </div>
+        </div>
 
-          <div className="rounded-2xl border border-border-subtle bg-input-bg/55 px-3.5 py-3">
-            <div className="text-[10px] text-text-muted">Competitors moving</div>
-            <div className="mt-1 text-xl font-semibold tracking-tight text-text-main tabular-nums">
-              {pulse.ready ? `${pulse.movingCompetitors}/${pulse.competitorCount}` : "—"}
+        <div className="atlas-pulse-tile rounded-2xl border border-border-subtle bg-input-bg/55 p-4 lg:col-span-3">
+          <div className="flex h-full min-h-[108px] flex-col justify-between">
+            <div className="text-[10px] font-medium text-text-muted">Competitors moving</div>
+            <div>
+              <div className="text-[28px] font-semibold tracking-[-0.03em] text-text-main tabular-nums">
+                {pulse.ready ? `${pulse.movingCompetitors}/${pulse.competitorCount}` : "—"}
+              </div>
+              <div className="mt-1 text-[9px] text-text-muted">with new games detected</div>
             </div>
-            <div className="mt-0.5 text-[9px] text-text-muted">with new games detected</div>
           </div>
+        </div>
 
-          <div className="col-span-2 rounded-2xl border border-border-subtle bg-input-bg/55 px-3.5 py-3 md:col-span-1">
-            <div className="text-[10px] text-text-muted">Largest mover</div>
-            <div className="mt-1 flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-sm font-semibold text-text-main">
-                {pulse.ready ? (pulse.biggestMover?.name || "No change") : "—"}
-              </span>
-              {pulse.biggestMover && (
-                <span className="flex-shrink-0 text-[10px] font-semibold text-emerald-metric tabular-nums">
-                  +{pulse.biggestMover.delta}
+        <div className="atlas-pulse-tile rounded-2xl border border-border-subtle bg-input-bg/55 p-4 md:col-span-2 lg:col-span-3">
+          <div className="flex h-full min-h-[108px] flex-col justify-between">
+            <div className="text-[10px] font-medium text-text-muted">Largest mover</div>
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="truncate text-base font-semibold text-text-main">
+                  {pulse.ready ? (pulse.biggestMover?.name || "No change") : "—"}
                 </span>
-              )}
+                {pulse.biggestMover && (
+                  <span className="flex-shrink-0 rounded-full bg-emerald-metric/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-metric tabular-nums">
+                    +{pulse.biggestMover.delta}
+                  </span>
+                )}
+              </div>
+              <div className="mt-1.5 text-[9px] text-text-muted">new games in latest interval</div>
             </div>
-            <div className="mt-1 text-[9px] text-text-muted">new games in latest interval</div>
           </div>
         </div>
       </div>
