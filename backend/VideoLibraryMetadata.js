@@ -3,86 +3,123 @@ function registerVideoMetadataRoutes({ app, pool }) {
     try {
       const packageName = String(req.query.packageName || '').trim() || null;
       const { rows } = await pool.query(`
-        WITH asset_link_summary AS (
+        WITH asset_links AS (
           SELECT
-            asset_id,
-            COUNT(DISTINCT NULLIF(LOWER(package_name), ''))::int AS linked_package_count
-          FROM ad_video_links
-          GROUP BY asset_id
+            avl.asset_id,
+            avl.creative_id,
+            avl.creative_url,
+            NULLIF(LOWER(avl.package_name), '') AS frame_package,
+            NULLIF(LOWER(COALESCE(ac.package_name, creative_game.package_name)), '') AS creative_package
+          FROM ad_video_links avl
+          LEFT JOIN ad_creatives ac
+            ON ac.creative_id = avl.creative_id
+          LEFT JOIN games creative_game
+            ON creative_game.id = ac.game_id
+        ),
+        asset_package_evidence AS (
+          SELECT asset_id, frame_package AS package_name, 'frame'::text AS source
+          FROM asset_links
+          WHERE frame_package IS NOT NULL
+
+          UNION ALL
+
+          SELECT asset_id, creative_package AS package_name, 'creative'::text AS source
+          FROM asset_links
+          WHERE creative_package IS NOT NULL
+        ),
+        asset_resolution AS (
+          SELECT
+            ids.asset_id,
+            COUNT(DISTINCT evidence.package_name)::int AS linked_package_count,
+            COUNT(DISTINCT evidence.package_name)
+              FILTER (WHERE evidence.source = 'frame')::int AS strict_package_count,
+            CASE
+              WHEN COUNT(DISTINCT evidence.package_name) = 1
+                THEN MIN(evidence.package_name)
+              ELSE NULL
+            END AS resolved_package
+          FROM (SELECT DISTINCT asset_id FROM asset_links) ids
+          LEFT JOIN asset_package_evidence evidence
+            ON evidence.asset_id = ids.asset_id
+          GROUP BY ids.asset_id
+        ),
+        asset_stats AS (
+          SELECT
+            avl.asset_id,
+            COUNT(DISTINCT avl.creative_id)::int AS ad_count,
+            ARRAY_AGG(DISTINCT avl.creative_id ORDER BY avl.creative_id)
+              FILTER (WHERE avl.creative_id IS NOT NULL) AS creative_ids,
+            ARRAY_AGG(DISTINCT avl.creative_url)
+              FILTER (WHERE avl.creative_url IS NOT NULL) AS creative_urls
+          FROM ad_video_links avl
+          GROUP BY avl.asset_id
         )
         SELECT
-          va.id, va.asset_key, va.source, va.youtube_id, va.youtube_url,
-          va.thumbnail_url, va.media_url, va.media_url_expires_at, va.mime_type,
-          va.duration_seconds, va.width, va.height, va.first_seen_at, va.last_seen_at,
-          als.linked_package_count,
-          COUNT(DISTINCT avl.creative_id)::int AS ad_count,
-          ARRAY_AGG(DISTINCT avl.creative_id ORDER BY avl.creative_id)
-            FILTER (WHERE avl.creative_id IS NOT NULL) AS creative_ids,
-          ARRAY_AGG(DISTINCT avl.creative_url)
-            FILTER (WHERE avl.creative_url IS NOT NULL) AS creative_urls,
-          COALESCE(
-            JSONB_AGG(DISTINCT JSONB_BUILD_OBJECT(
-              'id', g.id,
-              'title', COALESCE(
-                g.title,
-                NULLIF(avl.package_name, ''),
-                g.package_name
-              ),
-              'packageName', COALESCE(
-                NULLIF(avl.package_name, ''),
-                g.package_name
-              ),
-              'publisherName', a.publisher_name,
-              'competitorName', c.name,
-              'icon', g.icon,
-              'headerImage', g.header_image,
-              'rating', g.rating,
-              'installs', g.installs,
-              'isPaid', g.is_paid,
-              'priceText', g.price_text
-            )) FILTER (
-              WHERE als.linked_package_count = 1
-                AND NULLIF(avl.package_name, '') IS NOT NULL
-            ),
-            '[]'::jsonb
-          ) AS games
+          va.id,
+          va.asset_key,
+          va.source,
+          va.youtube_id,
+          va.youtube_url,
+          va.thumbnail_url,
+          va.media_url,
+          va.media_url_expires_at,
+          va.mime_type,
+          va.duration_seconds,
+          va.width,
+          va.height,
+          va.first_seen_at,
+          va.last_seen_at,
+          resolution.linked_package_count,
+          resolution.strict_package_count,
+          resolution.resolved_package,
+          stats.ad_count,
+          stats.creative_ids,
+          stats.creative_urls,
+          CASE
+            WHEN resolution.linked_package_count = 1 AND g.id IS NOT NULL THEN
+              JSONB_BUILD_ARRAY(JSONB_BUILD_OBJECT(
+                'id', g.id,
+                'title', COALESCE(g.title, g.package_name),
+                'packageName', g.package_name,
+                'publisherName', owner.publisher_name,
+                'competitorName', owner.competitor_name,
+                'icon', g.icon,
+                'headerImage', g.header_image,
+                'rating', g.rating,
+                'installs', g.installs,
+                'isPaid', g.is_paid,
+                'priceText', g.price_text
+              ))
+            ELSE '[]'::jsonb
+          END AS games
         FROM video_assets va
-        JOIN asset_link_summary als
-          ON als.asset_id = va.id
-        LEFT JOIN ad_video_links avl
-          ON avl.asset_id = va.id
+        JOIN asset_stats stats
+          ON stats.asset_id = va.id
+        JOIN asset_resolution resolution
+          ON resolution.asset_id = va.id
         LEFT JOIN games g
-          ON g.id = avl.game_id
+          ON resolution.linked_package_count = 1
+         AND LOWER(g.package_name) = resolution.resolved_package
+        LEFT JOIN LATERAL (
+          SELECT
+            a.publisher_name,
+            c.name AS competitor_name
+          FROM account_games ag
+          JOIN accounts a
+            ON a.id = ag.account_id
+          LEFT JOIN competitors c
+            ON c.id = a.competitor_id
+          WHERE ag.game_id = g.id
+          ORDER BY a.id ASC
+          LIMIT 1
+        ) owner ON TRUE
+        WHERE (
+          $1::text IS NULL
           OR (
-            avl.game_id IS NULL
-            AND NULLIF(avl.package_name, '') IS NOT NULL
-            AND LOWER(g.package_name) = LOWER(avl.package_name)
+            resolution.linked_package_count = 1
+            AND resolution.resolved_package = LOWER($1)
           )
-        LEFT JOIN account_games ag
-          ON ag.game_id = g.id
-        LEFT JOIN accounts a
-          ON a.id = ag.account_id
-        LEFT JOIN competitors c
-          ON c.id = COALESCE(avl.competitor_id, a.competitor_id)
-        WHERE EXISTS (
-          SELECT 1
-          FROM ad_video_links live_link
-          WHERE live_link.asset_id = va.id
         )
-          AND (
-            $1::text IS NULL
-            OR (
-              als.linked_package_count = 1
-              AND EXISTS (
-                SELECT 1
-                FROM ad_video_links package_link
-                WHERE package_link.asset_id = va.id
-                  AND NULLIF(package_link.package_name, '') IS NOT NULL
-                  AND LOWER(package_link.package_name) = LOWER($1)
-              )
-            )
-          )
-        GROUP BY va.id, als.linked_package_count
         ORDER BY va.last_seen_at DESC, va.id DESC
       `, [packageName]);
 
@@ -90,15 +127,9 @@ function registerVideoMetadataRoutes({ app, pool }) {
         const expiresAt = row.media_url_expires_at || null;
         const expired = expiresAt ? new Date(expiresAt).getTime() <= Date.now() : false;
         const linkedPackageCount = Number(row.linked_package_count) || 0;
+        const strictPackageCount = Number(row.strict_package_count) || 0;
         const rawGames = Array.isArray(row.games) ? row.games : [];
-
-        // A Video Library card is allowed to claim a game only when the
-        // frame-scoped video link itself resolved to exactly one package across
-        // the asset's active links. Creative-level ownership is deliberately
-        // not used as a fallback: a creative can contain unrelated videos in
-        // sibling/main frames, which is exactly what strict attribution is
-        // intended to prevent.
-        const strictGame = linkedPackageCount === 1
+        const resolvedGame = linkedPackageCount === 1
           ? rawGames.find(game => game?.packageName) || null
           : null;
 
@@ -127,7 +158,10 @@ function registerVideoMetadataRoutes({ app, pool }) {
             : linkedPackageCount > 1
               ? 'ambiguous'
               : 'unassigned',
-          games: strictGame ? [strictGame] : []
+          associationSource: linkedPackageCount === 1
+            ? (strictPackageCount > 0 ? 'frame' : 'creative_consensus')
+            : null,
+          games: resolvedGame ? [resolvedGame] : []
         };
       });
 
