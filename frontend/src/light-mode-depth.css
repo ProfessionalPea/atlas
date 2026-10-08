@@ -1,25 +1,27 @@
 /* Atlas light-mode depth experiment -----------------------------------------
-   Dark mode intentionally remains untouched. This layer gives light mode a
-   more deliberate canvas/card/control hierarchy with restrained soft-depth
-   cues rather than full neumorphism. */
+   Dark mode intentionally remains untouched. Light mode uses a warm porcelain
+   canvas, ivory surfaces and restrained soft-depth cues so the product has
+   hierarchy without drifting into full neumorphism. */
 
 :root:not(.dark) {
-  --bg-base: 244 247 251;
-  --surface-solid: 255 255 255;
-  --surface-glass: 249 251 254;
-  --input-bg: 241 245 249;
+  /* Warm stone canvas -> porcelain cards -> recessed controls. */
+  --bg-base: 242 239 233;
+  --surface-solid: 252 250 246;
+  --surface-glass: 247 244 238;
+  --input-bg: 238 234 226;
 
-  --text-main: 17 24 39;
-  --text-muted: 82 96 113;
-  --border-subtle: 214 221 230;
+  --text-main: 31 29 27;
+  --text-muted: 106 100 92;
+  --border-subtle: 216 210 199;
 
-  --primary-container: 231 239 253;
-  --on-primary-container: 29 78 150;
+  /* Keep Atlas blue crisp against the warmer neutrals. */
+  --primary-container: 226 235 249;
+  --on-primary-container: 28 72 136;
 
-  --shadow-main: 0 1px 2px rgba(15, 23, 42, 0.035), 0 12px 30px rgba(15, 23, 42, 0.055);
-  --shadow-hover: 0 2px 4px rgba(15, 23, 42, 0.05), 0 16px 36px rgba(15, 23, 42, 0.08);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 5px 14px rgba(15, 23, 42, 0.045);
-  --shadow-sm-hover: 0 2px 4px rgba(15, 23, 42, 0.055), 0 8px 18px rgba(15, 23, 42, 0.065);
+  --shadow-main: 0 1px 2px rgba(55, 48, 40, 0.045), 0 12px 30px rgba(55, 48, 40, 0.075);
+  --shadow-hover: 0 2px 4px rgba(55, 48, 40, 0.055), 0 18px 38px rgba(55, 48, 40, 0.105);
+  --shadow-sm: 0 1px 2px rgba(55, 48, 40, 0.05), 0 5px 14px rgba(55, 48, 40, 0.06);
+  --shadow-sm-hover: 0 2px 4px rgba(55, 48, 40, 0.065), 0 9px 20px rgba(55, 48, 40, 0.08);
 }
 
 html:not(.dark),
@@ -27,111 +29,109 @@ html:not(.dark) body {
   background: rgb(var(--bg-base));
 }
 
-/* Persistent chrome should read as a separate product layer, not disappear
-   into the canvas. */
+/* Persistent chrome is its own product layer rather than another white strip. */
 html:not(.dark) .fixed.top-0.left-0.right-0.h-16 {
-  background: rgba(255, 255, 255, 0.92) !important;
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.07), 0 4px 18px rgba(15, 23, 42, 0.035);
+  background: rgba(252, 250, 246, 0.94) !important;
+  box-shadow: 0 1px 0 rgba(65, 58, 49, 0.10), 0 5px 20px rgba(65, 58, 49, 0.045);
 }
 
 html:not(.dark) aside {
-  background: rgba(248, 250, 253, 0.96);
-  box-shadow: 1px 0 0 rgba(15, 23, 42, 0.07);
+  background: rgba(247, 244, 238, 0.98);
+  box-shadow: 1px 0 0 rgba(65, 58, 49, 0.10);
 }
 
-/* Large product surfaces get an ambient edge + soft lift. This is the small
-   amount of neumorphic depth: enough to define hierarchy, never enough to make
-   controls ambiguous. */
+/* Large surfaces use ivory rather than pure white, with a warm ambient shadow.
+   This creates obvious separation from the cream canvas while remaining calm. */
 html:not(.dark) main :is(section, article, div)[class*="rounded-[24px]"][class*="bg-surface-solid"],
 html:not(.dark) main :is(section, article, div)[class*="rounded-[22px]"][class*="bg-surface-solid"] {
-  border-color: rgba(203, 213, 225, 0.9) !important;
+  border-color: rgba(204, 197, 185, 0.96) !important;
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.035),
-    0 10px 28px rgba(15, 23, 42, 0.045) !important;
+    0 1px 2px rgba(55, 48, 40, 0.045),
+    0 10px 28px rgba(55, 48, 40, 0.065) !important;
 }
 
-/* Compact dashboard/stat cards can carry slightly more lift so the bento
-   rhythm is visible against the tinted canvas. */
+/* Compact dashboard/stat cards carry a little more lift so the bento rhythm is
+   visible without becoming glossy or skeuomorphic. */
 html:not(.dark) main [class*="grid"] > [class*="rounded-[24px]"][class*="bg-surface-solid"] {
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.04),
-    0 8px 22px rgba(15, 23, 42, 0.05) !important;
+    0 1px 2px rgba(55, 48, 40, 0.05),
+    0 8px 22px rgba(55, 48, 40, 0.072) !important;
 }
 
-/* Inputs read as inset controls instead of white cards inside white cards. */
+/* Inputs are intentionally darker/warmer than the card containing them. */
 html:not(.dark) input.bg-input-bg,
 html:not(.dark) textarea.bg-input-bg,
 html:not(.dark) select.bg-input-bg {
   background: rgb(var(--input-bg));
-  border-color: rgba(203, 213, 225, 0.82) !important;
+  border-color: rgba(201, 193, 180, 0.94) !important;
   box-shadow:
-    inset 0 1px 2px rgba(15, 23, 42, 0.045),
-    0 1px 0 rgba(255, 255, 255, 0.8);
+    inset 0 1px 2px rgba(55, 48, 40, 0.06),
+    0 1px 0 rgba(255, 253, 249, 0.75);
 }
 
 html:not(.dark) input.bg-input-bg:focus,
 html:not(.dark) textarea.bg-input-bg:focus,
 html:not(.dark) select.bg-input-bg:focus {
-  background: #ffffff;
+  background: #fffdfa;
   box-shadow:
     0 0 0 3px rgba(59, 130, 246, 0.10),
-    inset 0 1px 2px rgba(15, 23, 42, 0.025);
+    inset 0 1px 2px rgba(55, 48, 40, 0.025);
 }
 
-/* Raised icon actions get a tactile cue without turning into glossy skeuomorphs. */
+/* Raised icon actions get a tactile cue without glossy skeuomorphism. */
 html:not(.dark) button.bg-surface-solid.border,
 html:not(.dark) a.bg-surface-solid.border {
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.045), 0 3px 8px rgba(15, 23, 42, 0.035);
+  box-shadow: 0 1px 2px rgba(55, 48, 40, 0.055), 0 3px 9px rgba(55, 48, 40, 0.05);
 }
 
 html:not(.dark) button.bg-surface-solid.border:hover,
 html:not(.dark) a.bg-surface-solid.border:hover {
-  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.055), 0 5px 12px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 2px 4px rgba(55, 48, 40, 0.07), 0 6px 14px rgba(55, 48, 40, 0.065);
 }
 
-/* Selected navigation remains blue, but is softer and more Apple/Google-like. */
+/* Selected navigation stays Atlas blue, softened to sit naturally on cream. */
 html:not(.dark) .bg-primary-container {
-  background-color: rgb(229 238 252 / 0.95);
+  background-color: rgb(226 235 249 / 0.96);
 }
 
-/* Video Library lives in its own fixed surface. Give it the same tonal canvas
-   as the rest of Atlas so switching sections does not feel like another app. */
+/* Video Library follows the same warm canvas/card hierarchy. */
 html:not(.dark) .atlas-google-shell.fixed {
   background: rgb(var(--bg-base)) !important;
 }
 
 html:not(.dark) .atlas-google-shell article.bg-surface-solid,
 html:not(.dark) .atlas-google-shell [class*="rounded-[24px]"][class*="bg-surface-solid"] {
-  border-color: rgba(203, 213, 225, 0.9) !important;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035), 0 10px 28px rgba(15, 23, 42, 0.045);
+  border-color: rgba(204, 197, 185, 0.96) !important;
+  box-shadow: 0 1px 2px rgba(55, 48, 40, 0.045), 0 10px 28px rgba(55, 48, 40, 0.065);
 }
 
 /* Discovery Pulse bento ------------------------------------------------------ */
 html:not(.dark) .atlas-discovery-pulse {
-  border-color: rgba(203, 213, 225, 0.92) !important;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035), 0 12px 30px rgba(15, 23, 42, 0.055) !important;
+  border-color: rgba(204, 197, 185, 0.98) !important;
+  box-shadow: 0 1px 2px rgba(55, 48, 40, 0.045), 0 12px 30px rgba(55, 48, 40, 0.075) !important;
 }
 
 html:not(.dark) .atlas-pulse-intro {
   background:
-    radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.12), transparent 52%),
-    rgb(247 250 255);
-  border-color: rgba(191, 219, 254, 0.9) !important;
+    radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.11), transparent 54%),
+    linear-gradient(145deg, #f8f6f1, #f5f7fb);
+  border-color: rgba(188, 199, 218, 0.88) !important;
 }
 
 html:not(.dark) .atlas-pulse-tile {
-  background: rgb(248 250 252);
-  border-color: rgba(203, 213, 225, 0.88) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  background: rgb(247 244 238);
+  border-color: rgba(204, 197, 185, 0.92) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 253, 249, 0.82),
+    0 1px 2px rgba(55, 48, 40, 0.025);
 }
 
 html:not(.dark) .atlas-pulse-tile[data-tone="positive"] {
-  background: linear-gradient(145deg, rgba(236, 253, 245, 0.9), rgba(248, 250, 252, 0.96));
-  border-color: rgba(167, 243, 208, 0.8) !important;
+  background: linear-gradient(145deg, rgba(235, 249, 240, 0.9), rgba(247, 244, 238, 0.97));
+  border-color: rgba(164, 220, 184, 0.72) !important;
 }
 
-/* Scrollbars should belong to the canvas rather than forming a contrasting
-   strip at the right edge. */
+/* Scrollbars belong to the warm canvas instead of making a contrasting strip. */
 html:not(.dark) ::-webkit-scrollbar-track {
   background: rgb(var(--bg-base));
 }
