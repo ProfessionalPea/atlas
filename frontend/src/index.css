@@ -41,24 +41,24 @@
   }
 
   .dark {
-    /* MODERN DARK MODE */
-    --bg-base: 15 23 42;
-    --surface-solid: 30 41 59;
-    --surface-glass: 30 41 59;
-    --input-bg: 15 23 42;
+    /* Neutral dark palette. Keep blue as an accent, never as the page canvas. */
+    --bg-base: 28 28 28;
+    --surface-solid: 36 36 36;
+    --surface-glass: 36 36 36;
+    --input-bg: 42 42 42;
 
-    --text-main: 248 250 252;
-    --text-muted: 148 163 184;
-    --border-subtle: 51 65 85;
+    --text-main: 241 243 244;
+    --text-muted: 189 193 198;
+    --border-subtle: 60 64 67;
 
     --electric-blue: 59 130 246;
-    --primary-container: 30 58 138;
-    --on-primary-container: 255 255 255;
+    --primary-container: 51 65 85;
+    --on-primary-container: 248 250 252;
 
     --urgent-red: 239 68 68;
     --emerald-metric: 16 185 129;
 
-    --primary: 96 165 250;
+    --primary: 138 180 248;
     --secondary: 52 211 153;
     --tertiary-container: 251 146 60;
 
@@ -67,10 +67,10 @@
     --radius-main: 16px;
     --radius-sm: 12px;
 
-    --shadow-main: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
-    --shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
-    --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
-    --shadow-sm-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    --shadow-main: 0 10px 15px -3px rgba(0, 0, 0, 0.32);
+    --shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.48);
+    --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.24);
+    --shadow-sm-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.38);
     --translate-x: 0px;
     --translate-y: -4px;
 
@@ -237,6 +237,22 @@ html:not(.dark) .atlas-feedback-secondary {
   color: #ffffff;
 }
 .atlas-feedback-primary:hover { background: #1765cc; }
+
+/* Video Library owns navigation while its overlay is open. Clear any native
+   page highlight so users never see Videos and the previous page active at the
+   same time. */
+html[data-atlas-video-open="true"] aside nav button:not([data-atlas-video-library="1"]) > span:first-child,
+html[data-atlas-video-open="true"] nav.fixed.bottom-0 button:not([data-atlas-video-library="1"]) > span:first-child {
+  background: transparent !important;
+  color: rgb(var(--text-muted)) !important;
+  box-shadow: none !important;
+}
+
+html[data-atlas-video-open="true"] aside nav button:not([data-atlas-video-library="1"]) > span:last-child,
+html[data-atlas-video-open="true"] nav.fixed.bottom-0 button:not([data-atlas-video-library="1"]) > span:last-child {
+  color: rgb(var(--text-muted)) !important;
+  font-weight: 500 !important;
+}
 
 /* Video Library delete confirmation -----------------------------------------
    This older dialog predates AtlasFeedback. Make it behave like the same
