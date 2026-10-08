@@ -1,6 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: 'class', 
+  darkMode: 'class',
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -8,10 +8,10 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        'headline-lg': ['Space Grotesk', 'sans-serif'], 
+        'headline-lg': ['Geist', 'sans-serif'],
         'body-md': ['Inter', 'sans-serif'],
-        'label-caps': ['Space Grotesk', 'sans-serif'],
-        'metric-xl': ['Space Grotesk', 'sans-serif'],
+        'label-caps': ['Geist', 'sans-serif'],
+        'metric-xl': ['Geist', 'sans-serif'],
         'mono': ['JetBrains Mono', 'monospace'],
       },
       borderWidth: {
