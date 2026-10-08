@@ -1,0 +1,27 @@
+name: Backend scanner checks
+
+on:
+  pull_request:
+    paths:
+      - 'backend/GoogleAdsScanner.js'
+      - 'backend/GoogleAdsScannerV5.js'
+      - 'backend/scanner-v5.test.js'
+      - '.github/workflows/backend-scanner.yml'
+
+jobs:
+  scanner:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: node --check GoogleAdsScannerV5.js
+      - run: node --check GoogleAdsScanner.js
+      - run: node scanner-v5.test.js
