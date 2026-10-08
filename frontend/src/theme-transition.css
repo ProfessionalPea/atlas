@@ -1,0 +1,35 @@
+/* Theme switching should feel like one product changing state, not hundreds of
+   components independently animating their colors. ThemeTransitionGuard adds
+   this class for the handoff window whenever the html.dark state changes. */
+html.atlas-theme-switching,
+html.atlas-theme-switching *,
+html.atlas-theme-switching *::before,
+html.atlas-theme-switching *::after {
+  transition-property: none !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+
+/* A very short whole-app settle masks the atomic palette swap without creating
+   a long crossfade. It is intentionally subtle so theme switching feels fast. */
+html.atlas-theme-switching body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  pointer-events: none;
+  background: rgb(var(--bg-base));
+  animation: atlas-theme-settle 140ms ease-out both;
+}
+
+@keyframes atlas-theme-settle {
+  from { opacity: 0.12; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.atlas-theme-switching body::after {
+    animation: none;
+    opacity: 0;
+  }
+}
