@@ -163,7 +163,7 @@ function atlasProductPolishBridge() {
         )
         next = replaceRequired(
           next,
-          /<div className="bg-surface-solid border border-border-subtle rounded-\[24px\] p-6 shadow-sm space-y-6">(?=\s*<h3 className="text-base font-semibold text-text-main flex items-center gap-2">\s*<span className="material-symbols-outlined text-text-muted text-\[22px\]">description<\/span> PDF template<\/h3>)/,
+          /<div className="bg-surface-solid border border-border-subtle rounded-\[24px\] p-6 shadow-sm space-y-6">(?=\s*<h3 className="text-base font-semibold text-text-main flex items-center gap-2">\s*<span className="material-symbols-outlined text-text-muted text-\[22px\]">description<\/span>\s*PDF template\s*<\/h3>)/,
           '<div className="hidden" aria-hidden="true">',
           'retire PDF template panel'
         )
