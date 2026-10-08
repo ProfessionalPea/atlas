@@ -31,12 +31,20 @@ function inferConfirmMeta(message, options = {}) {
           : /suspend/i.test(text)
             ? "Confirm change"
             : "Confirm action");
+  const confirmLabel = options.confirmLabel
+    || (/abort/i.test(text)
+      ? "Abort"
+      : /clear/i.test(text)
+        ? "Clear"
+        : /delete|permanent/i.test(text)
+          ? "Delete"
+          : /restore/i.test(text)
+            ? "Restore"
+            : /suspend/i.test(text)
+              ? "Suspend"
+              : "Continue");
 
-  return {
-    title,
-    confirmLabel: options.confirmLabel || (destructive ? "Delete" : "Continue"),
-    destructive
-  };
+  return { title, confirmLabel, destructive };
 }
 
 export function AtlasFeedbackProvider({ children }) {
