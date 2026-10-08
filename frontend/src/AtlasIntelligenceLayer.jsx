@@ -8,10 +8,12 @@ const API_BASE = window.location.hostname === "localhost" || window.location.hos
   : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
   const token = localStorage.getItem(AUTH_TOKEN_KEY);
   const response = await fetch(url, {
+    ...options,
     headers: {
+      ...options.headers,
       "ngrok-skip-browser-warning": "69420",
       ...(token ? { "x-atlas-token": token } : {})
     }
@@ -56,6 +58,7 @@ function VideoLibrary({ onClose }) {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("all");
   const [sort, setSort] = useState("recent");
+  const [deletingId, setDeletingId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,6 +70,28 @@ function VideoLibrary({ onClose }) {
       setError(err.message || "Unable to load video library.");
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const deleteAsset = useCallback(async asset => {
+    const assetId = Number(asset?.id);
+    if (!Number.isSafeInteger(assetId) || assetId <= 0) return;
+
+    const label = asset?.games?.[0]?.title || asset?.youtubeId || "this video asset";
+    const confirmed = window.confirm(
+      `Delete "${label}" from the Video Library?\n\n` +
+      "This removes the stored video asset and its Atlas links. A future deep scan may discover it again."
+    );
+    if (!confirmed) return;
+
+    setDeletingId(assetId);
+    try {
+      await fetchJson(`${API_BASE}/api/video-assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+      setItems(current => current.filter(item => Number(item.id) !== assetId));
+    } catch (err) {
+      window.alert(err.message || "Unable to delete video asset.");
+    } finally {
+      setDeletingId(null);
     }
   }, []);
 
@@ -177,6 +202,7 @@ function VideoLibrary({ onClose }) {
                 : null;
               const duration = formatDuration(asset.durationSeconds);
               const sourceLabel = asset.source === 'youtube' ? 'YouTube' : 'Direct video';
+              const isDeleting = deletingId === Number(asset.id);
 
               return (
                 <article key={asset.assetKey || asset.id} className="group bg-surface-solid border border-border-subtle rounded-[24px] overflow-hidden shadow-sm hover:shadow-md hover:border-text-muted/20 transition-all duration-200">
@@ -212,7 +238,21 @@ function VideoLibrary({ onClose }) {
                           </p>
                           <p className="text-[9px] leading-4 text-text-muted/90 font-mono mt-0.5 truncate">{game.packageName || asset.youtubeId || asset.assetKey}</p>
                         </div>
-                        <span className="px-2.5 py-1 rounded-full bg-input-bg text-[9px] font-medium text-text-muted flex-shrink-0 tabular-nums">{asset.adCount || 0} ads</span>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <span className="px-2.5 py-1 rounded-full bg-input-bg text-[9px] font-medium text-text-muted tabular-nums">{asset.adCount || 0} ads</span>
+                          <button
+                            type="button"
+                            onClick={() => { void deleteAsset(asset); }}
+                            disabled={isDeleting}
+                            className="w-8 h-8 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted hover:text-urgent-red hover:border-urgent-red/25 disabled:opacity-50 disabled:cursor-wait transition-colors"
+                            title="Delete video asset"
+                            aria-label={`Delete ${game.title || 'video asset'}`}
+                          >
+                            <span className={`material-symbols-outlined text-[16px] ${isDeleting ? 'animate-spin' : ''}`}>
+                              {isDeleting ? 'progress_activity' : 'delete'}
+                            </span>
+                          </button>
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-x-5 gap-y-3 mt-4 pt-4 border-t border-border-subtle text-[9px]">
