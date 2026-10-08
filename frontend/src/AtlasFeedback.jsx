@@ -81,11 +81,19 @@ function getPopoverPosition(anchor) {
   return { left, top };
 }
 
+function getFocusableTrigger(target) {
+  if (!(target instanceof Element)) return null;
+  const candidate = target.closest('button, a[href], input, select, textarea, [role="button"], [tabindex]');
+  return candidate instanceof HTMLElement ? candidate : null;
+}
+
 export function AtlasFeedbackProvider({ children }) {
   const [dialog, setDialog] = useState(null);
   const queueRef = useRef([]);
   const activeRef = useRef(null);
   const anchorRef = useRef(null);
+  const triggerRef = useRef(null);
+  const cardRef = useRef(null);
 
   const advance = useCallback(() => {
     if (activeRef.current || queueRef.current.length === 0) return;
@@ -95,7 +103,12 @@ export function AtlasFeedbackProvider({ children }) {
   }, []);
 
   const request = useCallback((entry) => new Promise(resolve => {
-    queueRef.current.push({ ...entry, anchor: entry.anchor || anchorRef.current, resolve });
+    queueRef.current.push({
+      ...entry,
+      anchor: entry.anchor || anchorRef.current,
+      returnFocus: entry.returnFocus || triggerRef.current || document.activeElement,
+      resolve
+    });
     advance();
   }), [advance]);
 
@@ -123,12 +136,20 @@ export function AtlasFeedbackProvider({ children }) {
     activeRef.current = null;
     setDialog(null);
     current?.resolve(value);
-    queueMicrotask(advance);
+
+    queueMicrotask(() => {
+      if (queueRef.current.length === 0 && current?.returnFocus instanceof HTMLElement && current.returnFocus.isConnected) {
+        try { current.returnFocus.focus({ preventScroll: true }); } catch {}
+      }
+      advance();
+    });
   }, [advance]);
 
   useEffect(() => {
     const capturePointer = event => {
       anchorRef.current = { x: event.clientX, y: event.clientY };
+      const trigger = getFocusableTrigger(event.target);
+      if (trigger) triggerRef.current = trigger;
     };
     window.addEventListener("pointerdown", capturePointer, true);
     return () => window.removeEventListener("pointerdown", capturePointer, true);
@@ -148,14 +169,25 @@ export function AtlasFeedbackProvider({ children }) {
 
   useEffect(() => {
     if (!dialog) return undefined;
+
     const onKeyDown = event => {
       if (event.key === "Escape") {
         event.preventDefault();
         settle(false);
       }
     };
+
+    const onPointerDown = event => {
+      if (cardRef.current?.contains(event.target)) return;
+      settle(false);
+    };
+
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
   }, [dialog, settle]);
 
   const popoverStyle = useMemo(() => getPopoverPosition(dialog?.anchor), [dialog]);
@@ -166,9 +198,11 @@ export function AtlasFeedbackProvider({ children }) {
       {dialog && (
         <div className="atlas-feedback-layer fixed inset-0 z-[220] pointer-events-none">
           <section
+            ref={cardRef}
             role={dialog.kind === "confirm" ? "alertdialog" : "dialog"}
             aria-modal="false"
             aria-labelledby="atlas-feedback-title"
+            aria-describedby="atlas-feedback-message"
             className="atlas-feedback-card fixed w-[320px] max-w-[calc(100vw-24px)] pointer-events-auto rounded-[14px] border shadow-xl px-3.5 py-3"
             style={popoverStyle}
           >
@@ -177,7 +211,7 @@ export function AtlasFeedbackProvider({ children }) {
                 <h2 id="atlas-feedback-title" className="atlas-feedback-title text-[16px] leading-5 font-semibold tracking-[-0.01em]">
                   {dialog.title}
                 </h2>
-                <p className="atlas-feedback-message mt-1 text-[14px] leading-5 break-words">
+                <p id="atlas-feedback-message" className="atlas-feedback-message mt-1 text-[14px] leading-5 break-words">
                   {dialog.message}
                 </p>
               </div>
@@ -195,6 +229,7 @@ export function AtlasFeedbackProvider({ children }) {
               {dialog.kind === "confirm" && (
                 <button
                   type="button"
+                  autoFocus
                   onClick={() => settle(false)}
                   className="atlas-feedback-secondary h-9 px-3.5 rounded-lg border text-[13px] font-medium"
                 >
@@ -203,7 +238,7 @@ export function AtlasFeedbackProvider({ children }) {
               )}
               <button
                 type="button"
-                autoFocus
+                autoFocus={dialog.kind !== "confirm"}
                 onClick={() => settle(true)}
                 className={dialog.destructive
                   ? "atlas-feedback-danger h-9 px-3.5 rounded-lg border text-[13px] font-semibold"
