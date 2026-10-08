@@ -105,24 +105,105 @@ html:not(.dark) .atlas-google-shell { color: #202124; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgb(var(--border-subtle)); border-radius: 10px; }
 
-/* Keep destructive confirmations compact and immediate. The Video Library
-   predates the shared Atlas feedback host, so these rules bring its existing
-   dialog in line with the same small, low-dimming treatment. */
+/* Shared Atlas prompt/popover -------------------------------------------------
+   Prompts are deliberately small and contextual. They do not dim, blur, or
+   block the rest of Atlas, and text stays at comfortable reading sizes. */
+.atlas-feedback-layer {
+  background: transparent !important;
+}
+
+.atlas-feedback-card {
+  font-family: Roboto, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  animation: none !important;
+  transition: none !important;
+}
+
+html:not(.dark) .atlas-feedback-card {
+  background: #ffffff;
+  border-color: #dadce0;
+  color: #202124;
+  box-shadow: 0 8px 24px rgba(60, 64, 67, 0.18), 0 2px 8px rgba(60, 64, 67, 0.10);
+}
+
+.dark .atlas-feedback-card {
+  background: #242424;
+  border-color: #3c4043;
+  color: #f1f3f4;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.24);
+}
+
+html:not(.dark) .atlas-feedback-message { color: #5f6368; }
+.dark .atlas-feedback-message { color: #bdc1c6; }
+
+html:not(.dark) .atlas-feedback-close { color: #5f6368; }
+.dark .atlas-feedback-close { color: #9aa0a6; }
+.atlas-feedback-close:hover { background: rgba(127, 127, 127, 0.12); }
+
+html:not(.dark) .atlas-feedback-secondary {
+  background: #ffffff;
+  border-color: #dadce0;
+  color: #3c4043;
+}
+.dark .atlas-feedback-secondary {
+  background: #242424;
+  border-color: #4a4d51;
+  color: #f1f3f4;
+}
+.atlas-feedback-secondary:hover { background: rgba(127, 127, 127, 0.10); }
+
+.atlas-feedback-danger {
+  background: rgba(239, 68, 68, 0.11);
+  border-color: rgba(239, 68, 68, 0.34);
+  color: #ef4444;
+}
+.atlas-feedback-danger:hover { background: rgba(239, 68, 68, 0.17); }
+
+.atlas-feedback-primary {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #ffffff;
+}
+.atlas-feedback-primary:hover { background: #1765cc; }
+
+/* Video Library delete confirmation -----------------------------------------
+   This older dialog predates AtlasFeedback. Make it behave like the same
+   lightweight popover: no blackout, no visible motion, concise copy. */
+.atlas-google-shell:has(#video-delete-title) {
+  pointer-events: none !important;
+  background: transparent !important;
+}
+
 .atlas-google-shell:has(#video-delete-title) > .absolute.inset-0 {
-  background: rgba(0, 0, 0, 0.18) !important;
-  backdrop-filter: none !important;
-  opacity: 1 !important;
+  display: none !important;
 }
 
 .atlas-google-shell section[aria-labelledby="video-delete-title"] {
-  max-width: 360px !important;
-  border-radius: 16px !important;
+  pointer-events: auto !important;
+  max-width: 320px !important;
+  border-radius: 14px !important;
   transform: none !important;
   opacity: 1 !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+html:not(.dark) .atlas-google-shell section[aria-labelledby="video-delete-title"] {
+  background: #ffffff !important;
+  border-color: #dadce0 !important;
+  box-shadow: 0 8px 24px rgba(60, 64, 67, 0.18), 0 2px 8px rgba(60, 64, 67, 0.10) !important;
+}
+.dark .atlas-google-shell section[aria-labelledby="video-delete-title"] {
+  background: #242424 !important;
+  border-color: #3c4043 !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34), 0 2px 8px rgba(0, 0, 0, 0.24) !important;
 }
 
 .atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pt-5.pb-4 {
-  padding: 16px 16px 10px !important;
+  padding: 12px 12px 8px !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pt-5.pb-4 > div > .w-10 {
+  display: none !important;
 }
 
 .atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pt-5.pb-4 p,
@@ -130,15 +211,45 @@ html:not(.dark) .atlas-google-shell { color: #202124; }
   display: none !important;
 }
 
+.atlas-google-shell section[aria-labelledby="video-delete-title"] #video-delete-title {
+  font-size: 16px !important;
+  line-height: 20px !important;
+}
+
 .atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pb-5 {
-  padding: 0 16px 16px !important;
+  padding: 0 12px 12px !important;
 }
 
 .atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pb-5 > div:first-child {
-  padding: 11px 12px !important;
-  border-radius: 12px !important;
+  padding: 9px 10px !important;
+  border-radius: 10px !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pb-5 > div:first-child > p:first-child {
+  display: block !important;
+  font-size: 14px !important;
+  line-height: 20px !important;
 }
 
 .atlas-google-shell section[aria-labelledby="video-delete-title"] .mt-5 {
-  margin-top: 12px !important;
+  margin-top: 10px !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] button {
+  font-size: 13px !important;
+}
+
+/* Confirm feels immediate: dismiss the confirmation visually as soon as the
+   request starts, fade the card at once, then remove it when the API succeeds.
+   If the request fails React clears the busy state and the card/dialog return. */
+.atlas-google-shell section[aria-labelledby="video-delete-title"]:has(.animate-spin) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.atlas-google-shell article:has(button[title="Delete video asset"] .animate-spin) {
+  opacity: 0 !important;
+  transform: scale(0.99);
+  pointer-events: none !important;
+  transition: opacity 80ms ease-out, transform 80ms ease-out !important;
 }
