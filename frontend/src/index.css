@@ -104,3 +104,41 @@ html:not(.dark) .atlas-google-shell { color: #202124; }
 .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgb(var(--border-subtle)); border-radius: 10px; }
+
+/* Keep destructive confirmations compact and immediate. The Video Library
+   predates the shared Atlas feedback host, so these rules bring its existing
+   dialog in line with the same small, low-dimming treatment. */
+.atlas-google-shell:has(#video-delete-title) > .absolute.inset-0 {
+  background: rgba(0, 0, 0, 0.18) !important;
+  backdrop-filter: none !important;
+  opacity: 1 !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] {
+  max-width: 360px !important;
+  border-radius: 16px !important;
+  transform: none !important;
+  opacity: 1 !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pt-5.pb-4 {
+  padding: 16px 16px 10px !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pt-5.pb-4 p,
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pb-5 > div:first-child > p.mt-2 {
+  display: none !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pb-5 {
+  padding: 0 16px 16px !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] > .px-5.pb-5 > div:first-child {
+  padding: 11px 12px !important;
+  border-radius: 12px !important;
+}
+
+.atlas-google-shell section[aria-labelledby="video-delete-title"] .mt-5 {
+  margin-top: 12px !important;
+}
