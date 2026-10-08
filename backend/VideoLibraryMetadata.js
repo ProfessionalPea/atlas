@@ -9,12 +9,28 @@ function registerVideoMetadataRoutes({ app, pool }) {
             avl.creative_id,
             avl.creative_url,
             NULLIF(LOWER(avl.package_name), '') AS frame_package,
-            NULLIF(LOWER(COALESCE(ac.package_name, creative_game.package_name)), '') AS creative_package
+            NULLIF(LOWER(linked_game.package_name), '') AS linked_game_package,
+            NULLIF(
+              LOWER(COALESCE(NULLIF(ac.package_name, ''), creative_game.package_name)),
+              ''
+            ) AS creative_package,
+            CASE
+              WHEN cec.extraction_version = 4
+                AND cec.package_names IS NOT NULL
+                AND jsonb_typeof(cec.package_names) = 'array'
+                AND jsonb_array_length(cec.package_names) = 1
+              THEN NULLIF(LOWER(cec.package_names ->> 0), '')
+              ELSE NULL
+            END AS cached_package
           FROM ad_video_links avl
+          LEFT JOIN games linked_game
+            ON linked_game.id = avl.game_id
           LEFT JOIN ad_creatives ac
             ON ac.creative_id = avl.creative_id
           LEFT JOIN games creative_game
             ON creative_game.id = ac.game_id
+          LEFT JOIN creative_extraction_cache cec
+            ON cec.creative_id = avl.creative_id
         ),
         asset_package_evidence AS (
           SELECT asset_id, frame_package AS package_name, 'frame'::text AS source
@@ -23,9 +39,21 @@ function registerVideoMetadataRoutes({ app, pool }) {
 
           UNION ALL
 
+          SELECT asset_id, linked_game_package AS package_name, 'linked_game'::text AS source
+          FROM asset_links
+          WHERE linked_game_package IS NOT NULL
+
+          UNION ALL
+
           SELECT asset_id, creative_package AS package_name, 'creative'::text AS source
           FROM asset_links
           WHERE creative_package IS NOT NULL
+
+          UNION ALL
+
+          SELECT asset_id, cached_package AS package_name, 'cache'::text AS source
+          FROM asset_links
+          WHERE cached_package IS NOT NULL
         ),
         asset_resolution AS (
           SELECT
@@ -76,11 +104,11 @@ function registerVideoMetadataRoutes({ app, pool }) {
           stats.creative_ids,
           stats.creative_urls,
           CASE
-            WHEN resolution.linked_package_count = 1 AND g.id IS NOT NULL THEN
+            WHEN resolution.linked_package_count = 1 THEN
               JSONB_BUILD_ARRAY(JSONB_BUILD_OBJECT(
                 'id', g.id,
-                'title', COALESCE(g.title, g.package_name),
-                'packageName', g.package_name,
+                'title', COALESCE(g.title, g.package_name, resolution.resolved_package),
+                'packageName', COALESCE(g.package_name, resolution.resolved_package),
                 'publisherName', owner.publisher_name,
                 'competitorName', owner.competitor_name,
                 'icon', g.icon,
@@ -159,7 +187,7 @@ function registerVideoMetadataRoutes({ app, pool }) {
               ? 'ambiguous'
               : 'unassigned',
           associationSource: linkedPackageCount === 1
-            ? (strictPackageCount > 0 ? 'frame' : 'creative_consensus')
+            ? (strictPackageCount > 0 ? 'frame' : 'ownership_consensus')
             : null,
           games: resolvedGame ? [resolvedGame] : []
         };
