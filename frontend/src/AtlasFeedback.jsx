@@ -1,6 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 const AtlasFeedbackContext = createContext(null);
+const POPOVER_WIDTH = 320;
+const VIEWPORT_GAP = 12;
 
 function compactCopy(message) {
   const text = String(message || "").replace(/\s+/g, " ").trim();
@@ -12,10 +14,10 @@ function compactCopy(message) {
     .replace(/\s*This cannot be undone\.?$/i, "")
     .trim();
 
-  if (cleaned.length <= 170) return cleaned;
   const firstSentence = cleaned.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim();
-  if (firstSentence && firstSentence.length <= 170) return firstSentence;
-  return `${cleaned.slice(0, 167).trimEnd()}…`;
+  if (firstSentence && firstSentence.length <= 135) return firstSentence;
+  if (cleaned.length <= 135) return cleaned;
+  return `${cleaned.slice(0, 132).trimEnd()}…`;
 }
 
 function inferConfirmMeta(message, options = {}) {
@@ -23,14 +25,16 @@ function inferConfirmMeta(message, options = {}) {
   const destructive = options.destructive ?? /delete|permanent|clear|abort/i.test(text);
   const title = options.title
     || (/delete|permanent/i.test(text)
-      ? "Confirm deletion"
+      ? "Delete?"
       : /abort/i.test(text)
         ? "Abort scan?"
         : /clear/i.test(text)
-          ? "Clear view?"
-          : /suspend/i.test(text)
-            ? "Confirm change"
-            : "Confirm action");
+          ? "Clear?"
+          : /restore/i.test(text)
+            ? "Restore?"
+            : /suspend/i.test(text)
+              ? "Suspend?"
+              : "Confirm action");
   const confirmLabel = options.confirmLabel
     || (/abort/i.test(text)
       ? "Abort"
@@ -47,10 +51,34 @@ function inferConfirmMeta(message, options = {}) {
   return { title, confirmLabel, destructive };
 }
 
+function getPopoverPosition(anchor) {
+  if (typeof window === "undefined" || !anchor) {
+    return {
+      left: "50%",
+      top: "50%",
+      transform: "translate(-50%, -50%)"
+    };
+  }
+
+  const viewportWidth = window.innerWidth || 1280;
+  const viewportHeight = window.innerHeight || 720;
+  const left = Math.max(
+    VIEWPORT_GAP,
+    Math.min(anchor.x - POPOVER_WIDTH + 34, viewportWidth - POPOVER_WIDTH - VIEWPORT_GAP)
+  );
+  const preferAbove = anchor.y > viewportHeight * 0.62;
+  const top = preferAbove
+    ? Math.max(VIEWPORT_GAP, anchor.y - 154)
+    : Math.min(viewportHeight - 170, anchor.y + 12);
+
+  return { left, top };
+}
+
 export function AtlasFeedbackProvider({ children }) {
   const [dialog, setDialog] = useState(null);
   const queueRef = useRef([]);
   const activeRef = useRef(null);
+  const anchorRef = useRef(null);
 
   const advance = useCallback(() => {
     if (activeRef.current || queueRef.current.length === 0) return;
@@ -60,7 +88,7 @@ export function AtlasFeedbackProvider({ children }) {
   }, []);
 
   const request = useCallback((entry) => new Promise(resolve => {
-    queueRef.current.push({ ...entry, resolve });
+    queueRef.current.push({ ...entry, anchor: entry.anchor || anchorRef.current, resolve });
     advance();
   }), [advance]);
 
@@ -69,6 +97,7 @@ export function AtlasFeedbackProvider({ children }) {
     return request({
       kind: "confirm",
       message: compactCopy(message),
+      anchor: options.anchor || null,
       ...meta
     });
   }, [request]);
@@ -78,7 +107,8 @@ export function AtlasFeedbackProvider({ children }) {
     title: options.title || (/^Please\b/i.test(String(message || "")) ? "Action needed" : "Atlas"),
     message: compactCopy(message),
     confirmLabel: options.confirmLabel || "OK",
-    destructive: false
+    destructive: false,
+    anchor: options.anchor || null
   }), [request]);
 
   const settle = useCallback((value) => {
@@ -88,6 +118,14 @@ export function AtlasFeedbackProvider({ children }) {
     current?.resolve(value);
     queueMicrotask(advance);
   }, [advance]);
+
+  useEffect(() => {
+    const capturePointer = event => {
+      anchorRef.current = { x: event.clientX, y: event.clientY };
+    };
+    window.addEventListener("pointerdown", capturePointer, true);
+    return () => window.removeEventListener("pointerdown", capturePointer, true);
+  }, []);
 
   useEffect(() => {
     window.__atlasConfirm = confirm;
@@ -113,47 +151,45 @@ export function AtlasFeedbackProvider({ children }) {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [dialog, settle]);
 
+  const popoverStyle = useMemo(() => getPopoverPosition(dialog?.anchor), [dialog]);
+
   return (
     <AtlasFeedbackContext.Provider value={{ confirm, inform }}>
       {children}
       {dialog && (
-        <div
-          className="atlas-feedback-layer fixed inset-0 z-[220] flex items-center justify-center p-4 bg-black/20"
-          onMouseDown={event => {
-            if (event.target === event.currentTarget) settle(false);
-          }}
-        >
+        <div className="atlas-feedback-layer fixed inset-0 z-[220] pointer-events-none">
           <section
             role={dialog.kind === "confirm" ? "alertdialog" : "dialog"}
-            aria-modal="true"
+            aria-modal="false"
             aria-labelledby="atlas-feedback-title"
-            className="w-full max-w-[360px] rounded-2xl border border-border-subtle bg-surface-solid shadow-2xl px-4 py-4 text-text-main"
+            className="atlas-feedback-card fixed w-[320px] max-w-[calc(100vw-24px)] pointer-events-auto rounded-[14px] border shadow-xl px-3.5 py-3"
+            style={popoverStyle}
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <h2 id="atlas-feedback-title" className="text-[15px] font-semibold tracking-[-0.01em]">
+            <div className="flex items-start gap-2.5">
+              <div className="min-w-0 flex-1">
+                <h2 id="atlas-feedback-title" className="atlas-feedback-title text-[16px] leading-5 font-semibold tracking-[-0.01em]">
                   {dialog.title}
                 </h2>
-                <p className="mt-1.5 text-[11px] leading-5 text-text-muted break-words">
+                <p className="atlas-feedback-message mt-1 text-[14px] leading-5 break-words">
                   {dialog.message}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => settle(false)}
-                className="w-8 h-8 -mt-1 -mr-1 rounded-full text-text-muted hover:text-text-main hover:bg-input-bg flex items-center justify-center flex-shrink-0"
+                className="atlas-feedback-close w-7 h-7 -mt-0.5 -mr-0.5 rounded-lg flex items-center justify-center flex-shrink-0"
                 aria-label="Close"
               >
                 <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
             </div>
 
-            <div className="mt-4 flex justify-end gap-2">
+            <div className="mt-3 flex justify-end gap-2">
               {dialog.kind === "confirm" && (
                 <button
                   type="button"
                   onClick={() => settle(false)}
-                  className="h-9 px-3.5 rounded-xl border border-border-subtle bg-surface-solid text-[11px] font-medium hover:bg-input-bg"
+                  className="atlas-feedback-secondary h-9 px-3.5 rounded-lg border text-[13px] font-medium"
                 >
                   Cancel
                 </button>
@@ -163,8 +199,8 @@ export function AtlasFeedbackProvider({ children }) {
                 autoFocus
                 onClick={() => settle(true)}
                 className={dialog.destructive
-                  ? "h-9 px-3.5 rounded-xl border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/15"
-                  : "h-9 px-3.5 rounded-xl bg-electric-blue text-white text-[11px] font-semibold hover:brightness-105"}
+                  ? "atlas-feedback-danger h-9 px-3.5 rounded-lg border text-[13px] font-semibold"
+                  : "atlas-feedback-primary h-9 px-3.5 rounded-lg border text-[13px] font-semibold"}
               >
                 {dialog.confirmLabel}
               </button>
