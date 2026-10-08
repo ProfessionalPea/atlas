@@ -1,17 +1,20 @@
-import { StrictMode } from 'react'
+import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import './AtlasMutationGuard.js'
 import './EmailRetirement.js'
 import App from './App.jsx'
-import AtlasIntelligenceLayer from './AtlasIntelligenceLayer.jsx'
 import { AtlasFeedbackProvider } from './AtlasFeedback.jsx'
+
+const AtlasIntelligenceLayer = lazy(() => import('./AtlasIntelligenceLayer.jsx'))
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <AtlasFeedbackProvider>
       <App />
-      <AtlasIntelligenceLayer />
+      <Suspense fallback={null}>
+        <AtlasIntelligenceLayer />
+      </Suspense>
     </AtlasFeedbackProvider>
   </StrictMode>,
 )

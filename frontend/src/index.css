@@ -5,82 +5,136 @@
 @layer base {
   :root {
     /* PRISTINE LIGHT MODE */
-    --bg-base: 248 250 252;          /* Slate 50 */
-    --surface-solid: 255 255 255;    /* Pure White */
-    --surface-glass: 255 255 255;    /* Pure White */
-    --input-bg: 248 250 252;         /* Slate 50 */
-    
-    --text-main: 15 23 42;           /* Slate 900 */
-    --text-muted: 100 116 139;       /* Slate 500 */
-    --border-subtle: 226 232 240;    /* Slate 200 */
-    
-    --electric-blue: 59 130 246;     /* Blue 500 */
-    --primary-container: 219 234 254;/* Blue 100 */
-    --on-primary-container: 30 58 138;/* Blue 900 */
-    
-    --urgent-red: 239 68 68;         /* Red 500 */
-    --emerald-metric: 16 185 129;    /* Emerald 500 */
-    
-    /* Stat Card Icon Colors */
-    --primary: 59 130 246;           /* Blue 500 */
-    --secondary: 16 185 129;         /* Emerald 500 */
-    --tertiary-container: 249 115 22;/* Orange 500 */
+    --bg-base: 248 250 252;
+    --surface-solid: 255 255 255;
+    --surface-glass: 255 255 255;
+    --input-bg: 248 250 252;
 
-    /* Modern Glass Physics (Light) */
+    --text-main: 15 23 42;
+    --text-muted: 100 116 139;
+    --border-subtle: 226 232 240;
+
+    --electric-blue: 59 130 246;
+    --primary-container: 219 234 254;
+    --on-primary-container: 30 58 138;
+
+    --urgent-red: 239 68 68;
+    --emerald-metric: 16 185 129;
+
+    --primary: 59 130 246;
+    --secondary: 16 185 129;
+    --tertiary-container: 249 115 22;
+
     --border-main: 1px;
     --border-thin: 1px;
     --radius-main: 16px;
     --radius-sm: 12px;
-    
+
     --shadow-main: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
     --shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
     --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
     --shadow-sm-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     --translate-x: 0px;
     --translate-y: -4px;
+
+    color-scheme: light;
   }
 
   .dark {
     /* MODERN DARK MODE */
-    --bg-base: 15 23 42;             
-    --surface-solid: 30 41 59;       
-    --surface-glass: 30 41 59;       
+    --bg-base: 15 23 42;
+    --surface-solid: 30 41 59;
+    --surface-glass: 30 41 59;
     --input-bg: 15 23 42;
-    
+
     --text-main: 248 250 252;
     --text-muted: 148 163 184;
-    --border-subtle: 51 65 85; 
-    
-    --electric-blue: 59 130 246;     
+    --border-subtle: 51 65 85;
+
+    --electric-blue: 59 130 246;
     --primary-container: 30 58 138;
     --on-primary-container: 255 255 255;
-    
+
     --urgent-red: 239 68 68;
     --emerald-metric: 16 185 129;
-    
-    --primary: 96 165 250;           
-    --secondary: 52 211 153;         
+
+    --primary: 96 165 250;
+    --secondary: 52 211 153;
     --tertiary-container: 251 146 60;
 
-    /* Modern Glass Physics (Dark) */
     --border-main: 1px;
     --border-thin: 1px;
     --radius-main: 16px;
     --radius-sm: 12px;
-    
+
     --shadow-main: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
     --shadow-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
     --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
     --shadow-sm-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
     --translate-x: 0px;
     --translate-y: -4px;
+
+    color-scheme: dark;
+  }
+
+  html {
+    min-height: 100%;
+    background: rgb(var(--bg-base));
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+    background: rgb(var(--bg-base));
+    color: rgb(var(--text-main));
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  img,
+  svg {
+    -webkit-user-drag: none;
+  }
+
+  ::selection {
+    background: rgb(var(--electric-blue) / 0.22);
+    color: rgb(var(--text-main));
+  }
+
+  :where(button, a, input, textarea, select, [role="button"], [tabindex]):focus-visible {
+    outline: 2px solid rgb(var(--electric-blue) / 0.95);
+    outline-offset: 2px;
   }
 }
 
 /* Intelligence surfaces live outside App's React-owned shell. Keep their
    typography and inherited foreground identical to the native Atlas UI. */
 .atlas-google-shell {
-  font-family: Roboto, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -91,19 +145,38 @@ html:not(.dark) .atlas-google-shell { color: #202124; }
 
 /* Animations */
 @keyframes slideUpFade {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 .animate-slide-up-fade {
-  animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideUpFade 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   opacity: 0;
 }
 
-/* Scrollbar */
+/* Scrollbars stay subtle but usable instead of disappearing entirely. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border-subtle)) transparent;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--border-subtle));
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgb(var(--text-muted) / 0.55); }
+
 .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-.custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgb(var(--border-subtle)); border-radius: 10px; }
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--border-subtle));
+  border: 0;
+  border-radius: 999px;
+}
 
 /* Shared Atlas prompt/popover -------------------------------------------------
    Prompts are deliberately small and contextual. They do not dim, blur, or
@@ -113,7 +186,7 @@ html:not(.dark) .atlas-google-shell { color: #202124; }
 }
 
 .atlas-feedback-card {
-  font-family: Roboto, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   animation: none !important;
   transition: none !important;
 }
@@ -252,4 +325,19 @@ html:not(.dark) .atlas-google-shell section[aria-labelledby="video-delete-title"
   transform: scale(0.99);
   pointer-events: none !important;
   transition: opacity 80ms ease-out, transform 80ms ease-out !important;
+}
+
+/* Respect OS accessibility preferences without forcing users through long
+   animations or parallax-like motion. */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto !important; }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
