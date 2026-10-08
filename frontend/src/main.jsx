@@ -5,10 +5,13 @@ import './AtlasMutationGuard.js'
 import './EmailRetirement.js'
 import App from './App.jsx'
 import AtlasIntelligenceLayer from './AtlasIntelligenceLayer.jsx'
+import { AtlasFeedbackProvider } from './AtlasFeedback.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
-    <AtlasIntelligenceLayer />
+    <AtlasFeedbackProvider>
+      <App />
+      <AtlasIntelligenceLayer />
+    </AtlasFeedbackProvider>
   </StrictMode>,
 )
