@@ -51,6 +51,97 @@ function DistinctivenessBadge({ value }) {
   return <span className={`px-2 py-0.5 rounded-full border text-[9px] font-medium ${meta[1]}`}>{meta[0]}</span>;
 }
 
+function VideoDeleteDialog({ asset, busy, error, onCancel, onConfirm }) {
+  const game = asset?.games?.[0] || {};
+  const label = game.title || asset?.youtubeId || asset?.assetKey || "this video asset";
+
+  useEffect(() => {
+    const handleKeyDown = event => {
+      if (event.key === "Escape" && !busy) onCancel();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, onCancel]);
+
+  return createPortal(
+    <div className="atlas-google-shell fixed inset-0 z-[160] flex items-center justify-center p-4 font-body-md antialiased [text-rendering:optimizeLegibility]">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-black/65 backdrop-blur-[3px]"
+        onClick={() => { if (!busy) onCancel(); }}
+      />
+
+      <motion.section
+        initial={{ opacity: 0, scale: 0.97, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97, y: 12 }}
+        transition={{ duration: 0.16 }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="video-delete-title"
+        className="relative w-full max-w-[460px] overflow-hidden rounded-[24px] border border-border-subtle bg-surface-solid shadow-2xl"
+      >
+        <div className="px-5 pt-5 pb-4 flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3.5 min-w-0">
+            <div className="w-10 h-10 rounded-2xl bg-urgent-red/10 text-urgent-red border border-urgent-red/15 flex items-center justify-center flex-shrink-0">
+              <span className="material-symbols-outlined text-[20px]">delete</span>
+            </div>
+            <div className="min-w-0">
+              <h2 id="video-delete-title" className="text-[18px] font-semibold tracking-[-0.015em] text-text-main">Confirm deletion</h2>
+              <p className="mt-1 text-[11px] leading-5 text-text-muted">This removes the selected video from Atlas.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="w-9 h-9 rounded-full border border-border-subtle bg-input-bg text-text-muted hover:text-text-main hover:bg-surface-solid disabled:opacity-50 transition-colors flex items-center justify-center flex-shrink-0"
+            aria-label="Close deletion confirmation"
+          >
+            <span className="material-symbols-outlined text-[19px]">close</span>
+          </button>
+        </div>
+
+        <div className="px-5 pb-5">
+          <div className="rounded-2xl border border-border-subtle bg-input-bg/70 px-4 py-3.5">
+            <p className="text-[12px] leading-5 text-text-main break-words">Delete <b>“{label}”</b> from the Video Library?</p>
+            <p className="mt-2 text-[10px] leading-5 text-text-muted">Its stored video asset and Atlas video links will be removed. The game, publisher, competitor, and ad creative records stay intact. A future deep scan may discover this video again.</p>
+          </div>
+
+          {error && (
+            <div className="mt-3 rounded-xl border border-urgent-red/20 bg-urgent-red/10 px-3.5 py-3 text-[10px] leading-5 text-urgent-red" role="alert">
+              {error}
+            </div>
+          )}
+
+          <div className="mt-5 flex items-center justify-end gap-2.5">
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={busy}
+              className="h-10 px-4 rounded-xl border border-border-subtle bg-surface-solid text-[11px] font-medium text-text-main hover:bg-input-bg disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={busy}
+              className="h-10 min-w-[88px] px-4 rounded-xl border border-urgent-red/25 bg-urgent-red/10 text-[11px] font-semibold text-urgent-red hover:bg-urgent-red/15 disabled:opacity-60 disabled:cursor-wait transition-colors flex items-center justify-center gap-1.5"
+            >
+              {busy && <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>}
+              {busy ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      </motion.section>
+    </div>,
+    document.body
+  );
+}
+
 function VideoLibrary({ onClose }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +150,8 @@ function VideoLibrary({ onClose }) {
   const [source, setSource] = useState("all");
   const [sort, setSort] = useState("recent");
   const [deletingId, setDeletingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteError, setDeleteError] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,27 +166,33 @@ function VideoLibrary({ onClose }) {
     }
   }, []);
 
-  const deleteAsset = useCallback(async asset => {
-    const assetId = Number(asset?.id);
+  const requestDelete = useCallback(asset => {
+    setDeleteError("");
+    setDeleteTarget(asset);
+  }, []);
+
+  const closeDeleteDialog = useCallback(() => {
+    if (deletingId !== null) return;
+    setDeleteError("");
+    setDeleteTarget(null);
+  }, [deletingId]);
+
+  const deleteAsset = useCallback(async () => {
+    const assetId = Number(deleteTarget?.id);
     if (!Number.isSafeInteger(assetId) || assetId <= 0) return;
 
-    const label = asset?.games?.[0]?.title || asset?.youtubeId || "this video asset";
-    const confirmed = window.confirm(
-      `Delete "${label}" from the Video Library?\n\n` +
-      "This removes the stored video asset and its Atlas links. A future deep scan may discover it again."
-    );
-    if (!confirmed) return;
-
     setDeletingId(assetId);
+    setDeleteError("");
     try {
       await fetchJson(`${API_BASE}/api/video-assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
       setItems(current => current.filter(item => Number(item.id) !== assetId));
+      setDeleteTarget(null);
     } catch (err) {
-      window.alert(err.message || "Unable to delete video asset.");
+      setDeleteError(err.message || "Unable to delete video asset.");
     } finally {
       setDeletingId(null);
     }
-  }, []);
+  }, [deleteTarget]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -242,7 +341,7 @@ function VideoLibrary({ onClose }) {
                           <span className="px-2.5 py-1 rounded-full bg-input-bg text-[9px] font-medium text-text-muted tabular-nums">{asset.adCount || 0} ads</span>
                           <button
                             type="button"
-                            onClick={() => { void deleteAsset(asset); }}
+                            onClick={() => requestDelete(asset)}
                             disabled={isDeleting}
                             className="w-8 h-8 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted hover:text-urgent-red hover:border-urgent-red/25 disabled:opacity-50 disabled:cursor-wait transition-colors"
                             title="Delete video asset"
@@ -292,7 +391,6 @@ function VideoLibrary({ onClose }) {
                           </a>
                         )}
                         {asset.source === 'direct' && asset.mediaUrlExpired && <span className="text-[9px] text-amber-500">Media link expired · rescan to refresh</span>}
-                        {(asset.games || []).length > 1 && <span className="text-[9px] text-text-muted ml-auto">+{asset.games.length - 1} linked games</span>}
                       </div>
                     </div>
                   </div>
@@ -302,6 +400,18 @@ function VideoLibrary({ onClose }) {
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {deleteTarget && (
+          <VideoDeleteDialog
+            asset={deleteTarget}
+            busy={deletingId === Number(deleteTarget.id)}
+            error={deleteError}
+            onCancel={closeDeleteDialog}
+            onConfirm={() => { void deleteAsset(); }}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
