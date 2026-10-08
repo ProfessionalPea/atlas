@@ -21,8 +21,15 @@ function compactCopy(message) {
 }
 
 function inferConfirmMeta(message, options = {}) {
-  const text = String(message || "");
-  const destructive = options.destructive ?? /delete|permanent|clear|abort/i.test(text);
+  const text = String(message || "").trim();
+  const isRestore = /^restore\b/i.test(text);
+  const isSuspend = !isRestore && (
+    /^suspend\b/i.test(text) ||
+    /^mark\b.*\bsuspended\b/i.test(text) ||
+    /\bmark\b.*\bsuspend(?:ed)?\b/i.test(text)
+  );
+
+  const destructive = options.destructive ?? (/delete|permanent|clear|abort/i.test(text) || isSuspend);
   const title = options.title
     || (/delete|permanent/i.test(text)
       ? "Delete?"
@@ -30,10 +37,10 @@ function inferConfirmMeta(message, options = {}) {
         ? "Abort scan?"
         : /clear/i.test(text)
           ? "Clear?"
-          : /restore/i.test(text)
-            ? "Restore?"
-            : /suspend/i.test(text)
-              ? "Suspend?"
+          : isSuspend
+            ? "Mark as suspended?"
+            : isRestore
+              ? "Restore?"
               : "Confirm action");
   const confirmLabel = options.confirmLabel
     || (/abort/i.test(text)
@@ -42,10 +49,10 @@ function inferConfirmMeta(message, options = {}) {
         ? "Clear"
         : /delete|permanent/i.test(text)
           ? "Delete"
-          : /restore/i.test(text)
-            ? "Restore"
-            : /suspend/i.test(text)
-              ? "Suspend"
+          : isSuspend
+            ? "Suspend"
+            : isRestore
+              ? "Restore"
               : "Continue");
 
   return { title, confirmLabel, destructive };
