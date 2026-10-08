@@ -65,6 +65,29 @@ void initializeCreativeOwnershipAccounting().then(ok => {
   if (!ok) setTimeout(() => { void initializeCreativeOwnershipAccounting(); }, 5000);
 });
 
+async function clearUnresolvedCreativeCache() {
+  try {
+    // v4 cached both successful and unresolved extraction attempts. That meant
+    // an ad which failed to expose a package once was treated as permanently
+    // unresolved on every later scan, even if Google subsequently rendered the
+    // Play Store destination correctly. Keep successful cache hits fast, but
+    // force unresolved creatives through the resolver again on the next scan.
+    const result = await extensionPool.query(`
+      DELETE FROM creative_extraction_cache
+      WHERE COALESCE(package_names, '[]'::jsonb) = '[]'::jsonb
+    `);
+
+    if (result.rowCount > 0) {
+      console.log(`🧭 [Resolver] Retrying ${result.rowCount} previously unresolved creative${result.rowCount === 1 ? '' : 's'}.`);
+    }
+  } catch (error) {
+    // Fresh installations can reach this wrapper before the additive
+    // intelligence tables have been initialized. The scanner will create them
+    // normally, so this cleanup is deliberately best-effort.
+    console.warn('🧭 [Resolver] Unresolved cache cleanup skipped:', error.message);
+  }
+}
+
 async function reconcileVideoLinks() {
   try {
     // Scanner-side persistence happens before server.js finishes its normal
@@ -120,6 +143,7 @@ async function reconcileVideoLinks() {
 }
 
 async function scanCompetitor(...args) {
+  await clearUnresolvedCreativeCache();
   const result = await scanner.scanCompetitor(...args);
   // server.js processes returned packages immediately after this resolves. The
   // relationship pass is best-effort; package-filtered Video Library queries
