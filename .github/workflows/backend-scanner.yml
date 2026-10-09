@@ -4,10 +4,12 @@ on:
   pull_request:
     paths:
       - 'backend/GoogleAdsScanner.js'
+      - 'backend/GoogleAdsScannerBroad.js'
       - 'backend/GoogleAdsScannerV5.js'
       - 'backend/GoogleAdsScannerV6.js'
       - 'backend/AtlasExtensions.js'
       - 'backend/ScanDiscoveryRegistry.js'
+      - 'backend/scanner-broad.test.js'
       - 'backend/scanner-v5.test.js'
       - 'backend/scanner-v6.test.js'
       - 'backend/scan-discovery-registry.test.js'
@@ -27,8 +29,8 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
-      - run: node --check GoogleAdsScannerV6.js
+      - run: node --check GoogleAdsScannerBroad.js
       - run: node --check GoogleAdsScanner.js
       - run: node --check AtlasExtensions.js
-      - run: node scanner-v6.test.js
+      - run: node scanner-broad.test.js
       - run: node scan-discovery-registry.test.js
