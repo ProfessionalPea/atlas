@@ -2,17 +2,14 @@
 // Express app. The extension hooks app.listen so the routes inherit Atlas's
 // existing /api authentication middleware without changing server.js.
 const { extensionPool } = require('./AtlasExtensions');
-const scanner = require('./GoogleAdsScannerV5');
+const scanner = require('./GoogleAdsScannerV6');
 const gplayRaw = require('google-play-scraper');
 const gplay = gplayRaw.default || gplayRaw;
 
+const PENDING_PUBLISHER = 'Pending metadata';
+
 async function initializeCreativeOwnershipAccounting() {
   try {
-    // games.ad_count used to be increment-only, so one creative accidentally
-    // attributed to several packages permanently inflated every affected game.
-    // Keep the display counter derived from the actual creative ownership table
-    // instead. Moving/deleting a creative automatically repairs both old/new
-    // owners as v5 re-resolves historical creatives.
     await extensionPool.query(`
       CREATE OR REPLACE FUNCTION atlas_refresh_game_ad_count()
       RETURNS trigger AS $$
@@ -60,31 +57,23 @@ async function initializeCreativeOwnershipAccounting() {
   }
 }
 
-// server.js creates ad_creatives in its own startup initializer. Existing Atlas
-// databases have it already, while a fresh install can race this module import;
-// retry once after startup so the trigger is present in both cases.
 void initializeCreativeOwnershipAccounting().then(ok => {
   if (!ok) setTimeout(() => { void initializeCreativeOwnershipAccounting(); }, 5000);
 });
 
 async function clearUnresolvedCreativeCache() {
   try {
-    // v5 deliberately writes [] for unresolved and multi-package creatives so
-    // they are never frozen into a single package by cache. Successful,
-    // unambiguous one-package resolutions stay cached and fast.
     const result = await extensionPool.query(`
       DELETE FROM creative_extraction_cache
       WHERE COALESCE(package_names, '[]'::jsonb) = '[]'::jsonb
+         OR COALESCE(extraction_version, 0) < 6
     `);
 
     if (result.rowCount > 0) {
-      console.log(`🧭 [Resolver] Retrying ${result.rowCount} unresolved/multi-package creative${result.rowCount === 1 ? '' : 's'}.`);
+      console.log(`🧭 [Resolver] Retrying ${result.rowCount} stale/unresolved creative${result.rowCount === 1 ? '' : 's'} with scanner v6.`);
     }
   } catch (error) {
-    // Fresh installations can reach this wrapper before the additive
-    // intelligence tables have been initialized. The scanner will create them
-    // normally, so this cleanup is deliberately best-effort.
-    console.warn('🧭 [Resolver] Unresolved cache cleanup skipped:', error.message);
+    console.warn('🧭 [Resolver] Creative-cache cleanup skipped:', error.message);
   }
 }
 
@@ -98,6 +87,49 @@ function normalizePublisherName(value) {
     name,
     normalized: name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'unknownpublisher'
   };
+}
+
+function normalizePackageName(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function collectPackageEvidence(rawResults) {
+  const evidence = new Map();
+  const ensure = packageName => {
+    const pkg = normalizePackageName(packageName);
+    if (!pkg) return null;
+    if (!evidence.has(pkg)) {
+      evidence.set(pkg, {
+        packageName: pkg,
+        occurrences: 0,
+        canonicalEvidence: false,
+        storeEvidence: false,
+        metadataEvidence: false
+      });
+    }
+    return evidence.get(pkg);
+  };
+
+  for (const entry of rawResults || []) {
+    const discovered = new Set([
+      ...(Array.isArray(entry?.discoveredPackages) ? entry.discoveredPackages : []),
+      entry?.package
+    ].map(normalizePackageName).filter(Boolean));
+    const store = new Set((entry?.storeCandidatePackages || []).map(normalizePackageName).filter(Boolean));
+    const metadata = new Set((entry?.metadataCandidatePackages || []).map(normalizePackageName).filter(Boolean));
+    const canonical = normalizePackageName(entry?.package);
+
+    for (const pkg of discovered) {
+      const item = ensure(pkg);
+      if (!item) continue;
+      item.occurrences += 1;
+      if (store.has(pkg)) item.storeEvidence = true;
+      if (metadata.has(pkg)) item.metadataEvidence = true;
+      if (canonical === pkg) item.canonicalEvidence = true;
+    }
+  }
+
+  return evidence;
 }
 
 async function getCompetitorForScan(searchQuery) {
@@ -130,16 +162,21 @@ async function getCompetitorForScan(searchQuery) {
   }
 }
 
-async function fetchPlayMetadata(packageName) {
-  try {
-    return await gplay.app({ appId: packageName, country: 'us' });
-  } catch {
+async function fetchPlayMetadata(packageName, targetCountry) {
+  const countries = [];
+  const requested = String(targetCountry || '').trim().toLowerCase();
+  if (/^[a-z]{2}$/.test(requested)) countries.push(requested);
+  if (!countries.includes('us')) countries.push('us');
+  countries.push(null);
+
+  for (const country of countries) {
     try {
-      return await gplay.app({ appId: packageName });
-    } catch {
-      return null;
-    }
+      return await gplay.app(country
+        ? { appId: packageName, country }
+        : { appId: packageName });
+    } catch {}
   }
+  return null;
 }
 
 async function getExistingGames(packageNames) {
@@ -153,7 +190,7 @@ async function getExistingGames(packageNames) {
            FROM account_games ag
            JOIN accounts a ON a.id = ag.account_id
            WHERE ag.game_id = g.id
-           ORDER BY a.id ASC
+           ORDER BY CASE WHEN a.normalized_name = 'pendingmetadata' THEN 1 ELSE 0 END, a.id ASC
            LIMIT 1
          ) AS existing_publisher_name
        FROM games g
@@ -167,32 +204,97 @@ async function getExistingGames(packageNames) {
   }
 }
 
-async function validateDiscoveredPackages(rawResults) {
-  const packages = [...new Set(
-    (rawResults || []).flatMap(entry => [
-      ...(Array.isArray(entry?.discoveredPackages) ? entry.discoveredPackages : []),
-      entry?.package
-    ]).map(value => String(value || '').trim().toLowerCase()).filter(Boolean)
-  )];
+function existingNeedsMetadataRefresh(existing, packageName) {
+  if (!existing) return true;
+  return (
+    !existing.icon ||
+    normalizePackageName(existing.title) === packageName ||
+    String(existing.existing_publisher_name || '').toLowerCase() === PENDING_PUBLISHER.toLowerCase()
+  );
+}
 
+async function validateDiscoveredPackages(rawResults, targetCountry) {
+  const evidence = collectPackageEvidence(rawResults);
+  const packages = [...evidence.keys()];
   const existingGames = await getExistingGames(packages);
   const validated = new Map();
+  let consecutiveLookupFailures = 0;
+  let playLookupCircuitOpen = false;
 
-  // Validate every candidate independently. Existing Atlas packages are kept
-  // even if Google Play is temporarily unavailable; brand-new packages must
-  // resolve successfully in Google Play before Atlas stores them.
+  const stats = {
+    candidates: packages.length,
+    existing: 0,
+    playValidated: 0,
+    acceptedFromStoreEvidence: 0,
+    rejectedMetadataOnly: 0,
+    lookupCircuitOpened: false
+  };
+
   for (const packageName of packages) {
+    const packageEvidence = evidence.get(packageName);
     const existing = existingGames.get(packageName) || null;
-    const appData = await fetchPlayMetadata(packageName);
+    let appData = null;
 
-    if (!appData && !existing) {
-      console.log(`🧹 [Discovery] Rejected unverified package candidate: ${packageName}`);
+    if (existing) stats.existing += 1;
+
+    const shouldLookup = existingNeedsMetadataRefresh(existing, packageName) && !playLookupCircuitOpen;
+    if (shouldLookup) {
+      appData = await fetchPlayMetadata(packageName, targetCountry);
+      if (appData) {
+        consecutiveLookupFailures = 0;
+        stats.playValidated += 1;
+      } else {
+        consecutiveLookupFailures += 1;
+        if (consecutiveLookupFailures >= 4) {
+          playLookupCircuitOpen = true;
+          stats.lookupCircuitOpened = true;
+          console.warn('🧭 [Discovery] Google Play metadata lookup is failing repeatedly; keeping explicit Play-destination packages and skipping unsafe metadata-only guesses for the rest of this scan.');
+        }
+      }
+    }
+
+    if (existing) {
+      validated.set(packageName, {
+        packageName,
+        existing,
+        appData,
+        evidence: packageEvidence,
+        acceptedBy: appData ? 'play' : 'existing'
+      });
       continue;
     }
 
-    validated.set(packageName, { packageName, existing, appData });
+    if (appData) {
+      validated.set(packageName, {
+        packageName,
+        existing: null,
+        appData,
+        evidence: packageEvidence,
+        acceptedBy: 'play'
+      });
+      continue;
+    }
+
+    // A package embedded in a literal Play Store / market:// destination is
+    // already first-party destination evidence. Do not throw it away merely
+    // because google-play-scraper is rate-limited or temporarily unavailable.
+    if (packageEvidence?.storeEvidence) {
+      stats.acceptedFromStoreEvidence += 1;
+      validated.set(packageName, {
+        packageName,
+        existing: null,
+        appData: null,
+        evidence: packageEvidence,
+        acceptedBy: 'store-evidence'
+      });
+      continue;
+    }
+
+    stats.rejectedMetadataOnly += 1;
+    console.log(`🧹 [Discovery] Rejected metadata-only package that Google Play could not validate: ${packageName}`);
   }
 
+  validated.discoveryStats = stats;
   return validated;
 }
 
@@ -222,13 +324,40 @@ function appDataFromExisting(existing, fallbackPublisher) {
   };
 }
 
+function appDataFromStoreEvidence(packageName) {
+  return {
+    title: packageName,
+    developer: PENDING_PUBLISHER,
+    developerId: null,
+    genre: 'Game',
+    score: 0,
+    ratings: 0,
+    icon: null,
+    screenshots: [],
+    description: 'Discovered from an explicit Google Play destination. Storefront metadata is pending refresh.',
+    installs: '0+',
+    minInstalls: 0,
+    released: 'Unknown',
+    updated: 0,
+    headerImage: null,
+    video: null,
+    videoImage: null,
+    free: true,
+    price: 0,
+    currency: null,
+    priceText: null
+  };
+}
+
 async function persistValidatedDiscovery(validation, competitor) {
   const packageName = validation.packageName;
   const existing = validation.existing;
-  const appData = validation.appData || appDataFromExisting(existing, competitor?.name);
+  const appData = validation.appData ||
+    appDataFromExisting(existing, competitor?.name) ||
+    (validation.acceptedBy === 'store-evidence' ? appDataFromStoreEvidence(packageName) : null);
   if (!appData) return null;
 
-  const publisher = normalizePublisherName(appData.developer || existing?.existing_publisher_name || competitor?.name);
+  const publisher = normalizePublisherName(appData.developer || existing?.existing_publisher_name || PENDING_PUBLISHER);
   const developerId = appData.developerId ? String(appData.developerId) : (existing?.developer_id || null);
   const developerUrl = developerId
     ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(developerId)}`
@@ -237,7 +366,6 @@ async function persistValidatedDiscovery(validation, competitor) {
   const screenshots = Array.isArray(appData.screenshots)
     ? appData.screenshots.map(fixUrl).filter(Boolean)
     : (Array.isArray(existing?.screenshots) ? existing.screenshots : []);
-
   const isPaid = appData.free === false && Number(appData.price) > 0;
 
   const { rows } = await extensionPool.query(
@@ -252,29 +380,37 @@ async function persistValidatedDiscovery(validation, competitor) {
        $14,$15,$16,$17,$18,$19,$20,$21,$22
      )
      ON CONFLICT (package_name) DO UPDATE SET
-       title = COALESCE(NULLIF(EXCLUDED.title, ''), games.title),
+       title = CASE
+         WHEN EXCLUDED.title = EXCLUDED.package_name AND games.title IS NOT NULL AND games.title <> games.package_name
+           THEN games.title
+         ELSE COALESCE(NULLIF(EXCLUDED.title, ''), games.title)
+       END,
        category = COALESCE(NULLIF(EXCLUDED.category, ''), games.category),
-       rating = EXCLUDED.rating,
-       ratings_count = EXCLUDED.ratings_count,
+       rating = CASE WHEN EXCLUDED.rating > 0 THEN EXCLUDED.rating ELSE games.rating END,
+       ratings_count = CASE WHEN EXCLUDED.ratings_count > 0 THEN EXCLUDED.ratings_count ELSE games.ratings_count END,
        icon = COALESCE(EXCLUDED.icon, games.icon),
        screenshots = CASE
          WHEN jsonb_array_length(EXCLUDED.screenshots) > 0 THEN EXCLUDED.screenshots
          ELSE games.screenshots
        END,
-       description = COALESCE(NULLIF(EXCLUDED.description, ''), games.description),
-       installs = COALESCE(NULLIF(EXCLUDED.installs, ''), games.installs),
-       min_installs = EXCLUDED.min_installs,
-       released = COALESCE(NULLIF(EXCLUDED.released, ''), games.released),
-       updated = EXCLUDED.updated,
+       description = CASE
+         WHEN EXCLUDED.description LIKE 'Discovered from an explicit Google Play destination.%' AND NULLIF(games.description, '') IS NOT NULL
+           THEN games.description
+         ELSE COALESCE(NULLIF(EXCLUDED.description, ''), games.description)
+       END,
+       installs = CASE WHEN EXCLUDED.installs <> '0+' THEN EXCLUDED.installs ELSE COALESCE(games.installs, EXCLUDED.installs) END,
+       min_installs = GREATEST(COALESCE(games.min_installs, 0), COALESCE(EXCLUDED.min_installs, 0)),
+       released = CASE WHEN EXCLUDED.released <> 'Unknown' THEN EXCLUDED.released ELSE COALESCE(games.released, EXCLUDED.released) END,
+       updated = GREATEST(COALESCE(games.updated, 0), COALESCE(EXCLUDED.updated, 0)),
        header_image = COALESCE(EXCLUDED.header_image, games.header_image),
        video = COALESCE(EXCLUDED.video, games.video),
        video_image = COALESCE(EXCLUDED.video_image, games.video_image),
        developer_id = COALESCE(EXCLUDED.developer_id, games.developer_id),
        developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url),
-       is_paid = EXCLUDED.is_paid,
-       price = EXCLUDED.price,
-       currency = EXCLUDED.currency,
-       price_text = EXCLUDED.price_text
+       is_paid = CASE WHEN EXCLUDED.is_paid THEN TRUE ELSE games.is_paid END,
+       price = COALESCE(EXCLUDED.price, games.price),
+       currency = COALESCE(EXCLUDED.currency, games.currency),
+       price_text = COALESCE(EXCLUDED.price_text, games.price_text)
      RETURNING id`,
     [
       packageName,
@@ -304,6 +440,25 @@ async function persistValidatedDiscovery(validation, competitor) {
 
   const gameId = rows[0]?.id;
   if (!gameId || !competitor?.id) return gameId || null;
+
+  if (validation.appData?.developer && publisher.normalized !== 'pendingmetadata') {
+    await extensionPool.query(
+      `DELETE FROM account_games ag
+       USING accounts a
+       WHERE ag.account_id = a.id
+         AND ag.game_id = $1
+         AND a.competitor_id = $2
+         AND a.normalized_name = 'pendingmetadata'`,
+      [gameId, competitor.id]
+    ).catch(() => {});
+    await extensionPool.query(
+      `DELETE FROM accounts a
+       WHERE a.competitor_id = $1
+         AND a.normalized_name = 'pendingmetadata'
+         AND NOT EXISTS (SELECT 1 FROM account_games ag WHERE ag.account_id = a.id)`,
+      [competitor.id]
+    ).catch(() => {});
+  }
 
   let account = (await extensionPool.query(
     `SELECT id
@@ -337,10 +492,6 @@ async function persistValidatedDiscovery(validation, competitor) {
 
 async function reconcileVideoLinks() {
   try {
-    // Scanner-side persistence happens before server.js finishes its normal
-    // game upserts. Reconnect links to the durable game/competitor records once
-    // the scan is complete so the Video Library inherits all existing Atlas
-    // metadata without duplicating it.
     await extensionPool.query(`
       UPDATE ad_video_links avl
       SET game_id = g.id
@@ -359,10 +510,6 @@ async function reconcileVideoLinks() {
         AND avl.package_name = g.package_name
         AND a.competitor_id IS NOT NULL;
 
-      -- A googlevideo request may be observed before the creative DOM exposes
-      -- the stable YouTube ID. When both refer to the same creative/package,
-      -- keep the permanent YouTube-backed asset and remove the transient-only
-      -- duplicate link.
       DELETE FROM ad_video_links transient_link
       USING video_assets transient_asset
       WHERE transient_link.asset_id = transient_asset.id
@@ -400,40 +547,36 @@ async function scanCompetitor(...args) {
 
   let validated = new Map();
   try {
-    validated = await validateDiscoveredPackages(rawResults);
+    validated = await validateDiscoveredPackages(rawResults, args[1]);
   } catch (error) {
-    console.warn('🧭 [Discovery] Package validation failed; keeping only scanner-resolved packages:', error.message);
+    console.warn('🧭 [Discovery] Package validation failed:', error.message);
   }
 
   const competitor = await getCompetitorForScan(args[0]);
   const onPackageFound = typeof args[4] === 'function' ? args[4] : async () => {};
+  const persistedPackages = new Set();
 
-  // Store every independently validated package, even when one creative exposes
-  // several games. The package_name unique key plus account_games conflict
-  // handling makes this idempotent: existing games are refreshed, new games are
-  // created once, and repeated package evidence never creates duplicates.
   for (const validation of validated.values()) {
     try {
-      await persistValidatedDiscovery(validation, competitor);
-      await onPackageFound(validation.packageName);
+      const gameId = await persistValidatedDiscovery(validation, competitor);
+      if (gameId) {
+        persistedPackages.add(validation.packageName);
+        await onPackageFound(validation.packageName);
+      }
     } catch (error) {
       console.warn(`🧭 [Discovery] Failed to persist ${validation.packageName}:`, error.message);
     }
   }
 
-  // server.js still owns creative/ad accounting. Only return creatives whose
-  // single owner was actually resolved and whose package passed validation.
-  // Secondary packages are already stored above as distinct games, without
-  // falsely crediting the same creative/video to every discovered game.
   const canonicalResults = rawResults
     .map(entry => {
       const discoveredPackages = [...new Set(
         (entry.discoveredPackages || [])
-          .map(pkg => String(pkg || '').toLowerCase())
-          .filter(pkg => validated.has(pkg))
+          .map(pkg => normalizePackageName(pkg))
+          .filter(pkg => persistedPackages.has(pkg))
       )];
-      const packageName = entry.package ? String(entry.package).toLowerCase() : null;
-      if (!packageName || !validated.has(packageName)) return null;
+      const packageName = entry.package ? normalizePackageName(entry.package) : null;
+      if (!packageName || !persistedPackages.has(packageName)) return null;
       return {
         ...entry,
         package: packageName,
@@ -443,16 +586,24 @@ async function scanCompetitor(...args) {
     })
     .filter(Boolean);
 
-  const discoveredCount = validated.size;
+  // Keep discovery metadata on the returned array without changing the legacy
+  // iterable shape consumed by server.js. A server status bridge can report all
+  // discovered games while creative/ad accounting remains canonical-only.
+  canonicalResults.discoveredPackages = [...persistedPackages];
+  canonicalResults.discoveryOnlyPackages = [...persistedPackages].filter(pkg =>
+    !canonicalResults.some(entry => entry.package === pkg)
+  );
+  canonicalResults.discoveryStats = validated.discoveryStats || {};
+
+  const stats = canonicalResults.discoveryStats;
   const canonicalPackageCount = new Set(canonicalResults.map(entry => entry.package)).size;
   console.log(
-    `🧭 [Discovery] Validated ${discoveredCount} unique package${discoveredCount === 1 ? '' : 's'}; ` +
-    `${canonicalPackageCount} package${canonicalPackageCount === 1 ? '' : 's'} have canonical creative ownership.`
+    `🧭 [Discovery] Persisted ${persistedPackages.size}/${stats.candidates || 0} package candidate${stats.candidates === 1 ? '' : 's'}; ` +
+    `${canonicalPackageCount} have canonical creative ownership. ` +
+    `${stats.acceptedFromStoreEvidence || 0} accepted from explicit Play destinations while metadata was unavailable; ` +
+    `${stats.rejectedMetadataOnly || 0} unsafe metadata-only candidate${stats.rejectedMetadataOnly === 1 ? '' : 's'} rejected.`
   );
 
-  // server.js processes canonical packages immediately after this resolves. The
-  // relationship pass is best-effort; package-filtered Video Library queries
-  // can already join by package_name in the meantime.
   setTimeout(() => { void reconcileVideoLinks(); }, 5000);
   setTimeout(() => { void reconcileVideoLinks(); }, 30000);
   return canonicalResults;
@@ -461,6 +612,8 @@ async function scanCompetitor(...args) {
 module.exports = {
   ...scanner,
   scanCompetitor,
+  collectPackageEvidence,
   validateDiscoveredPackages,
-  persistValidatedDiscovery
+  persistValidatedDiscovery,
+  existingNeedsMetadataRefresh
 };
