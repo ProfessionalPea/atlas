@@ -9,6 +9,7 @@ import './AtlasMutationGuard.js'
 import './EmailRetirement.js'
 import App from './App.jsx'
 import { AtlasFeedbackProvider } from './AtlasFeedback.jsx'
+import VideoLibraryEditor from './VideoLibraryEditor.jsx'
 
 const AtlasIntelligenceLayer = lazy(() => import('./AtlasIntelligenceLayer.jsx'))
 
@@ -19,6 +20,7 @@ createRoot(document.getElementById('root')).render(
       <Suspense fallback={null}>
         <AtlasIntelligenceLayer />
       </Suspense>
+      <VideoLibraryEditor />
     </AtlasFeedbackProvider>
   </StrictMode>,
 )
