@@ -14,6 +14,10 @@ const {
   initializeVideoMetadata,
   registerVideoMetadataRoutes
 } = require('./VideoLibraryMetadata');
+const {
+  beginScan,
+  mergeScanStatus
+} = require('./ScanDiscoveryRegistry');
 
 const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
 const extensionPool = new Pool({
@@ -23,6 +27,54 @@ const extensionPool = new Pool({
 
 let initialized = false;
 let registered = false;
+
+// server.js historically builds the Latest dashboard package list only from
+// creatives that have one canonical owner. Scanner v6 deliberately discovers
+// real secondary packages without assigning the ad to them. Because this module
+// is loaded before server.js registers its Express routes, wrap just the scan
+// start/status routes so the UI receives every validated discovered package
+// while the legacy ad-counting loop still sees canonical results only.
+const SCAN_STATUS_BRIDGE = Symbol.for('atlas.scanStatusDiscoveryBridge');
+if (!express.application[SCAN_STATUS_BRIDGE]) {
+  express.application[SCAN_STATUS_BRIDGE] = true;
+
+  const originalPost = express.application.post;
+  express.application.post = function atlasDiscoveryPost(path, ...handlers) {
+    if (path === '/api/scan') {
+      handlers = handlers.map(handler => {
+        if (typeof handler !== 'function') return handler;
+        return function atlasScanStartBridge(req, res, next) {
+          const originalJson = res.json.bind(res);
+          res.json = body => {
+            if (body?.status === 'initiated' && body?.scanId) beginScan(body.scanId);
+            res.json = originalJson;
+            return originalJson(body);
+          };
+          return handler(req, res, next);
+        };
+      });
+    }
+    return originalPost.call(this, path, ...handlers);
+  };
+
+  const originalGet = express.application.get;
+  express.application.get = function atlasDiscoveryGet(path, ...handlers) {
+    if (path === '/api/scan-status') {
+      handlers = handlers.map(handler => {
+        if (typeof handler !== 'function') return handler;
+        return function atlasScanStatusBridge(req, res, next) {
+          const originalJson = res.json.bind(res);
+          res.json = body => {
+            res.json = originalJson;
+            return originalJson(mergeScanStatus(body));
+          };
+          return handler(req, res, next);
+        };
+      });
+    }
+    return originalGet.call(this, path, ...handlers);
+  };
+}
 
 async function initialize() {
   if (initialized) return;
@@ -42,10 +94,6 @@ const originalListen = express.application.listen;
 express.application.listen = function atlasExtensionListen(...args) {
   if (!registered) {
     registered = true;
-    // Register the canonical creative -> game metadata route before the legacy
-    // intelligence route so /api/video-assets resolves titles/publishers from
-    // ad_creatives even when strict frame attribution intentionally left the
-    // video link itself unassigned.
     registerVideoMetadataRoutes({ app: this, pool: extensionPool });
     registerIntelligenceRoutes({ app: this, pool: extensionPool, gplay });
     registerVideoLifecycleRoutes({ app: this, pool: extensionPool });
