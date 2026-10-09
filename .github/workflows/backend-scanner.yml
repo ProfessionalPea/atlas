@@ -6,8 +6,11 @@ on:
       - 'backend/GoogleAdsScanner.js'
       - 'backend/GoogleAdsScannerV5.js'
       - 'backend/GoogleAdsScannerV6.js'
+      - 'backend/AtlasExtensions.js'
+      - 'backend/ScanDiscoveryRegistry.js'
       - 'backend/scanner-v5.test.js'
       - 'backend/scanner-v6.test.js'
+      - 'backend/scan-discovery-registry.test.js'
       - '.github/workflows/backend-scanner.yml'
 
 jobs:
@@ -26,4 +29,6 @@ jobs:
       - run: npm ci
       - run: node --check GoogleAdsScannerV6.js
       - run: node --check GoogleAdsScanner.js
+      - run: node --check AtlasExtensions.js
       - run: node scanner-v6.test.js
+      - run: node scan-discovery-registry.test.js
