@@ -5,7 +5,9 @@ on:
     paths:
       - 'backend/GoogleAdsScanner.js'
       - 'backend/GoogleAdsScannerV5.js'
+      - 'backend/GoogleAdsScannerV6.js'
       - 'backend/scanner-v5.test.js'
+      - 'backend/scanner-v6.test.js'
       - '.github/workflows/backend-scanner.yml'
 
 jobs:
@@ -22,6 +24,6 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
-      - run: node --check GoogleAdsScannerV5.js
+      - run: node --check GoogleAdsScannerV6.js
       - run: node --check GoogleAdsScanner.js
-      - run: node scanner-v5.test.js
+      - run: node scanner-v6.test.js
