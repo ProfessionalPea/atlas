@@ -10,7 +10,10 @@ const {
   initializeVideoLifecycle,
   registerVideoLifecycleRoutes
 } = require('./VideoLifecycle');
-const { registerVideoMetadataRoutes } = require('./VideoLibraryMetadata');
+const {
+  initializeVideoMetadata,
+  registerVideoMetadataRoutes
+} = require('./VideoLibraryMetadata');
 
 const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
 const extensionPool = new Pool({
@@ -27,7 +30,8 @@ async function initialize() {
   try {
     await initializeIntelligenceFeatures(extensionPool);
     await initializeVideoLifecycle(extensionPool);
-    console.log('🎬 [Atlas Intelligence] Video library + keyword storage ready.');
+    await initializeVideoMetadata(extensionPool);
+    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword storage ready.');
   } catch (error) {
     initialized = false;
     console.error('⚠️ [Atlas Intelligence] Initialization failed:', error.message);
