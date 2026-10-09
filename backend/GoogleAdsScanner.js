@@ -5,6 +5,7 @@ const { extensionPool } = require('./AtlasExtensions');
 const scanner = require('./GoogleAdsScannerV6');
 const gplayRaw = require('google-play-scraper');
 const gplay = gplayRaw.default || gplayRaw;
+const { recordDiscoveredPackages } = require('./ScanDiscoveryRegistry');
 
 const PENDING_PUBLISHER = 'Pending metadata';
 
@@ -275,9 +276,6 @@ async function validateDiscoveredPackages(rawResults, targetCountry) {
       continue;
     }
 
-    // A package embedded in a literal Play Store / market:// destination is
-    // already first-party destination evidence. Do not throw it away merely
-    // because google-play-scraper is rate-limited or temporarily unavailable.
     if (packageEvidence?.storeEvidence) {
       stats.acceptedFromStoreEvidence += 1;
       validated.set(packageName, {
@@ -586,14 +584,12 @@ async function scanCompetitor(...args) {
     })
     .filter(Boolean);
 
-  // Keep discovery metadata on the returned array without changing the legacy
-  // iterable shape consumed by server.js. A server status bridge can report all
-  // discovered games while creative/ad accounting remains canonical-only.
   canonicalResults.discoveredPackages = [...persistedPackages];
   canonicalResults.discoveryOnlyPackages = [...persistedPackages].filter(pkg =>
     !canonicalResults.some(entry => entry.package === pkg)
   );
   canonicalResults.discoveryStats = validated.discoveryStats || {};
+  recordDiscoveredPackages(canonicalResults.discoveredPackages, canonicalResults.discoveryStats);
 
   const stats = canonicalResults.discoveryStats;
   const canonicalPackageCount = new Set(canonicalResults.map(entry => entry.package)).size;
