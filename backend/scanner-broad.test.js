@@ -9,8 +9,7 @@ function sorted(values) {
   return [...values].sort();
 }
 
-// The core September behavior: one creative can expose several games. The ad
-// limit must never become a package/game limit.
+// One creative can expose several com.* games. Non-com namespaces must always be rejected.
 {
   const html = `
     <a href="https://play.google.com/store/apps/details?id=com.alpha.game">Alpha</a>
@@ -20,7 +19,7 @@ function sorted(values) {
   const packages = extractBroadPackages(html);
   assert.deepStrictEqual(
     sorted(packages),
-    sorted(['com.alpha.game', 'com.beta.runner', 'games.gamma.puzzle', 'com.delta.arcade.game'])
+    sorted(['com.alpha.game', 'com.beta.runner', 'com.delta.arcade.game'])
   );
 }
 
@@ -76,15 +75,28 @@ function sorted(values) {
   const packages = extractBroadPackages(nestedScriptPayload + cWizPayload);
   assert.deepStrictEqual(
     sorted(packages),
-    sorted(['com.dolphingames.subway.sneak.out', 'app.girl.escape.game'])
+    sorted(['com.dolphingames.subway.sneak.out'])
   );
 }
 
-// Metadata-key evidence can use valid package namespaces beyond the original
-// short prefix allowlist; generic dotted strings remain namespace-filtered.
+// Named metadata fields do not bypass Atlas's com.* namespace requirement.
 {
   const html = '<script>{"applicationId":"mobile.vendor.girl.escape"}</script>';
-  assert.deepStrictEqual(extractBroadPackages(html), ['mobile.vendor.girl.escape']);
+  assert.deepStrictEqual(extractBroadPackages(html), []);
+}
+
+// Strong evidence does not bypass the com.* namespace rule.
+{
+  const html = `
+    <a href="https://play.google.com/store/apps/details?id=io.vendor.game">Non-com destination</a>
+    <script>{"appId":"net.vendor.game","packageName":"com.allowed.game"}</script>
+    <c-wiz data-p="org.vendor.game"></c-wiz>
+  `;
+  assert.deepStrictEqual(extractBroadPackages(html), ['com.allowed.game']);
+  assert.deepStrictEqual(
+    extractExplicitStorePackages('https://play.google.com/store/apps/details?id=io.vendor.game'),
+    []
+  );
 }
 
 // Unquoted app IDs inside renderer markup should still be detected.
