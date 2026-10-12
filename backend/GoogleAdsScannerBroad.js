@@ -120,8 +120,8 @@ function extractExplicitStorePackages(value) {
   const decoded = decodeForInspection(value);
   const found = new Set();
   const patterns = [
-    /play\.google\.com\/store\/apps\/details\?[^"'<>\\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
-    /market:\/\/details\?[^"'<>\\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
+    /play\.google\.com\/store\/apps\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
+    /market:\/\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
   ];
   for (const pattern of patterns) {
     for (const match of decoded.matchAll(pattern)) addPackage(found, match[1], true);
@@ -482,6 +482,7 @@ async function scanCompetitor(
 
     const results = [];
     const globallyDiscovered = new Set();
+    const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
 
     for (let i = 0; i < idArray.length; i += 1) {
       if (isCancelled()) throw new Error('Scan aborted by user.');
@@ -627,6 +628,9 @@ async function scanCompetitor(
         }
 
         const uniqueInAd = [...discovered];
+        sourceDiscoveryTotals.requestUrl += packageSources.requestUrl.size;
+        sourceDiscoveryTotals.responseBody += packageSources.responseBody.size;
+        sourceDiscoveryTotals.frameHtml += packageSources.frameHtml.size;
 
         for (const pkg of uniqueInAd) globallyDiscovered.add(pkg);
 
@@ -663,6 +667,10 @@ async function scanCompetitor(
         await adPage.close().catch(() => {});
       }
     }
+
+    console.log('[Broad Scanner] Package evidence source hits (overlap between sources is expected): ' +
+      'request URLs=' + sourceDiscoveryTotals.requestUrl + ', response bodies=' +
+      sourceDiscoveryTotals.responseBody + ', frame/DOM=' + sourceDiscoveryTotals.frameHtml + '.');
 
     emitProgress(
       idArray.length,
