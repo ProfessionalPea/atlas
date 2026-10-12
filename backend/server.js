@@ -2053,7 +2053,7 @@ app.post("/api/scan", async (req, res) => {
         }
         updateScanStatus({
           log: sheetSyncResults.some(result => result.status === "rejected")
-            ? "> ⚠️ Google Sheets sync timed out; Atlas database ingestion can continue."
+            ? "> ⚠️ Google Sheets sync timed out; Atlas database records were saved."
             : "> 📊 Google Sheets sync finished."
         });
         
