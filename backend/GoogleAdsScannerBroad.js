@@ -19,28 +19,20 @@ async function ensureVideoDb() {
   videoDbReady = true;
 }
 
-const PACKAGE_NAMESPACE_PREFIXES = [
-  'com.', 'io.', 'net.', 'org.', 'games.',
-  'app.', 'me.', 'co.', 'uk.', 'dev.', 'ai.', 'in.', 'id.', 'tv.', 'xyz.',
-  'fun.', 'live.', 'site.', 'cloud.', 'online.', 'pro.', 'biz.', 'info.',
-  'edu.', 'us.', 'de.', 'fr.', 'jp.', 'ru.', 'br.', 'au.', 'ca.', 'se.',
-  'ch.', 'it.', 'es.', 'nl.', 'be.', 'pl.', 'cz.', 'kr.', 'cn.', 'hk.',
-  'sg.', 'my.', 'th.', 'vn.', 'za.', 'ir.', 'tr.', 'mx.', 'ar.', 'cl.',
-  'pe.', 'ph.', 'pk.', 'bd.', 'ng.', 'sa.', 'ae.', 'mil.', 'gov.', 'mobi.',
-  'name.', 'store.', 'tech.'
-];
-
 const PACKAGE_BLACKLIST = [
-  'goog.', 'com.google.', 'com.android.', 'com.apple.',
-  'org.w3c.', 'org.apache.'
+  'com.google.',
+  'com.android.',
+  'com.apple.'
 ];
 
-function isValidPackage(pkg, allowUnknownNamespace = false) {
+function isValidPackage(pkg) {
   if (!pkg || typeof pkg !== 'string') return false;
   const value = pkg.trim();
   if (!value || value.length > 255) return false;
 
   const lower = value.toLowerCase();
+  // Atlas intentionally ingests Android package IDs in the com.* namespace only.
+  if (!lower.startsWith('com.')) return false;
   if (PACKAGE_BLACKLIST.some(prefix => lower.startsWith(prefix))) return false;
   if (value.includes('_KNOWN_') || /\.(?:js|json|png|css|html?)$/i.test(lower)) return false;
 
@@ -48,8 +40,7 @@ function isValidPackage(pkg, allowUnknownNamespace = false) {
   if (segments.length < 2) return false;
   if (!segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment))) return false;
 
-  const recognizedNamespace = PACKAGE_NAMESPACE_PREFIXES.some(prefix => lower.startsWith(prefix));
-  return allowUnknownNamespace || recognizedNamespace;
+  return true;
 }
 
 function decodeForInspection(value) {
@@ -83,8 +74,8 @@ function decodeForInspection(value) {
   return decoded;
 }
 
-function addPackage(set, value, allowUnknownNamespace = false) {
-  if (!isValidPackage(value, allowUnknownNamespace)) return;
+function addPackage(set, value) {
+  if (!isValidPackage(value)) return;
   set.add(String(value).trim().toLowerCase());
 }
 
@@ -97,12 +88,12 @@ function extractBroadPackages(value) {
 
   // Strong evidence: an actual Play Store or market destination.
   const destinationRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi;
-  for (const match of decoded.matchAll(destinationRegex)) addPackage(found, match[1], true);
+  for (const match of decoded.matchAll(destinationRegex)) addPackage(found, match[1]);
 
   // Structured evidence: app/package identifiers in JSON, JS objects or
   // initialization payloads. These named fields can use uncommon namespaces.
   const keyedRegex = /(?:packageName|package_name|appId|app_id|bundleId|bundle_id|androidPackageName|android_package_name|applicationId|application_id|applicationPackage|application_package|appPackage|app_package|appIdentifier|app_identifier|googlePlayAppId|storePackageName|store_package_name)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
-  for (const match of decoded.matchAll(keyedRegex)) addPackage(found, match[1], true);
+  for (const match of decoded.matchAll(keyedRegex)) addPackage(found, match[1]);
 
   // Broad evidence: quoted dotted identifiers, including the September model.
   const delimitedRegex = /["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){2,})["']/g;
@@ -124,7 +115,7 @@ function extractExplicitStorePackages(value) {
     /market:\/\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
   ];
   for (const pattern of patterns) {
-    for (const match of decoded.matchAll(pattern)) addPackage(found, match[1], true);
+    for (const match of decoded.matchAll(pattern)) addPackage(found, match[1]);
   }
   return [...found];
 }
@@ -692,5 +683,6 @@ module.exports = {
   scanCompetitor,
   extractBroadPackages,
   extractExplicitStorePackages,
-  buildSafeVideoAttribution
+  buildSafeVideoAttribution,
+  isValidPackage
 };
