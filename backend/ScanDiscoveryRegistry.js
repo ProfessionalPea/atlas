@@ -2,6 +2,11 @@ let activeScanId = null;
 let discoveredPackages = new Set();
 let aggregateStats = createEmptyStats();
 
+function normalizeComPackage(value) {
+  const packageName = String(value || '').trim().toLowerCase();
+  return packageName.startsWith('com.') ? packageName : null;
+}
+
 function createEmptyStats() {
   return {
     candidates: 0,
@@ -21,7 +26,7 @@ function beginScan(scanId) {
 
 function recordDiscoveredPackages(packages, stats = {}) {
   for (const value of packages || []) {
-    const packageName = String(value || '').trim().toLowerCase();
+    const packageName = normalizeComPackage(value);
     if (packageName) discoveredPackages.add(packageName);
   }
 
@@ -41,12 +46,18 @@ function recordDiscoveredPackages(packages, stats = {}) {
 function mergeScanStatus(payload) {
   if (!payload || typeof payload !== 'object') return payload;
   const payloadScanId = payload.scanId ? String(payload.scanId) : null;
-  if (activeScanId && payloadScanId && activeScanId !== payloadScanId) return payload;
+  if (activeScanId && payloadScanId && activeScanId !== payloadScanId) {
+    if (!Array.isArray(payload.packages)) return payload;
+    return {
+      ...payload,
+      packages: payload.packages.map(normalizeComPackage).filter(Boolean)
+    };
+  }
 
   const packages = [...new Set([
     ...(Array.isArray(payload.packages) ? payload.packages : []),
     ...discoveredPackages
-  ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean))];
+  ].map(normalizeComPackage).filter(Boolean))];
 
   return {
     ...payload,
