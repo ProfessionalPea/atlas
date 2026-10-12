@@ -18,7 +18,7 @@ Research often means moving between Google Ads Transparency Center, Google Play 
 - Extracts keyword signals from game listing text.
 - Tracks suspended games and preserves research snapshots.
 - Supports target lists, saved competitors and Google Sheets synchronization.
-- Provides authenticated access with full-access and view-only roles.
+- Provides authenticated access with admin and view-only roles.
 
 **Email reporting has been retired.** The remaining reporting module is a compatibility layer; email reporting is not an active feature.
 
@@ -48,6 +48,7 @@ The API coordinates scans and persists research data. The frontend polls for sca
 | Path | Purpose |
 | --- | --- |
 | `backend/server.js` | API, authentication, scan orchestration and database operations |
+| `backend/Security.js` | Session secrets, password hashing, admin bootstrap and database TLS policy |
 | `backend/GoogleAdsScanner.js` | Scanner entry point and creative accounting |
 | `backend/GoogleAdsScannerV3.js` | Current ad scanner implementation |
 | `backend/CountryAvailabilityScanner.js` | Package-level country checks |
@@ -84,6 +85,8 @@ npx playwright install --with-deps chromium
 ### 3. Configure the API
 Copy `backend/.env.example` to `backend/.env` and supply your database URL and a strong session secret. Run commands from `backend` so dotenv loads the expected file.
 
+For a fresh installation, set `ATLAS_BOOTSTRAP_ADMIN_USERNAME` and `ATLAS_BOOTSTRAP_ADMIN_PASSWORD` for the first start. Atlas creates the initial admin only when no admin exists. The bootstrap password can be removed from the runtime environment after that account has been created.
+
 For optional Sheets synchronization, set `GOOGLE_CREDENTIALS_JSON` or use an untracked `backend/google-credentials.json` file. Share the target spreadsheet with the service-account email and configure `google_sheet_id` in Atlas settings.
 
 ### 4. Start the API
@@ -105,13 +108,20 @@ Open the address printed by Vite. On localhost, the current frontend uses port 3
 npm run build
 ```
 
+## Production security
+- `ATLAS_SESSION_SECRET` is mandatory in production and must be at least 32 bytes. There is no production fallback signing secret.
+- Atlas no longer creates fixed-password users. Historical accounts that still have the old public default password hashes are removed at startup.
+- Passwords are stored with salted `scrypt`. Existing non-default SHA-256 password rows remain login-compatible and are upgraded to `scrypt` after the next successful login.
+- Non-local PostgreSQL connections default to certificate-verified TLS. Set `DATABASE_CA_CERT` when your provider uses a private CA.
+- Insecure database TLS modes require the explicit `ATLAS_ALLOW_INSECURE_DB_TLS=true` escape hatch and should not be used for public deployments.
+- Production CORS allows only `FRONTEND_URL` plus any exact origins listed in `ADDITIONAL_ALLOWED_ORIGINS`; arbitrary `*.vercel.app` origins are not trusted.
+- Authentication tokens are accepted through the `x-atlas-token` header, not URL query parameters.
+
 ## Accuracy and deployment considerations
 - Country classifications are observations from public store responses, not authoritative Play Console release records. Unknown results should be reviewed.
 - Keyword signals come from listing text; they are not measured search volume or guaranteed ranking opportunities.
 - Some ads expose no usable video reference. Direct media URLs may expire.
 - External page changes, throttling and network failures can affect collection.
-- Current authentication seeds fixed default accounts, has a fallback session secret, and uses SHA-256 password hashing. Replace these defaults and upgrade password storage before a public deployment.
-- The backend currently disables TLS certificate verification. Restore certificate validation before a public deployment.
 - Sheets synchronization still has a hardcoded fallback spreadsheet ID; configure your own target.
 
 ## Demo and screenshots
