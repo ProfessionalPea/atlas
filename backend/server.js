@@ -2,7 +2,7 @@ require("dotenv").config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const { generateAndSendReport } = require("./AutomatedReport");
-const { scanCompetitor } = require("./GoogleAdsScanner");
+const { scanCompetitor, isValidPackage } = require("./GoogleAdsScanner");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const express = require("express");
@@ -213,6 +213,106 @@ function verifySessionToken(token) {
 
 const gplayRaw = require('google-play-scraper');
 const gplay = gplayRaw.default || gplayRaw;
+
+const INGESTION_METADATA_CONCURRENCY = 6;
+
+function runWithTimeout(operation, timeoutMs, label) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.code = "ATLAS_LOOKUP_TIMEOUT";
+      reject(error);
+    }, timeoutMs);
+  });
+
+  return Promise.race([
+    Promise.resolve().then(operation),
+    timeout
+  ]).finally(() => clearTimeout(timeoutId));
+}
+
+function createFallbackPlayAppData(pkg, targetDisplayName) {
+  const cleanTitle = pkg.split('.').slice(-2).join(' ').replace(/_/g, ' ').toUpperCase();
+  return {
+    title: cleanTitle,
+    developer: targetDisplayName || "Unknown Developer",
+    genre: "Game",
+    score: 0,
+    ratings: 0,
+    icon: null,
+    screenshots: [],
+    description: "Captured directly via ad stream",
+    installs: "0+",
+    minInstalls: 0,
+    released: "Unknown",
+    updated: Date.now()
+  };
+}
+
+async function fetchPackageEnrichment(pkg, targetDisplayName) {
+  let appData = null;
+  let primaryTimedOut = false;
+
+  try {
+    appData = await runWithTimeout(
+      () => gplay.app({ appId: pkg, country: 'us' }),
+      8000,
+      `Google Play app lookup for ${pkg}`
+    );
+  } catch (error) {
+    primaryTimedOut = error?.code === "ATLAS_LOOKUP_TIMEOUT";
+  }
+
+  // Retry without an explicit country only when the first request failed quickly.
+  // A timed-out request is not duplicated, preventing a backlog of hanging requests.
+  if (!appData && !primaryTimedOut) {
+    try {
+      appData = await runWithTimeout(
+        () => gplay.app({ appId: pkg }),
+        6000,
+        `Google Play fallback lookup for ${pkg}`
+      );
+    } catch {}
+  }
+
+  const hasPlayData = Boolean(appData);
+  if (!appData) appData = createFallbackPlayAppData(pkg, targetDisplayName);
+
+  let similarApps = [];
+  if (hasPlayData) {
+    try {
+      const rawSimilar = await runWithTimeout(
+        () => gplay.similar({ appId: pkg, country: 'us' }),
+        5000,
+        `Google Play similar-app lookup for ${pkg}`
+      );
+      similarApps = Array.isArray(rawSimilar) ? rawSimilar : [];
+    } catch {}
+  }
+
+  return { appData, similarApps };
+}
+
+async function mapWithConcurrency(items, concurrency, worker, shouldStop = () => false) {
+  const output = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, Number(concurrency) || 1), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (!shouldStop()) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      try {
+        output[index] = await worker(items[index], index);
+      } catch {
+        output[index] = null;
+      }
+    }
+  }));
+
+  return output;
+}
 
 const app = express();
 
@@ -1589,7 +1689,7 @@ app.post("/api/scan", async (req, res) => {
           log: `> 🎯 Starting target ${tIndex + 1}/${targets.length}: ${targetDisplayName}`
         });
 
-        const results = await scanCompetitor(
+        const scanResults = await scanCompetitor(
           targetQuery, 
           targetCountry, 
           limit, 
@@ -1607,6 +1707,14 @@ app.post("/api/scan", async (req, res) => {
         );
 
         if (activeScanCancelled) break;
+
+        // Defence in depth: only validated com.* package IDs may enter ingestion.
+        const results = (Array.isArray(scanResults) ? scanResults : [])
+          .filter(entry => isValidPackage(entry?.package))
+          .map(entry => ({
+            ...entry,
+            package: String(entry.package).trim().toLowerCase()
+          }));
 
         // Early exit: Target produced 0 Play Store packages/ads
         if (!results || results.length === 0) {
@@ -1673,9 +1781,39 @@ app.post("/api/scan", async (req, res) => {
           log: `> 🗄️ Ingesting creative entities to Atlas database...`
         });
 
-        // Enrich and persist each UNIQUE package once. The full per-scan count is
-        // applied in one database operation, avoiding the previous off-by-one bug.
-        for (const [pkg, creativeIdsSet] of Object.entries(creativeIdsByPackage)) {
+        const packageEntries = Object.entries(creativeIdsByPackage);
+        const enrichmentByPackage = new Map();
+        let metadataCompleted = 0;
+
+        updateScanStatus({
+          log: `> 🗄️ Ingesting ${packageEntries.length} com.* packages; fetching Play Store metadata with bounded concurrency...`
+        });
+
+        await mapWithConcurrency(
+          packageEntries,
+          INGESTION_METADATA_CONCURRENCY,
+          async ([pkg]) => {
+            if (activeScanCancelled) return null;
+            const enrichment = await fetchPackageEnrichment(pkg, targetDisplayName);
+            enrichmentByPackage.set(pkg, enrichment);
+            metadataCompleted += 1;
+            updateScanStatus({
+              log: `> 🗄️ Ingesting: Play Store metadata ${metadataCompleted}/${packageEntries.length} packages...`
+            });
+            return enrichment;
+          },
+          () => activeScanCancelled
+        );
+
+        if (activeScanCancelled) break;
+
+        // Enrich metadata concurrently above, then persist each unique package once.
+        let savedPackages = 0;
+        for (const [pkg, creativeIdsSet] of packageEntries) {
+          if (activeScanCancelled) break;
+          updateScanStatus({
+            log: `> 🗄️ Saving package ${savedPackages + 1}/${packageEntries.length}: ${pkg}`
+          });
           const creativeIds = [...creativeIdsSet];
           const scanAdCount = Math.max(1, creativeIds.length);
 
@@ -1694,30 +1832,8 @@ app.post("/api/scan", async (req, res) => {
             console.error("ad_creatives lookup failed, counting all as new:", e.message);
           }
 
-          let appData = null;
-          try {
-            appData = await gplay.app({ appId: pkg, country: 'us' });
-          } catch {
-            try {
-              appData = await gplay.app({ appId: pkg });
-            } catch {
-              const cleanTitle = pkg.split('.').slice(-2).join(' ').replace(/_/g, ' ').toUpperCase();
-              appData = {
-                title: cleanTitle,
-                developer: targetDisplayName || "Unknown Developer",
-                genre: "Game",
-                score: 0,
-                ratings: 0,
-                icon: null,
-                screenshots: [],
-                description: "Captured directly via ad stream",
-                installs: "0+",
-                minInstalls: 0,
-                released: "Unknown",
-                updated: Date.now()
-              };
-            }
-          }
+          const enrichment = enrichmentByPackage.get(pkg) || {};
+          const appData = enrichment.appData || createFallbackPlayAppData(pkg, targetDisplayName);
 
           const pubName = appData.developer || targetDisplayName || "Unknown Publisher";
           const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -1746,20 +1862,18 @@ app.post("/api/scan", async (req, res) => {
             accountId = accQuery.id;
           }
 
-          let similarApps = [];
-          try {
-            const rawSimilar = await gplay.similar({ appId: pkg, country: 'us' });
-            similarApps = (rawSimilar || [])
-              .filter(sim => sim.developer !== pubName)
-              .slice(0, 6)
-              .map(sim => ({
-                title: sim.title,
-                appId: sim.appId,
-                developer: sim.developer,
-                icon: fixUrl(sim.icon),
-                score: sim.score || 0
-              }));
-          } catch {}
+          const similarApps = (enrichment.similarApps || [])
+            .filter(sim => sim && sim.developer !== pubName)
+            .slice(0, 6)
+            .map(sim => ({
+              title: sim.title,
+              appId: sim.appId,
+              developer: sim.developer,
+              icon: fixUrl(sim.icon),
+              score: sim.score || 0
+            }));
+
+
 
           // games.ad_count is intentionally the ALL-TIME detection counter.
           // Increment it by the exact count from this target scan in one shot.
@@ -1834,22 +1948,36 @@ app.post("/api/scan", async (req, res) => {
             [accountId, gameId]
           );
 
-          // Record/refresh every creative ID seen for this package so a later
-          // scan can tell "still running" apart from "genuinely new".
-          for (const creativeId of creativeIds) {
-            try {
-              await pool.query(
-                `INSERT INTO ad_creatives (creative_id, game_id, competitor_id, package_name, first_seen_at, last_seen_at)
-                 VALUES ($1, $2, $3, $4, now(), now())
-                 ON CONFLICT (creative_id) DO UPDATE SET
-                   last_seen_at = now(),
-                   game_id = EXCLUDED.game_id,
-                   competitor_id = EXCLUDED.competitor_id,
-                   package_name = EXCLUDED.package_name`,
-                [creativeId, gameId, competitorId, pkg]
-              );
-            } catch (e) {
-              console.error("Failed to record ad_creatives row:", creativeId, e.message);
+          // Batch creative writes to avoid one remote database round-trip per ad ID.
+          try {
+            await pool.query(
+              `INSERT INTO ad_creatives (creative_id, game_id, competitor_id, package_name, first_seen_at, last_seen_at)
+               SELECT incoming.creative_id, $2, $3, $4, now(), now()
+               FROM unnest($1::text[]) AS incoming(creative_id)
+               ON CONFLICT (creative_id) DO UPDATE SET
+                 last_seen_at = now(),
+                 game_id = EXCLUDED.game_id,
+                 competitor_id = EXCLUDED.competitor_id,
+                 package_name = EXCLUDED.package_name`,
+              [creativeIds, gameId, competitorId, pkg]
+            );
+          } catch (e) {
+            console.error("Failed to batch-record ad_creatives rows; falling back to individual writes:", e.message);
+            for (const creativeId of creativeIds) {
+              try {
+                await pool.query(
+                  `INSERT INTO ad_creatives (creative_id, game_id, competitor_id, package_name, first_seen_at, last_seen_at)
+                   VALUES ($1, $2, $3, $4, now(), now())
+                   ON CONFLICT (creative_id) DO UPDATE SET
+                     last_seen_at = now(),
+                     game_id = EXCLUDED.game_id,
+                     competitor_id = EXCLUDED.competitor_id,
+                     package_name = EXCLUDED.package_name`,
+                  [creativeId, gameId, competitorId, pkg]
+                );
+              } catch (rowError) {
+                console.error("Failed to record ad_creatives row:", creativeId, rowError.message);
+              }
             }
           }
 
@@ -1880,7 +2008,10 @@ app.post("/api/scan", async (req, res) => {
             target_name: targetDisplayName,
             competitor_id: competitorId
           });
+          savedPackages += 1;
         }
+
+        if (activeScanCancelled) break;
 
         const compGamesCountRes = await pool.query(
           `SELECT COUNT(DISTINCT ag.game_id) as count 
@@ -1899,11 +2030,32 @@ app.post("/api/scan", async (req, res) => {
           [competitorId, totalGamesForCompetitor]
         );
 
-        try { 
-          // pushScanToSheets expects plain package_name strings.
-          await pushScanToSheets(pool, targetDisplayName, Object.keys(creativeIdsByPackage)); 
-          await syncPublisherLinksToSheets(pool, targetDisplayName, targetAdsId);
-        } catch (err) { console.error("Sheets Sync Error:", err); }
+        updateScanStatus({
+          log: `> 📊 Syncing ${Object.keys(creativeIdsByPackage).length} com.* packages to Google Sheets (with a 12-second limit per sync)...`
+        });
+
+        const sheetSyncResults = await Promise.allSettled([
+          runWithTimeout(
+            () => pushScanToSheets(pool, targetDisplayName, Object.keys(creativeIdsByPackage)),
+            12000,
+            "Google Sheets scan sync"
+          ),
+          runWithTimeout(
+            () => syncPublisherLinksToSheets(pool, targetDisplayName, targetAdsId),
+            12000,
+            "Google Sheets publisher sync"
+          )
+        ]);
+        for (const result of sheetSyncResults) {
+          if (result.status === "rejected") {
+            console.error("Sheets Sync Error:", result.reason?.message || result.reason);
+          }
+        }
+        updateScanStatus({
+          log: sheetSyncResults.some(result => result.status === "rejected")
+            ? "> ⚠️ Google Sheets sync timed out; Atlas database ingestion can continue."
+            : "> 📊 Google Sheets sync finished."
+        });
         
         allResults.push(...results);
       } 
