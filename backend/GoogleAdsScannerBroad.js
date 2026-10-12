@@ -91,7 +91,7 @@ function extractBroadPackages(value) {
   for (const match of decoded.matchAll(destinationRegex)) addPackage(found, match[1]);
 
   // Structured evidence: app/package identifiers in JSON, JS objects or
-  // initialization payloads. These named fields can use uncommon namespaces.
+  // initialization payloads. The same com.* rule applies to every field.
   const keyedRegex = /(?:packageName|package_name|appId|app_id|bundleId|bundle_id|androidPackageName|android_package_name|applicationId|application_id|applicationPackage|application_package|appPackage|app_package|appIdentifier|app_identifier|googlePlayAppId|storePackageName|store_package_name)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
   for (const match of decoded.matchAll(keyedRegex)) addPackage(found, match[1]);
 
