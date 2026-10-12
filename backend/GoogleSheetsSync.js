@@ -3,6 +3,12 @@ const path = require('path');
 
 async function pushScanToSheets(pool, targetName, packagesArray) {
   try {
+    const eligiblePackages = [...new Set(
+      (Array.isArray(packagesArray) ? packagesArray : [])
+        .map(pkg => String(pkg || '').trim().toLowerCase())
+        .filter(pkg => pkg.startsWith('com.'))
+    )];
+    if (eligiblePackages.length === 0) return;
     // 1. Dual Authentication (Local File vs Cloud Environment Variable)
     let authConfig = { scopes: ['https://www.googleapis.com/auth/spreadsheets'] };
     if (process.env.GOOGLE_CREDENTIALS_JSON) {
@@ -18,44 +24,45 @@ async function pushScanToSheets(pool, targetName, packagesArray) {
     const settingsQuery = await pool.query("SELECT value FROM settings WHERE key = 'google_sheet_id'");
     const sheetId = settingsQuery.rows[0]?.value || '1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs';
 
-    // 2. Prepare the data timestamp
+    // 2. Prepare the data timestamp and fetch all game metadata in one query.
     const dateStr = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD
-    let values = [];
-    
-    // 3. Enrich the raw package names with full PostgreSQL data
-    for (const pkg of packagesArray) {
-      const { rows } = await pool.query(`
-        SELECT g.title, g.category, g.rating, g.installs, g.min_installs, g.released, g.updated, a.publisher_name 
-        FROM games g
-        LEFT JOIN account_games ag ON g.id = ag.game_id
-        LEFT JOIN accounts a ON ag.account_id = a.id
-        WHERE g.package_name = $1 LIMIT 1
-      `, [pkg]);
+    const { rows: games } = await pool.query(`
+      SELECT DISTINCT ON (g.package_name)
+        g.package_name, g.title, g.category, g.rating, g.installs,
+        g.min_installs, g.released, g.updated, a.publisher_name
+      FROM games g
+      LEFT JOIN account_games ag ON g.id = ag.game_id
+      LEFT JOIN accounts a ON ag.account_id = a.id
+      WHERE g.package_name = ANY($1::text[])
+      ORDER BY g.package_name, ag.account_id NULLS LAST
+    `, [eligiblePackages]);
+    const gameByPackage = new Map(games.map(game => [game.package_name, game]));
+    const values = [];
 
-      const game = rows[0];
+    // Preserve requested order while building the sheet rows.
+    for (const pkg of eligiblePackages) {
+      const game = gameByPackage.get(pkg);
+      if (!game) continue;
 
-      if (game) {
-        // Convert the UNIX timestamp for "updated" to a readable date
-        let updatedDate = "Unknown";
-        if (game.updated) {
-          const timestamp = typeof game.updated === 'number' ? game.updated : new Date(game.updated).getTime();
-          if (!isNaN(timestamp)) updatedDate = new Date(timestamp).toLocaleDateString();
-        }
-
-        values.push([
-          dateStr, 
-          targetName, 
-          game.publisher_name || "Unknown", 
-          game.title || pkg, 
-          pkg, 
-          game.category || "N/A", 
-          game.rating || "N/A",
-          game.installs || "0+",
-          game.min_installs || 0,
-          game.released || "Unknown",
-          updatedDate
-        ]);
+      let updatedDate = "Unknown";
+      if (game.updated) {
+        const timestamp = typeof game.updated === 'number' ? game.updated : new Date(game.updated).getTime();
+        if (!isNaN(timestamp)) updatedDate = new Date(timestamp).toLocaleDateString();
       }
+
+      values.push([
+        dateStr,
+        targetName,
+        game.publisher_name || "Unknown",
+        game.title || pkg,
+        pkg,
+        game.category || "N/A",
+        game.rating || "N/A",
+        game.installs || "0+",
+        game.min_installs || 0,
+        game.released || "Unknown",
+        updatedDate
+      ]);
     }
 
     if (values.length === 0) return;
@@ -111,9 +118,13 @@ async function syncPublisherLinksToSheets(pool, competitorName, adsId) {
 
     // Postgres Query
     const { rows: accounts } = await pool.query(`
-      SELECT DISTINCT a.publisher_name 
-      FROM accounts a JOIN competitors c ON a.competitor_id = c.id
+      SELECT DISTINCT a.publisher_name
+      FROM accounts a
+      JOIN competitors c ON a.competitor_id = c.id
+      JOIN account_games ag ON ag.account_id = a.id
+      JOIN games g ON g.id = ag.game_id
       WHERE c.name = $1
+        AND g.package_name LIKE 'com.%'
     `, [competitorName]);
 
     if (accounts.length === 0) return;
