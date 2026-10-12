@@ -71,8 +71,8 @@ function sorted(values) {
 // Google Search Ads Viewer can put app IDs inside escaped script and c-wiz
 // initialization payloads, even when no install CTA / Play Store URL is present.
 {
-  const nestedScriptPayload = String.raw\`<script>AF_initDataCallback("{\\"appId\\":\\"com.dolphingames.subway.sneak.out\\",\\"label\\":\\"Girl Escape\\"}")</script>\`;
-  const cWizPayload = String.raw\`<c-wiz data-p="\\\\u0022packageName\\\\u0022:\\\\u0022app.girl.escape.game\\\\u0022"></c-wiz>\`;
+  const nestedScriptPayload = '<script>AF_initDataCallback("{\\"appId\\":\\"com.dolphingames.subway.sneak.out\\",\\"label\\":\\"Girl Escape\\"}")</script>';
+  const cWizPayload = '<c-wiz data-p="\\\\u0022packageName\\\\u0022:\\\\u0022app.girl.escape.game\\\\u0022"></c-wiz>';
   const packages = extractBroadPackages(nestedScriptPayload + cWizPayload);
   assert.deepStrictEqual(
     sorted(packages),
