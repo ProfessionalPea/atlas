@@ -533,8 +533,28 @@ async function scanCompetitor(
       await searchPage.goto('https://adstransparency.google.com/?region=any', {
         waitUntil: 'domcontentloaded', timeout: 60000
       });
+      await waitForStableSignal({
+        inspect: async () => {},
+        getSignature: () => 'advertiser-search-home',
+        getLastActivityAt: () => lastDiscoveryActivityAt,
+        getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
+        getStopError,
+        minWaitMs: 400,
+        stableForMs: 350,
+        quietForMs: 300,
+        pollIntervalMs: 150,
+        normalMaxWaitMs: 2500,
+        slowMaxWaitMs: 2500
+      });
+      throwIfStopped();
+
       const searchBox = searchPage.getByRole('textbox').first();
-      await searchBox.waitFor({ state: 'visible', timeout: 15000 });
+      try {
+        await searchBox.waitFor({ state: 'visible', timeout: 15000 });
+      } catch (error) {
+        throwIfStopped();
+        throw error;
+      }
       await searchBox.click();
       await searchBox.fill(query);
       try {
