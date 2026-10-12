@@ -19,7 +19,7 @@ const merged = mergeScanStatus({
 });
 assert.deepEqual(
   new Set(merged.packages),
-  new Set(['com.alpha.game', 'ai.beta.runner'])
+  new Set(['com.alpha.game'])
 );
 assert.equal(merged.discoveryStats.candidates, 3);
 assert.equal(merged.discoveryStats.acceptedFromStoreEvidence, 1);
@@ -27,13 +27,13 @@ assert.equal(merged.discoveryStats.acceptedFromStoreEvidence, 1);
 // A new scan must never inherit packages from the previous scan.
 beginScan('scan-b');
 recordDiscoveredPackages(['org.new.game'], { candidates: 1 });
-assert.deepEqual(getSnapshot().packages, ['org.new.game']);
-assert.deepEqual(mergeScanStatus({ scanId: 'scan-b', packages: [] }).packages, ['org.new.game']);
+assert.deepEqual(getSnapshot().packages, []);
+assert.deepEqual(mergeScanStatus({ scanId: 'scan-b', packages: [] }).packages, []);
 
-// Old/status-mismatched payloads are left untouched.
+// Old/status-mismatched payloads cannot introduce non-com package IDs.
 assert.deepEqual(
-  mergeScanStatus({ scanId: 'scan-a', packages: ['legacy.game'] }).packages,
-  ['legacy.game']
+  mergeScanStatus({ scanId: 'scan-a', packages: ['com.legacy.game', 'legacy.game'] }).packages,
+  ['com.legacy.game']
 );
 
 console.log('scan-discovery-registry tests passed');
