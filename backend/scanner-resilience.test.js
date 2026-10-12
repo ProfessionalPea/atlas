@@ -100,7 +100,7 @@ assert.equal(isGoogleHost('https://not-google.example/path'), false);
       now: () => virtualTime,
       sleep: async milliseconds => {
         virtualTime += milliseconds;
-        if (virtualTime >= 700) {
+        if (virtualTime >= 700 && pending > 0) {
           pending = 0;
           activityAt = virtualTime;
           signature = 'package-found';
