@@ -26,11 +26,13 @@ async function scanCompetitor(...args) {
 
   console.log('📦 [Scanner] September-style broad multi-package discovery is active.');
   const results = await broadScanner.scanCompetitor(...args);
-  const safeResults = Array.isArray(results) ? results : [];
+  const safeResults = Array.isArray(results)
+    ? results.filter(entry => broadScanner.isValidPackage(entry?.package))
+    : [];
   const packages = new Set(
     safeResults
       .map(entry => String(entry?.package || '').trim().toLowerCase())
-      .filter(Boolean)
+      .filter(pkg => broadScanner.isValidPackage(pkg))
   );
 
   console.log(
