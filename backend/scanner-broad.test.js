@@ -68,4 +68,29 @@ function sorted(values) {
   assert.deepStrictEqual(storePackages, ['com.alpha.game']);
 }
 
+// Google Search Ads Viewer can put app IDs inside escaped script and c-wiz
+// initialization payloads, even when no install CTA / Play Store URL is present.
+{
+  const nestedScriptPayload = '<script>AF_initDataCallback("{\\"appId\\":\\"com.dolphingames.subway.sneak.out\\",\\"label\\":\\"Girl Escape\\"}")</script>';
+  const cWizPayload = '<c-wiz data-p="\\\\u0022packageName\\\\u0022:\\\\u0022app.girl.escape.game\\\\u0022"></c-wiz>';
+  const packages = extractBroadPackages(nestedScriptPayload + cWizPayload);
+  assert.deepStrictEqual(
+    sorted(packages),
+    sorted(['com.dolphingames.subway.sneak.out', 'app.girl.escape.game'])
+  );
+}
+
+// Metadata-key evidence can use valid package namespaces beyond the original
+// short prefix allowlist; generic dotted strings remain namespace-filtered.
+{
+  const html = '<script>{"applicationId":"mobile.vendor.girl.escape"}</script>';
+  assert.deepStrictEqual(extractBroadPackages(html), ['mobile.vendor.girl.escape']);
+}
+
+// Unquoted app IDs inside renderer markup should still be detected.
+{
+  const html = '<c-wiz data-p="com.dolphingames.subway.sneak.out"></c-wiz>';
+  assert.deepStrictEqual(extractBroadPackages(html), ['com.dolphingames.subway.sneak.out']);
+}
+
 console.log('scanner-broad regression tests passed');
