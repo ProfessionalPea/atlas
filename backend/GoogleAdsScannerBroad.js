@@ -19,67 +19,99 @@ async function ensureVideoDb() {
   videoDbReady = true;
 }
 
-function isValidPackage(pkg) {
+const PACKAGE_NAMESPACE_PREFIXES = [
+  'com.', 'io.', 'net.', 'org.', 'games.',
+  'app.', 'me.', 'co.', 'uk.', 'dev.', 'ai.', 'in.', 'id.', 'tv.', 'xyz.',
+  'fun.', 'live.', 'site.', 'cloud.', 'online.', 'pro.', 'biz.', 'info.',
+  'edu.', 'us.', 'de.', 'fr.', 'jp.', 'ru.', 'br.', 'au.', 'ca.', 'se.',
+  'ch.', 'it.', 'es.', 'nl.', 'be.', 'pl.', 'cz.', 'kr.', 'cn.', 'hk.',
+  'sg.', 'my.', 'th.', 'vn.', 'za.', 'ir.', 'tr.', 'mx.', 'ar.', 'cl.',
+  'pe.', 'ph.', 'pk.', 'bd.', 'ng.', 'sa.', 'ae.', 'mil.', 'gov.', 'mobi.',
+  'name.', 'store.', 'tech.'
+];
+
+const PACKAGE_BLACKLIST = [
+  'goog.', 'com.google.', 'com.android.', 'com.apple.',
+  'org.w3c.', 'org.apache.'
+];
+
+function isValidPackage(pkg, allowUnknownNamespace = false) {
   if (!pkg || typeof pkg !== 'string') return false;
   const value = pkg.trim();
+  if (!value || value.length > 255) return false;
+
   const lower = value.toLowerCase();
-  const validPrefixes = ['com.', 'io.', 'net.', 'org.', 'games.'];
-  if (!validPrefixes.some(prefix => lower.startsWith(prefix))) return false;
-  const blacklist = [
-    'goog.', 'com.google.', 'com.android.', 'com.apple.',
-    'org.w3c.', 'org.apache.', 'io.github.'
-  ];
-  if (blacklist.some(prefix => lower.startsWith(prefix))) return false;
-  if (value.includes('_KNOWN_') || lower.endsWith('.js') || lower.endsWith('.json') || lower.endsWith('.png')) return false;
-  return value.split('.').length >= 2;
+  if (PACKAGE_BLACKLIST.some(prefix => lower.startsWith(prefix))) return false;
+  if (value.includes('_KNOWN_') || /\.(?:js|json|png|css|html?)$/i.test(lower)) return false;
+
+  const segments = value.split('.');
+  if (segments.length < 2) return false;
+  if (!segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment))) return false;
+
+  const recognizedNamespace = PACKAGE_NAMESPACE_PREFIXES.some(prefix => lower.startsWith(prefix));
+  return allowUnknownNamespace || recognizedNamespace;
 }
 
 function decodeForInspection(value) {
-  let decoded = String(value || '')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/\\u0026/gi, '&')
-    .replace(/\\u003d/gi, '=')
-    .replace(/\\u002f/gi, '/');
+  let decoded = String(value || '');
 
-  for (let i = 0; i < 2; i += 1) {
+  // Google frequently nests escaped JSON inside script and c-wiz initialization
+  // payloads. Decode these representations iteratively so the same extractors
+  // work on raw HTML, script text, response JSON and double-escaped payloads.
+  for (let pass = 0; pass < 4; pass += 1) {
+    const before = decoded;
+    decoded = decoded
+      .replace(/&amp;/gi, '&')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/\\u([0-9a-f]{4})/gi, (_match, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\x([0-9a-f]{2})/gi, (_match, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\\//g, '/')
+      .replace(/\\(["'])/g, '$1')
+      .replace(/\\[nrt]/g, ' ');
+
     try {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) break;
-      decoded = next;
-    } catch {
-      break;
-    }
+      const uriDecoded = decodeURIComponent(decoded);
+      if (uriDecoded !== decoded) decoded = uriDecoded;
+    } catch {}
+
+    if (decoded === before) break;
   }
+
   return decoded;
 }
 
-function addPackage(set, value) {
-  if (!isValidPackage(value)) return;
+function addPackage(set, value, allowUnknownNamespace = false) {
+  if (!isValidPackage(value, allowUnknownNamespace)) return;
   set.add(String(value).trim().toLowerCase());
 }
 
 // This intentionally restores the September scanner's broad discovery model.
 // An ad limit limits creatives inspected, not games discovered. One creative can
-// contribute several valid package candidates.
+// contribute several package candidates.
 function extractBroadPackages(value) {
-  const decoded = decodeForInspection(value);
+  const decoded = decodeForInspection(value).slice(0, 5000000);
   const found = new Set();
 
+  // Strong evidence: an actual Play Store or market destination.
   const destinationRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi;
-  for (const match of decoded.matchAll(destinationRegex)) addPackage(found, match[1]);
+  for (const match of decoded.matchAll(destinationRegex)) addPackage(found, match[1], true);
 
-  const keyedRegex = /(?:packageName|package_name|appId|app_id|bundleId|androidPackageName|android_package_name|applicationId|application_id)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
-  for (const match of decoded.matchAll(keyedRegex)) addPackage(found, match[1]);
+  // Structured evidence: app/package identifiers in JSON, JS objects or
+  // initialization payloads. These named fields can use uncommon namespaces.
+  const keyedRegex = /(?:packageName|package_name|appId|app_id|bundleId|bundle_id|androidPackageName|android_package_name|applicationId|application_id|applicationPackage|application_package|appPackage|app_package|appIdentifier|app_identifier|googlePlayAppId|storePackageName|store_package_name)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
+  for (const match of decoded.matchAll(keyedRegex)) addPackage(found, match[1], true);
 
-  // This broad quoted dotted-string pass is the behavior that allowed a
-  // 10-creative scan to legitimately discover >10 games. Validation and the DB
-  // package_name uniqueness constraint still prevent duplicate game rows.
-  const delimitedRegex = /["'`]([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){2,})["'`]/g;
+  // Broad evidence: quoted dotted identifiers, including the September model.
+  const delimitedRegex = /["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){2,})["']/g;
   for (const match of decoded.matchAll(delimitedRegex)) addPackage(found, match[1]);
+
+  // Some c-wiz payloads surface the identifier as a bare token rather than a
+  // quoted JSON string. Keep this pass namespace-filtered to limit hostnames.
+  const bareDottedRegex = /\b([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*){2,})\b/g;
+  for (const match of decoded.matchAll(bareDottedRegex)) addPackage(found, match[1]);
 
   return [...found];
 }
@@ -88,11 +120,11 @@ function extractExplicitStorePackages(value) {
   const decoded = decodeForInspection(value);
   const found = new Set();
   const patterns = [
-    /play\.google\.com\/store\/apps\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
-    /market:\/\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
+    /play\.google\.com\/store\/apps\/details\?[^"'<>\\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
+    /market:\/\/details\?[^"'<>\\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
   ];
   for (const pattern of patterns) {
-    for (const match of decoded.matchAll(pattern)) addPackage(found, match[1]);
+    for (const match of decoded.matchAll(pattern)) addPackage(found, match[1], true);
   }
   return [...found];
 }
@@ -228,6 +260,85 @@ async function persistCreativeVideos(creativeId, advertiserId, attribution, allA
   } catch (error) {
     console.warn(`🎬 [Broad Scanner] Video persistence skipped for ${creativeId}:`, error.message);
   }
+}
+
+async function inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages) {
+  for (const frame of adPage.frames()) {
+    const isCreativeFrame = frame !== adPage.mainFrame() && !(frame.url() || '').includes('/sadbundle/');
+
+    try {
+      const html = await frame.content();
+      recordPackages(html, 'frameHtml');
+
+      const assets = extractVideoAssets(html);
+      for (const asset of assets) mergeVideoAsset(videoMap, asset);
+
+      if (isCreativeFrame) {
+        const evidence = getFrameEvidence(frameEvidence, frame);
+        for (const pkg of extractExplicitStorePackages(html)) evidence.packages.add(pkg);
+        for (const asset of assets) mergeVideoAsset(evidence.videos, asset);
+      }
+    } catch {}
+
+    // Inspect live script text and c-wiz attributes/text explicitly. Some Google
+    // renderer initialization values are encoded in these nodes and are not
+    // consistently represented in visible text or clickable destination links.
+    try {
+      const livePayload = await frame.evaluate(() => {
+        const scripts = Array.from(document.scripts || [])
+          .map(script => script.textContent || '')
+          .join('\n');
+        const wizardPayload = Array.from(document.querySelectorAll('c-wiz'))
+          .map(node => {
+            const attributes = Array.from(node.attributes || [])
+              .map(attribute => attribute.name + '=' + attribute.value)
+              .join(' ');
+            return attributes + '\n' + (node.textContent || '');
+          })
+          .join('\n');
+        const canvas = document.querySelector('#single-ad-canvas');
+        return [
+          document.title || '',
+          scripts,
+          wizardPayload,
+          canvas ? canvas.outerHTML : ''
+        ].join('\n').slice(0, 5000000);
+      });
+      recordPackages(livePayload, 'frameHtml');
+    } catch {}
+  }
+}
+
+async function hasSlowAdRenderer(adPage, videoMap, sawVideoRendererSignal) {
+  if (sawVideoRendererSignal || videoMap.size > 0) return true;
+
+  const rendererPattern = /boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render(?:ing)?|single-ad-canvas|googlevideo\.com|youtube\.com/i;
+  for (const frame of adPage.frames()) {
+    if (rendererPattern.test(frame.url() || '')) return true;
+
+    try {
+      const hints = await frame.evaluate(() => {
+        const scriptSources = Array.from(document.scripts || [])
+          .map(script => script.src || '')
+          .join(' ');
+        const hasAppAdSlot = Boolean(document.querySelector(
+          '#single-ad-canvas, [data-aavs], [data-ta-slot], video'
+        ));
+        return {
+          title: document.title || '',
+          scriptSources,
+          hasAppAdSlot
+        };
+      });
+
+      if (
+        rendererPattern.test((hints.title || '') + ' ' + (hints.scriptSources || '')) ||
+        hints.hasAppAdSlot
+      ) return true;
+    } catch {}
+  }
+
+  return false;
 }
 
 async function scanCompetitor(
@@ -380,29 +491,93 @@ async function scanCompetitor(
       const discovered = new Set();
       const videoMap = new Map();
       const frameEvidence = new Map();
+      const packageSources = {
+        requestUrl: new Set(),
+        responseBody: new Set(),
+        frameHtml: new Set()
+      };
+      let lastRelevantSignalAt = Date.now();
+      let sawVideoRendererSignal = false;
+
+      const recordPackages = (payload, source) => {
+        const candidates = extractBroadPackages(payload);
+        const sourceSet = packageSources[source];
+        for (const pkg of candidates) {
+          sourceSet.add(pkg);
+          if (!discovered.has(pkg)) {
+            discovered.add(pkg);
+            lastRelevantSignalAt = Date.now();
+          }
+        }
+        return candidates.length;
+      };
 
       const requestHandler = req => {
         const reqUrl = req.url();
-        for (const pkg of extractBroadPackages(reqUrl)) discovered.add(pkg);
-
+        const resourceType = req.resourceType();
         let frame = null;
         try { frame = req.frame(); } catch {}
-        const isCreativeFrame = frame && frame !== adPage.mainFrame() && !(frame.url() || '').includes('/sadbundle/');
+        const frameUrl = frame ? frame.url() || '' : '';
+
+        if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|googlevideo\.com|youtube\.com/i.test(reqUrl + ' ' + frameUrl)) {
+          sawVideoRendererSignal = true;
+        }
+        if (['document', 'xhr', 'fetch', 'script'].includes(resourceType)) {
+          lastRelevantSignalAt = Date.now();
+        }
+
+        recordPackages(reqUrl, 'requestUrl');
+
+        const isCreativeFrame = frame && frame !== adPage.mainFrame() && !frameUrl.includes('/sadbundle/');
         if (isCreativeFrame) {
           const evidence = getFrameEvidence(frameEvidence, frame);
           for (const pkg of extractExplicitStorePackages(reqUrl)) evidence.packages.add(pkg);
-          const media = parseMediaRequest(reqUrl);
-          if (media) {
-            mergeVideoAsset(videoMap, media);
-            mergeVideoAsset(evidence.videos, media);
+        }
+
+        const media = parseMediaRequest(reqUrl);
+        if (media) {
+          sawVideoRendererSignal = true;
+          mergeVideoAsset(videoMap, media);
+          if (isCreativeFrame) {
+            mergeVideoAsset(getFrameEvidence(frameEvidence, frame).videos, media);
           }
-        } else {
-          const media = parseMediaRequest(reqUrl);
-          if (media) mergeVideoAsset(videoMap, media);
         }
       };
 
+      const responseHandler = async response => {
+        try {
+          const request = response.request();
+          const resourceType = request.resourceType();
+          if (!['document', 'xhr', 'fetch', 'script'].includes(resourceType)) return;
+
+          const responseUrl = response.url() || '';
+          if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|googlevideo\.com|youtube\.com/i.test(responseUrl)) {
+            sawVideoRendererSignal = true;
+          }
+
+          const headers = response.headers();
+          const contentType = String(headers['content-type'] || '').toLowerCase();
+          if (contentType && !/(text|json|javascript|xml|html)/i.test(contentType)) return;
+
+          const contentLength = Number(headers['content-length']);
+          if (Number.isFinite(contentLength) && contentLength > 4500000) return;
+
+          const body = await response.text();
+          if (!body || body.length > 5000000) return;
+          recordPackages(body, 'responseBody');
+
+          // Keep media found in response payloads in the global library, but do
+          // not use response-level evidence to assign video ownership to a game.
+          if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(body)) {
+            const assets = extractVideoAssets(body);
+            for (const asset of assets) mergeVideoAsset(videoMap, asset);
+            if (assets.length) sawVideoRendererSignal = true;
+          }
+        } catch {}
+      };
+
       adPage.on('request', requestHandler);
+      adPage.on('response', responseHandler);
       await adPage.route('**/*', route => {
         const type = route.request().resourceType();
         if (['image', 'media', 'font', 'stylesheet'].includes(type)) route.abort();
@@ -413,32 +588,46 @@ async function scanCompetitor(
         try {
           await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
         } catch {
-          // The September scanner deliberately scraped whatever had loaded even
-          // after navigation timeout.
+          // Inspect whatever Google has rendered even if navigation timed out.
         }
 
-        // Preserve the old fixed observation window. The adaptive scanners were
-        // returning too early after the first signal and missing secondary apps.
+        // Keep the proven September baseline, then inspect actual script,
+        // c-wiz, DOM and response-body evidence before deciding whether to wait
+        // longer for a slow video/App Campaign renderer.
         await adPage.waitForTimeout(5000);
+        await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
         await adPage.waitForTimeout(3000);
+        await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
 
-        const frames = adPage.frames();
-        for (const frame of frames) {
-          try {
-            const html = await frame.content();
-            for (const pkg of extractBroadPackages(html)) discovered.add(pkg);
-            for (const asset of extractVideoAssets(html)) {
-              mergeVideoAsset(videoMap, asset);
-              if (frame !== adPage.mainFrame() && !(frame.url() || '').includes('/sadbundle/')) {
-                const evidence = getFrameEvidence(frameEvidence, frame);
-                mergeVideoAsset(evidence.videos, asset);
-                for (const pkg of extractExplicitStorePackages(html)) evidence.packages.add(pkg);
-              }
+        const shouldExtendWait = await hasSlowAdRenderer(adPage, videoMap, sawVideoRendererSignal);
+        if (shouldExtendWait) {
+          const extensionStartedAt = Date.now();
+          let previousSignature = discovered.size + ':' + videoMap.size + ':' + adPage.frames().length;
+          let stableSince = Date.now();
+
+          console.log(
+            '[Broad Scanner] Ad ' + (i + 1) +
+            ' uses a video/App Campaign-style renderer; allowing up to 12 extra seconds for late metadata.'
+          );
+
+          while (Date.now() - extensionStartedAt < 12000) {
+            if (isCancelled()) throw new Error('Scan aborted by user.');
+            await adPage.waitForTimeout(1500);
+            await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
+
+            const signature = discovered.size + ':' + videoMap.size + ':' + adPage.frames().length;
+            const networkQuiet = Date.now() - lastRelevantSignalAt >= 3000;
+            if (signature !== previousSignature || !networkQuiet) {
+              stableSince = Date.now();
+            } else if (Date.now() - stableSince >= 4500) {
+              break;
             }
-          } catch {}
+            previousSignature = signature;
+          }
         }
 
         const uniqueInAd = [...discovered];
+
         for (const pkg of uniqueInAd) globallyDiscovered.add(pkg);
 
         const attribution = buildSafeVideoAttribution(frameEvidence, videoMap);
@@ -470,6 +659,7 @@ async function scanCompetitor(
         emitProgress(i + 1, idArray.length, `> ⚠️ Ad ${i + 1}: ${error.message || 'error'}; continuing.`);
       } finally {
         adPage.off('request', requestHandler);
+        adPage.off('response', responseHandler);
         await adPage.close().catch(() => {});
       }
     }
