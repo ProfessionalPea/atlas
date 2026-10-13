@@ -1,5 +1,5 @@
 const { chromium } = require('playwright');
-const { Pool } = require('pg');
+const { getDatabasePool } = require('./Security');
 const {
   initializeIntelligenceFeatures,
   persistVideoAssets
@@ -7,14 +7,7 @@ const {
 const { extractVideoAssets } = require('./GoogleAdsScannerV2');
 const { isGoogleHost, classifyGoogleResponse, createBoundedQueue, waitForStableSignal } = require('./ScannerResilience');
 
-const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
-const videoPool = new Pool({
-  connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false },
-  connectionTimeoutMillis: 8000,
-  statement_timeout: 15000,
-  query_timeout: 18000
-});
+const videoPool = getDatabasePool();
 let videoDbReady = false;
 let videoDbInitialization = null;
 

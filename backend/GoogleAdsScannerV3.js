@@ -1,16 +1,12 @@
 const { chromium } = require('playwright');
-const { Pool } = require('pg');
+const { getDatabasePool } = require('./Security');
 const {
   initializeIntelligenceFeatures,
   touchCreativeVideoAssets
 } = require('./IntelligenceFeatures');
 const { extractVideoAssets } = require('./GoogleAdsScannerV2');
 
-const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
-const pool = new Pool({
-  connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false }
-});
+const pool = getDatabasePool();
 
 const EXTRACTION_VERSION = 4;
 const MAX_CREATIVE_WORKERS = 2;

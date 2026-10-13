@@ -18,7 +18,7 @@ Research often means moving between Google Ads Transparency Center, Google Play 
 - Extracts keyword signals from game listing text.
 - Tracks suspended games and preserves research snapshots.
 - Supports target lists, saved competitors and Google Sheets synchronization.
-- Provides authenticated access with full-access and view-only roles.
+- Provides authenticated access with admin and view-only roles.
 
 **Email reporting has been retired.** The remaining reporting module is a compatibility layer; email reporting is not an active feature.
 
@@ -48,8 +48,10 @@ The API coordinates scans and persists research data. The frontend polls for sca
 | Path | Purpose |
 | --- | --- |
 | `backend/server.js` | API, authentication, scan orchestration and database operations |
-| `backend/GoogleAdsScanner.js` | Scanner entry point and creative accounting |
-| `backend/GoogleAdsScannerV3.js` | Current ad scanner implementation |
+| `backend/GoogleAdsScanner.js` | Active scanner entry point and cache lifecycle |
+| `backend/GoogleAdsScannerBroad.js` | Active broad creative/package discovery |
+| `backend/GoogleAdsScannerV2.js` | Shared video extraction helpers |
+| `backend/GoogleAdsScannerV3.js` | Earlier scanner implementation |
 | `backend/CountryAvailabilityScanner.js` | Package-level country checks |
 | `backend/AtlasExtensions.js` | Registers additive intelligence routes and storage |
 | `backend/IntelligenceFeatures.js` | Video collection relationships and keyword routes |
@@ -57,7 +59,7 @@ The API coordinates scans and persists research data. The frontend polls for sca
 | `backend/GoogleSheetsSync.js` | Spreadsheet integration |
 | `frontend/src/App.jsx` | Main application interface |
 
-Earlier scanner versions remain in the repository; the entry point currently uses V3.
+Earlier scanner implementations remain in the repository; the entry point currently uses the broad scanner.
 
 ## Local setup
 ### 1. Prerequisites
@@ -86,6 +88,22 @@ Copy `backend/.env.example` to `backend/.env` and supply your database URL and a
 
 For optional Sheets synchronization, set `GOOGLE_CREDENTIALS_JSON` or use an untracked `backend/google-credentials.json` file. Share the target spreadsheet with the service-account email and configure `google_sheet_id` in Atlas settings.
 
+For a public deployment, configure these in the backend host before starting Atlas:
+
+- `NODE_ENV=production`
+- `ATLAS_SESSION_SECRET`: generate a random secret with at least 32 bytes of entropy.
+- `FRONTEND_URL`: the exact deployed frontend origin (scheme and hostname, with port only if applicable).
+- `ATLAS_BOOTSTRAP_ADMIN_USERNAME` and `ATLAS_BOOTSTRAP_ADMIN_PASSWORD` only if the database has no valid admin after old public-default accounts are removed.
+- `DATABASE_URL`: the production database URL. Remote hosts use certificate-verified TLS by default; set `DATABASE_CA_CERT` only if your provider requires a private CA.
+
+Do not enable `ATLAS_ALLOW_INSECURE_DB_TLS` on a public deployment. After the first successful bootstrap, remove `ATLAS_BOOTSTRAP_ADMIN_PASSWORD` from the runtime environment. Atlas fails closed if production is missing a session secret or has no admin account.
+
+Generate a secret locally with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
 ### 4. Start the API
 ```bash
 npm run dev
@@ -110,8 +128,10 @@ npm run build
 - Keyword signals come from listing text; they are not measured search volume or guaranteed ranking opportunities.
 - Some ads expose no usable video reference. Direct media URLs may expire.
 - External page changes, throttling and network failures can affect collection.
-- Current authentication seeds fixed default accounts, has a fallback session secret, and uses SHA-256 password hashing. Replace these defaults and upgrade password storage before a public deployment.
-- The backend currently disables TLS certificate verification. Restore certificate validation before a public deployment.
+- Production authentication removes the known public-default accounts, uses salted scrypt for new passwords, and upgrades legacy SHA-256 hashes after a successful login.
+- Production requires a configured session secret and an admin account; startup fails closed if either is missing.
+- Remote PostgreSQL connections use certificate-verified TLS by default. Do not disable certificate verification on public deployments.
+- Production CORS permits only exact origins supplied by `FRONTEND_URL` and optional `ADDITIONAL_ALLOWED_ORIGINS`.
 - Sheets synchronization still has a hardcoded fallback spreadsheet ID; configure your own target.
 
 ## Demo and screenshots

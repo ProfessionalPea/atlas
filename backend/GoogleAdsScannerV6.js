@@ -1,16 +1,12 @@
 const { chromium } = require('playwright');
-const { Pool } = require('pg');
+const { getDatabasePool } = require('./Security');
 const {
   initializeIntelligenceFeatures,
   touchCreativeVideoAssets
 } = require('./IntelligenceFeatures');
 const { extractVideoAssets } = require('./GoogleAdsScannerV2');
 
-const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
-const pool = new Pool({
-  connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false }
-});
+const pool = getDatabasePool();
 
 // v6 keeps v5's strict ownership rules, but makes discovery materially more
 // complete. In particular it inspects response bodies, tolerates escaped JSON,

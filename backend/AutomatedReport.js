@@ -12,7 +12,6 @@ require("dotenv").config();
 // use GoogleSheetsSync.js + GOOGLE_CREDENTIALS_JSON/google-credentials.json.
 
 const express = require("express");
-const { Pool } = require("pg");
 
 const EMAIL_ROUTE = /^\/api\/emails(?:\/|$)/;
 const PATCH_FLAG = Symbol.for("atlas.emailReportingRetired");
@@ -53,27 +52,7 @@ function installEmailRetirementGuard() {
   }
 }
 
-async function dropLegacyEmailData() {
-  const connectionString = (process.env.DATABASE_URL || "").split("?")[0];
-  if (!connectionString) return;
-
-  const pool = new Pool({
-    connectionString,
-    ssl: { rejectUnauthorized: false }
-  });
-
-  try {
-    await pool.query("DROP TABLE IF EXISTS email_lists");
-    console.log("📭 [EMAIL] Reporting retired; legacy recipient data removed.");
-  } catch (error) {
-    console.warn("⚠️ [EMAIL] Could not remove legacy recipient table:", error.message);
-  } finally {
-    await pool.end().catch(() => {});
-  }
-}
-
 installEmailRetirementGuard();
-void dropLegacyEmailData();
 
 // Compatibility export for the historical server import. The request guard
 // above removes all report flags, so this should never be called by a normal

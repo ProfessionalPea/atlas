@@ -1,5 +1,5 @@
 const { chromium } = require('playwright');
-const { Pool } = require('pg');
+const { getDatabasePool } = require('./Security');
 const {
   initializeIntelligenceFeatures,
   persistVideoAssets,
@@ -8,11 +8,7 @@ const {
   touchCreativeVideoAssets
 } = require('./IntelligenceFeatures');
 
-const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
-const videoPool = new Pool({
-  connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false }
-});
+const videoPool = getDatabasePool();
 let videoDbReady = false;
 
 const MAX_CREATIVE_WORKERS = 2;

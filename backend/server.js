@@ -1,5 +1,15 @@
 require("dotenv").config();
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+const {
+  getDatabasePool,
+  getSessionSecret,
+  hashPassword,
+  verifyPassword,
+  initializeAuthStorage,
+  isProduction
+} = require("./Security");
+const SESSION_SECRET = getSessionSecret();
+const SESSION_EXPIRATION_DAYS = 30;
 
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor, isValidPackage } = require("./GoogleAdsScanner");
@@ -7,47 +17,10 @@ const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require(".
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const express = require("express");
 const cors = require("cors");
-const { Pool } = require('pg');
 const crypto = require('crypto');
 
-// Strip ?sslmode=... from the URL so it doesn't overwrite rejectUnauthorized: false
-const cleanConnectionString = (process.env.DATABASE_URL || "").split("?")[0];
-
-const pool = new Pool({
-  connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false }
-});
-
-// Auto-initialize users table and default role accounts
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        role VARCHAR(20) NOT NULL DEFAULT 'view-only',
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-
-    const adminCheck = await pool.query("SELECT id FROM users WHERE username = 'admin'");
-    if (adminCheck.rows.length === 0) {
-      const defaultAdminHash = crypto.createHash("sha256").update("admin@gss").digest("hex");
-      const defaultUserHash = crypto.createHash("sha256").update("user123").digest("hex");
-      await pool.query(`
-        INSERT INTO users (username, password_hash, role)
-        VALUES
-          ('admin', $1, 'full access'),
-          ('user', $2, 'view-only')
-        ON CONFLICT (username) DO NOTHING;
-      `, [defaultAdminHash, defaultUserHash]);
-      console.log("👤 [AUTH] Seeded default accounts: admin (admin@gss) and user (user123)");
-    }
-  } catch (e) {
-    console.error("⚠️ [AUTH] Failed to initialize users table:", e.message);
-  }
-})();
+const pool = getDatabasePool();
+const authInitialization = initializeAuthStorage(pool);
 
 // Auto-initialize the ad_creatives table. It records every ad (creative) ID
 // Atlas has ever seen so a re-scan can tell "still running" apart from "new",
@@ -178,33 +151,39 @@ const pool = new Pool({
 })();
 
 // In-memory token store: token -> { id, username, role, expires }
-const SESSION_SECRET = process.env.ATLAS_SESSION_SECRET || "atlas_secure_session_key_production_2026";
-const SESSION_EXPIRATION_DAYS = 30; // Sessions stay valid for 30 days
 
 function generateSessionToken(user) {
   const payload = {
     id: user.id,
     username: user.username,
     role: user.role,
+    iat: Date.now(),
     exp: Date.now() + 1000 * 60 * 60 * 24 * SESSION_EXPIRATION_DAYS
   };
   const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const signature = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
-  return `${data}.${signature}`;
+  return data + "." + signature;
 }
-function verifySessionToken(token) {
-  if (!token || typeof token !== "string" || !token.includes(".")) return null;
-  const [data, signature] = token.split(".");
-  const expectedSignature = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
 
-  // Constant-time comparison prevents timing attacks
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+function verifySessionToken(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+
+  const [data, signature] = parts;
+  const expectedSignature = crypto.createHmac("sha256", SESSION_SECRET).update(data).digest("base64url");
+  const suppliedBuffer = Buffer.from(signature, "base64url");
+  const expectedBuffer = Buffer.from(expectedSignature, "base64url");
+
+  if (suppliedBuffer.length !== expectedBuffer.length ||
+      !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
     return null;
   }
 
   try {
     const payload = JSON.parse(Buffer.from(data, "base64url").toString());
     if (!payload.exp || payload.exp < Date.now()) return null;
+    if (!payload.id || !payload.username || !payload.role) return null;
     return payload;
   } catch {
     return null;
@@ -316,31 +295,43 @@ async function mapWithConcurrency(items, concurrency, worker, shouldStop = () =>
 
 const app = express();
 
-const allowedOriginPatterns = [
-  /^http:\/\/localhost(:\d+)?$/,
-  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
-  /\.vercel\.app$/,
-];
+if (isProduction() && !String(process.env.FRONTEND_URL || "").trim()) {
+  throw new Error("FRONTEND_URL must be set in production.");
+}
 
-if (process.env.FRONTEND_URL) {
+const allowedOrigins = new Set();
+const allowedOriginPatterns = isProduction()
+  ? []
+  : [/^http:\/\/localhost(:\d+)?$/, /^http:\/\/127\.0\.0\.1(:\d+)?$/];
+
+function addAllowedOrigin(value, label) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return;
   try {
-    const parsed = new URL(process.env.FRONTEND_URL).origin;
-    allowedOriginPatterns.push(new RegExp(`^${parsed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+    const parsed = new URL(candidate);
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+      throw new Error("Unsupported origin protocol.");
+    }
+    allowedOrigins.add(parsed.origin);
   } catch {
-    allowedOriginPatterns.push(process.env.FRONTEND_URL);
+    if (isProduction() && label === "FRONTEND_URL") {
+      throw new Error("FRONTEND_URL must be a valid absolute HTTP(S) origin in production.");
+    }
+    console.warn("[CORS] Ignoring invalid " + label + ".");
   }
 }
 
+addAllowedOrigin(process.env.FRONTEND_URL, "FRONTEND_URL");
+for (const origin of String(process.env.ADDITIONAL_ALLOWED_ORIGINS || "").split(",")) {
+  addAllowedOrigin(origin, "ADDITIONAL_ALLOWED_ORIGINS entry");
+}
+
 const corsOptions = {
-  origin: function (origin, callback) {
+  origin(origin, callback) {
     if (!origin) return callback(null, true);
-    const isAllowed = allowedOriginPatterns.some((pattern) =>
-      typeof pattern === "string" ? pattern === origin : pattern.test(origin)
-    );
-    if (isAllowed) {
-      return callback(null, true);
-    }
-    return callback(null, false);
+    const exactMatch = allowedOrigins.has(origin);
+    const developmentMatch = allowedOriginPatterns.some(pattern => pattern.test(origin));
+    return callback(null, exactMatch || developmentMatch);
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -349,36 +340,44 @@ const corsOptions = {
     "x-atlas-token",
     "x-atlas-admin-key",
     "ngrok-skip-browser-warning"
-  ],
+  ]
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 // Public health check
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
 // Login route (Public)
 app.post("/api/auth/login", async (req, res) => {
-  const { username, password } = req.body || {};
+  const username = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
   if (!username || !password) {
     return res.status(400).json({ error: "Username and password are required." });
   }
 
   try {
-    const hash = crypto.createHash("sha256").update(password).digest("hex");
     const { rows } = await pool.query(
-      "SELECT id, username, role FROM users WHERE LOWER(username) = LOWER($1) AND password_hash = $2",
-      [username.trim(), hash]
+      "SELECT id, username, role, password_hash FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
+      [username]
     );
-
-    if (rows.length === 0) {
+    const user = rows[0];
+    if (!user) {
       return res.status(401).json({ error: "Invalid username or password." });
     }
 
-    const user = rows[0];
-    const token = generateSessionToken(user);
+    const passwordResult = await verifyPassword(password, user.password_hash);
+    if (!passwordResult.valid) {
+      return res.status(401).json({ error: "Invalid username or password." });
+    }
 
+    if (passwordResult.needsUpgrade) {
+      const upgradedHash = await hashPassword(password);
+      await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [user.id, upgradedHash]);
+    }
+
+    const token = generateSessionToken(user);
     return res.json({
       status: "authenticated",
       token,
@@ -390,10 +389,10 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Session check route
+// Session check route. Tokens are accepted only from the request header to
+// prevent leakage through URLs, proxy logs, browser history or referrers.
 app.get("/api/auth/me", (req, res) => {
-  const token = req.get("x-atlas-token") || req.query.token;
-  const session = verifySessionToken(token);
+  const session = verifySessionToken(req.get("x-atlas-token"));
   if (!session) {
     return res.status(401).json({ error: "Session invalid or expired." });
   }
@@ -404,14 +403,11 @@ app.get("/api/auth/me", (req, res) => {
 app.use("/api", (req, res, next) => {
   if (req.method === "OPTIONS") return next();
 
-  // Public exceptions
   if (req.path === "/auth/login" || req.path === "/health") {
     return next();
   }
 
-  const token = req.get("x-atlas-token") || req.query.token;
-  const session = verifySessionToken(token);
-
+  const session = verifySessionToken(req.get("x-atlas-token"));
   if (!session) {
     return res.status(401).json({ error: "Unauthorized: Please log in." });
   }
@@ -2190,4 +2186,12 @@ app.get("/api/competitors", async (_req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => console.log(`Atlas backend running on http://localhost:${PORT}`));
+authInitialization
+  .then(() => {
+    app.listen(PORT, () => console.log("Atlas backend running on http://localhost:" + PORT));
+  })
+  .catch(async (error) => {
+    console.error("[AUTH] Secure authentication initialization failed:", error.message);
+    try { await pool.end(); } catch {}
+    process.exit(1);
+  });
