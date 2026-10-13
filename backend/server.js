@@ -295,6 +295,10 @@ async function mapWithConcurrency(items, concurrency, worker, shouldStop = () =>
 
 const app = express();
 
+if (isProduction() && !String(process.env.FRONTEND_URL || "").trim()) {
+  throw new Error("FRONTEND_URL must be set in production.");
+}
+
 const allowedOrigins = new Set();
 const allowedOriginPatterns = isProduction()
   ? []
@@ -304,8 +308,15 @@ function addAllowedOrigin(value, label) {
   const candidate = String(value || "").trim();
   if (!candidate) return;
   try {
-    allowedOrigins.add(new URL(candidate).origin);
+    const parsed = new URL(candidate);
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+      throw new Error("Unsupported origin protocol.");
+    }
+    allowedOrigins.add(parsed.origin);
   } catch {
+    if (isProduction() && label === "FRONTEND_URL") {
+      throw new Error("FRONTEND_URL must be a valid absolute HTTP(S) origin in production.");
+    }
     console.warn("[CORS] Ignoring invalid " + label + ".");
   }
 }
