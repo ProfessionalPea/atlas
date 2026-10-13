@@ -5,6 +5,8 @@ on:
     paths:
       - 'backend/GoogleAdsScanner.js'
       - 'backend/GoogleAdsScannerBroad.js'
+      - 'backend/ScannerResilience.js'
+      - 'backend/scanner-resilience.test.js'
       - 'backend/GoogleAdsScannerV5.js'
       - 'backend/GoogleAdsScannerV6.js'
       - 'backend/AtlasExtensions.js'
@@ -32,10 +34,12 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: node --check GoogleAdsScannerBroad.js
+      - run: node --check ScannerResilience.js
       - run: node --check GoogleAdsScanner.js
       - run: node --check AtlasExtensions.js
       - run: node --check ScanDiscoveryRegistry.js
       - run: node --check server.js
       - run: node --check GoogleSheetsSync.js
       - run: node scanner-broad.test.js
+      - run: node scanner-resilience.test.js
       - run: node scan-discovery-registry.test.js

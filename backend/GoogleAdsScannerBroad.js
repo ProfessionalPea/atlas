@@ -5,18 +5,27 @@ const {
   persistVideoAssets
 } = require('./IntelligenceFeatures');
 const { extractVideoAssets } = require('./GoogleAdsScannerV2');
+const { isGoogleHost, classifyGoogleResponse, createBoundedQueue, waitForStableSignal } = require('./ScannerResilience');
 
 const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
 const videoPool = new Pool({
   connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 8000,
+  statement_timeout: 15000,
+  query_timeout: 18000
 });
 let videoDbReady = false;
+let videoDbInitialization = null;
 
 async function ensureVideoDb() {
   if (videoDbReady) return;
-  await initializeIntelligenceFeatures(videoPool);
-  videoDbReady = true;
+  if (!videoDbInitialization) {
+    videoDbInitialization = initializeIntelligenceFeatures(videoPool)
+      .then(() => { videoDbReady = true; })
+      .finally(() => { videoDbInitialization = null; });
+  }
+  await videoDbInitialization;
 }
 
 const PACKAGE_BLACKLIST = [
@@ -253,6 +262,17 @@ async function persistCreativeVideos(creativeId, advertiserId, attribution, allA
   }
 }
 
+const videoPersistenceQueue = createBoundedQueue(
+  async job => persistCreativeVideos(job.creativeId, job.advertiserId, job.attribution, job.allAssets),
+  {
+    concurrency: 2,
+    maxPending: 24,
+    onError(error, job) {
+      console.warn('[Broad Scanner] Queued video persistence failed for ' + job.creativeId + ': ' + error.message);
+    }
+  }
+);
+
 async function inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages) {
   for (const frame of adPage.frames()) {
     const isCreativeFrame = frame !== adPage.mainFrame() && !(frame.url() || '').includes('/sadbundle/');
@@ -355,6 +375,45 @@ async function scanCompetitor(
     onProgress({ currentAd: current, totalAds: total, timeRemaining, log });
   };
 
+  let detectedBlock = null;
+  let suspiciousResponseCount = 0;
+
+  function recordResponseAssessment(assessment, responseUrl) {
+    let label = String(responseUrl || 'unknown URL').slice(0, 120);
+    try {
+      const parsed = new URL(responseUrl);
+      label = parsed.hostname + parsed.pathname.slice(0, 100);
+    } catch {}
+
+    if (assessment && assessment.blocked && !detectedBlock) {
+      detectedBlock = { reason: assessment.reason || 'Google response guard stopped the scan.', url: label };
+      console.error('[Broad Scanner] Stopping after a block/challenge signal from ' + label + ': ' + detectedBlock.reason);
+      emitProgress(0, maxAdsToTest, '> STOP: Google returned a block/challenge signal. This scan was stopped to avoid incomplete results.');
+    } else if (assessment && assessment.suspicious) {
+      suspiciousResponseCount += 1;
+      if (suspiciousResponseCount <= 5) {
+        console.warn('[Broad Scanner] Suspicious response from ' + label + ': ' + assessment.reason);
+      }
+    }
+    return assessment;
+  }
+
+  const getStopError = () => {
+    if (detectedBlock) {
+      return { code: 'ATLAS_SCAN_BLOCKED', message: detectedBlock.reason + ' Scan stopped; wait before starting another scan.' };
+    }
+    if (isCancelled()) return { code: 'ATLAS_SCAN_CANCELLED', message: 'Scan cancelled by user.' };
+    return null;
+  };
+
+  const throwIfStopped = () => {
+    const stop = getStopError();
+    if (!stop) return;
+    const error = new Error(stop.message);
+    error.code = stop.code;
+    throw error;
+  };
+
   const browser = await chromium.launch({
     headless: true,
     args: [
@@ -384,24 +443,71 @@ async function scanCompetitor(
     let arId = null;
     const adIds = new Set();
     let hasClicked = false;
+    let lastDiscoveryActivityAt = Date.now();
+    let pendingDiscoveryResponses = 0;
+    const activeDiscoveryRequests = new Set();
+    const trackedRequestTypes = new Set(['document', 'xhr', 'fetch', 'script']);
 
-    emitProgress(0, maxAdsToTest, `> 🚀 Booting broad discovery scanner for "${query}"`);
-    searchPage.on('response', async res => {
+    const trackDiscoveryRequest = request => {
+      if (!trackedRequestTypes.has(request.resourceType()) || !isGoogleHost(request.url())) return;
+      activeDiscoveryRequests.add(request);
+      lastDiscoveryActivityAt = Date.now();
+    };
+    const finishDiscoveryRequest = request => {
+      if (activeDiscoveryRequests.delete(request)) lastDiscoveryActivityAt = Date.now();
+    };
+
+    emitProgress(0, maxAdsToTest, '> Booting broad discovery scanner for "' + query + '"');
+    searchPage.on('request', trackDiscoveryRequest);
+    searchPage.on('requestfinished', finishDiscoveryRequest);
+    searchPage.on('requestfailed', finishDiscoveryRequest);
+    searchPage.on('response', async response => {
+      const request = response.request();
+      const resourceType = request.resourceType();
+      if (!trackedRequestTypes.has(resourceType)) return;
+      pendingDiscoveryResponses += 1;
+
       try {
-        const url = res.url();
+        const url = response.url() || '';
+        const headers = response.headers();
+        const contentType = String(headers['content-type'] || '').toLowerCase();
+        const contentLength = Number(headers['content-length']);
+        const headerAssessment = recordResponseAssessment(
+          classifyGoogleResponse({ status: response.status(), contentType, resourceType, url }),
+          url
+        );
+        if (headerAssessment.blocked) return;
+
+        const shouldReadBody = resourceType === 'document' ||
+          /text\/html|application\/xhtml\+xml/i.test(contentType) ||
+          (hasClicked && ['xhr', 'fetch'].includes(resourceType));
+        if (!shouldReadBody || (Number.isFinite(contentLength) && contentLength > 5000000)) return;
+
+        const body = await response.text();
+        const assessment = recordResponseAssessment(
+          classifyGoogleResponse({ status: response.status(), contentType, body, resourceType, url }),
+          url
+        );
+        if (assessment.blocked || assessment.suspicious) return;
+        if (!hasClicked || !['xhr', 'fetch'].includes(resourceType)) return;
         if (url.includes('SearchAdvertisers')) return;
-        if (!hasClicked || !['xhr', 'fetch'].includes(res.request().resourceType())) return;
 
         if (!arId) {
-          const postData = res.request().postData() || '';
+          const postData = request.postData() || '';
           const match = url.match(/(AR[0-9]{15,})/) || postData.match(/(AR[0-9]{15,})/);
           if (match) arId = match[1];
         }
-        const text = await res.text();
-        if (!arId) arId = text.match(/(AR[0-9]{15,})/)?.[1] || null;
-        for (const match of text.matchAll(/"(CR[0-9]+)"/g)) adIds.add(match[1]);
-      } catch {}
+        if (!arId) arId = body.match(/(AR[0-9]{15,})/)?.[1] || null;
+        for (const match of body.matchAll(/"(CR[0-9]+)"/g)) adIds.add(match[1]);
+      } catch (error) {
+        console.warn('[Broad Scanner] Could not inspect discovery response: ' + error.message);
+      } finally {
+        pendingDiscoveryResponses = Math.max(0, pendingDiscoveryResponses - 1);
+        lastDiscoveryActivityAt = Date.now();
+      }
     });
+
+
 
     if (/^AR[0-9]{15,}$/i.test(query)) {
       arId = query.toUpperCase();
@@ -409,16 +515,55 @@ async function scanCompetitor(
       await searchPage.goto(`https://adstransparency.google.com/advertiser/${arId}?region=any`, {
         waitUntil: 'domcontentloaded', timeout: 60000
       });
-      await searchPage.waitForTimeout(4000);
+      await waitForStableSignal({
+        inspect: async () => {},
+        getSignature: () => String(arId || '') + ':' + adIds.size,
+        getLastActivityAt: () => lastDiscoveryActivityAt,
+        getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
+        getStopError,
+        minWaitMs: 1600,
+        stableForMs: 1100,
+        quietForMs: 850,
+        pollIntervalMs: 250,
+        normalMaxWaitMs: 6000,
+        slowMaxWaitMs: 6000
+      });
+      throwIfStopped();
     } else {
       await searchPage.goto('https://adstransparency.google.com/?region=any', {
         waitUntil: 'domcontentloaded', timeout: 60000
       });
+      await waitForStableSignal({
+        inspect: async () => {},
+        getSignature: () => 'advertiser-search-home',
+        getLastActivityAt: () => lastDiscoveryActivityAt,
+        getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
+        getStopError,
+        minWaitMs: 400,
+        stableForMs: 350,
+        quietForMs: 300,
+        pollIntervalMs: 150,
+        normalMaxWaitMs: 2500,
+        slowMaxWaitMs: 2500
+      });
+      throwIfStopped();
+
       const searchBox = searchPage.getByRole('textbox').first();
-      await searchBox.waitFor({ state: 'visible', timeout: 15000 });
+      try {
+        await searchBox.waitFor({ state: 'visible', timeout: 15000 });
+      } catch (error) {
+        throwIfStopped();
+        throw error;
+      }
       await searchBox.click();
       await searchBox.fill(query);
-      await searchPage.waitForTimeout(1600);
+      try {
+        await searchPage.locator('[role="option"]').first().waitFor({ state: 'visible', timeout: 6000 });
+      } catch (error) {
+        throwIfStopped();
+        await searchPage.waitForTimeout(350);
+      }
+      throwIfStopped();
 
       const options = await searchPage.locator('[role="option"]').all();
       let matchedOption = null;
@@ -440,10 +585,11 @@ async function scanCompetitor(
       await matchedOption.click();
       let waited = 0;
       while (!arId && waited < 15000) {
-        if (isCancelled()) break;
-        await searchPage.waitForTimeout(1000);
-        waited += 1000;
+        throwIfStopped();
+        await searchPage.waitForTimeout(300);
+        waited += 300;
       }
+      throwIfStopped();
       if (!arId) throw new Error('Failed to resolve advertiser ID.');
     }
 
@@ -451,16 +597,31 @@ async function scanCompetitor(
     let strikes = 0;
     let previousSize = adIds.size;
     while (adIds.size < maxAdsToTest && strikes < 3) {
-      if (isCancelled()) throw new Error('Scan aborted by user.');
+      throwIfStopped();
       await searchPage.mouse.wheel(0, 3000);
-      await searchPage.waitForTimeout(3000);
+      await waitForStableSignal({
+        inspect: async () => {},
+        getSignature: () => String(arId || '') + ':' + adIds.size,
+        getLastActivityAt: () => lastDiscoveryActivityAt,
+        getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
+        getStopError,
+        minWaitMs: 1400,
+        stableForMs: 700,
+        quietForMs: 600,
+        pollIntervalMs: 150,
+        normalMaxWaitMs: 3000,
+        slowMaxWaitMs: 3000
+      });
+      throwIfStopped();
       if (adIds.size === previousSize) strikes += 1;
       else {
         strikes = 0;
         previousSize = adIds.size;
-        emitProgress(0, maxAdsToTest, `> ... intercepted ${adIds.size} ads so far...`);
+        emitProgress(0, maxAdsToTest, '> ... intercepted ' + adIds.size + ' ads so far...');
       }
     }
+
+
 
     await searchPage.close();
     const idArray = [...adIds].slice(0, Math.max(0, Number(maxAdsToTest) || 0));
@@ -473,6 +634,7 @@ async function scanCompetitor(
 
     const results = [];
     const globallyDiscovered = new Set();
+    let queuedVideoPersistenceTasks = 0;
     const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
 
     for (let i = 0; i < idArray.length; i += 1) {
@@ -490,6 +652,11 @@ async function scanCompetitor(
       };
       let lastRelevantSignalAt = Date.now();
       let sawVideoRendererSignal = false;
+      let slowRendererDetected = false;
+      let pendingResponseBodies = 0;
+      let lastRendererCheckAt = 0;
+      const activeRelevantRequests = new Set();
+      const trackedCreativeRequestTypes = new Set(['document', 'xhr', 'fetch', 'script']);
 
       const recordPackages = (payload, source) => {
         const candidates = extractBroadPackages(payload);
@@ -513,8 +680,10 @@ async function scanCompetitor(
 
         if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|googlevideo\.com|youtube\.com/i.test(reqUrl + ' ' + frameUrl)) {
           sawVideoRendererSignal = true;
+          slowRendererDetected = true;
         }
-        if (['document', 'xhr', 'fetch', 'script'].includes(resourceType)) {
+        if (trackedCreativeRequestTypes.has(resourceType)) {
+          activeRelevantRequests.add(req);
           lastRelevantSignalAt = Date.now();
         }
 
@@ -529,6 +698,7 @@ async function scanCompetitor(
         const media = parseMediaRequest(reqUrl);
         if (media) {
           sawVideoRendererSignal = true;
+          slowRendererDetected = true;
           mergeVideoAsset(videoMap, media);
           if (isCreativeFrame) {
             mergeVideoAsset(getFrameEvidence(frameEvidence, frame).videos, media);
@@ -537,18 +707,25 @@ async function scanCompetitor(
       };
 
       const responseHandler = async response => {
-        try {
-          const request = response.request();
-          const resourceType = request.resourceType();
-          if (!['document', 'xhr', 'fetch', 'script'].includes(resourceType)) return;
+        const request = response.request();
+        const resourceType = request.resourceType();
+        if (!trackedCreativeRequestTypes.has(resourceType)) return;
+        pendingResponseBodies += 1;
 
+        try {
           const responseUrl = response.url() || '';
           if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|googlevideo\.com|youtube\.com/i.test(responseUrl)) {
             sawVideoRendererSignal = true;
+            slowRendererDetected = true;
           }
 
           const headers = response.headers();
           const contentType = String(headers['content-type'] || '').toLowerCase();
+          const headerAssessment = recordResponseAssessment(
+            classifyGoogleResponse({ status: response.status(), contentType, resourceType, url: responseUrl }),
+            responseUrl
+          );
+          if (headerAssessment.blocked) return;
           if (contentType && !/(text|json|javascript|xml|html)/i.test(contentType)) return;
 
           const contentLength = Number(headers['content-length']);
@@ -556,19 +733,39 @@ async function scanCompetitor(
 
           const body = await response.text();
           if (!body || body.length > 5000000) return;
-          recordPackages(body, 'responseBody');
+          const assessment = recordResponseAssessment(
+            classifyGoogleResponse({ status: response.status(), contentType, body, resourceType, url: responseUrl }),
+            responseUrl
+          );
+          if (assessment.blocked) return;
+          if (!assessment.suspicious) recordPackages(body, 'responseBody');
 
-          // Keep media found in response payloads in the global library, but do
-          // not use response-level evidence to assign video ownership to a game.
+          // Response payloads can discover assets, but cannot establish ownership.
           if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(body)) {
             const assets = extractVideoAssets(body);
             for (const asset of assets) mergeVideoAsset(videoMap, asset);
-            if (assets.length) sawVideoRendererSignal = true;
+            if (assets.length) {
+              sawVideoRendererSignal = true;
+              slowRendererDetected = true;
+            }
           }
-        } catch {}
+        } catch (error) {
+          console.warn('[Broad Scanner] Could not inspect creative response: ' + error.message);
+        } finally {
+          pendingResponseBodies = Math.max(0, pendingResponseBodies - 1);
+          lastRelevantSignalAt = Date.now();
+        }
       };
 
+      const finishCreativeRequest = request => {
+        if (activeRelevantRequests.delete(request)) lastRelevantSignalAt = Date.now();
+      };
+
+
+
       adPage.on('request', requestHandler);
+      adPage.on('requestfinished', finishCreativeRequest);
+      adPage.on('requestfailed', finishCreativeRequest);
       adPage.on('response', responseHandler);
       await adPage.route('**/*', route => {
         const type = route.request().resourceType();
@@ -579,44 +776,46 @@ async function scanCompetitor(
       try {
         try {
           await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        } catch {
-          // Inspect whatever Google has rendered even if navigation timed out.
+        } catch (error) {
+          // Google can still expose useful evidence when document navigation times out.
+          throwIfStopped();
+          console.warn('[Broad Scanner] Creative navigation was incomplete for ' + adId + ': ' + error.message);
         }
+        throwIfStopped();
 
-        // Keep the proven September baseline, then inspect actual script,
-        // c-wiz, DOM and response-body evidence before deciding whether to wait
-        // longer for a slow video/App Campaign renderer.
-        await adPage.waitForTimeout(5000);
-        await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
-        await adPage.waitForTimeout(3000);
-        await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
-
-        const shouldExtendWait = await hasSlowAdRenderer(adPage, videoMap, sawVideoRendererSignal);
-        if (shouldExtendWait) {
-          const extensionStartedAt = Date.now();
-          let previousSignature = discovered.size + ':' + videoMap.size + ':' + adPage.frames().length;
-          let stableSince = Date.now();
-
-          console.log(
-            '[Broad Scanner] Ad ' + (i + 1) +
-            ' uses a video/App Campaign-style renderer; allowing up to 12 extra seconds for late metadata.'
-          );
-
-          while (Date.now() - extensionStartedAt < 12000) {
-            if (isCancelled()) throw new Error('Scan aborted by user.');
-            await adPage.waitForTimeout(1500);
-            await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
-
-            const signature = discovered.size + ':' + videoMap.size + ':' + adPage.frames().length;
-            const networkQuiet = Date.now() - lastRelevantSignalAt >= 3000;
-            if (signature !== previousSignature || !networkQuiet) {
-              stableSince = Date.now();
-            } else if (Date.now() - stableSince >= 4500) {
-              break;
-            }
-            previousSignature = signature;
+        const inspectAndDetectRenderer = async () => {
+          await inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPackages);
+          if (!slowRendererDetected && Date.now() - lastRendererCheckAt >= 800) {
+            lastRendererCheckAt = Date.now();
+            slowRendererDetected = await hasSlowAdRenderer(adPage, videoMap, sawVideoRendererSignal);
           }
+        };
+
+        const readiness = await waitForStableSignal({
+          inspect: inspectAndDetectRenderer,
+          getSignature: () => [
+            [...discovered].sort().join(','),
+            [...videoMap.keys()].sort().join(','),
+            adPage.frames().map(frame => frame.url()).sort().join(',')
+          ].join('::'),
+          getLastActivityAt: () => lastRelevantSignalAt,
+          getPendingCount: () => activeRelevantRequests.size + pendingResponseBodies,
+          shouldExtendWait: () => slowRendererDetected || sawVideoRendererSignal || videoMap.size > 0,
+          getStopError,
+          minWaitMs: 1800,
+          stableForMs: 1450,
+          quietForMs: 1000,
+          pollIntervalMs: 850,
+          normalMaxWaitMs: 6500,
+          slowMaxWaitMs: 15000
+        });
+
+        if (readiness.status === 'max-wait') {
+          console.log('[Broad Scanner] Ad ' + (i + 1) + ' reached its bounded ' + readiness.maxWaitMs + 'ms inspection budget; preserving all evidence collected.');
         }
+        throwIfStopped();
+
+
 
         const uniqueInAd = [...discovered];
         sourceDiscoveryTotals.requestUrl += packageSources.requestUrl.size;
@@ -628,7 +827,13 @@ async function scanCompetitor(
         const attribution = buildSafeVideoAttribution(frameEvidence, videoMap);
         const videoAssets = [...videoMap.values()];
         if (videoAssets.length) {
-          await persistCreativeVideos(adId, arId, attribution, videoAssets);
+          await videoPersistenceQueue.enqueue({
+            creativeId: adId,
+            advertiserId: arId,
+            attribution,
+            allAssets: videoAssets
+          });
+          queuedVideoPersistenceTasks += 1;
         }
 
         if (uniqueInAd.length) {
@@ -651,9 +856,12 @@ async function scanCompetitor(
           emitProgress(i + 1, idArray.length, `> ❌ Ad ${i + 1}: no valid package found.`);
         }
       } catch (error) {
+        if (error && error.code === 'ATLAS_SCAN_BLOCKED') throw error;
         emitProgress(i + 1, idArray.length, `> ⚠️ Ad ${i + 1}: ${error.message || 'error'}; continuing.`);
       } finally {
         adPage.off('request', requestHandler);
+        adPage.off('requestfinished', finishCreativeRequest);
+        adPage.off('requestfailed', finishCreativeRequest);
         adPage.off('response', responseHandler);
         await adPage.close().catch(() => {});
       }
@@ -663,20 +871,30 @@ async function scanCompetitor(
       'request URLs=' + sourceDiscoveryTotals.requestUrl + ', response bodies=' +
       sourceDiscoveryTotals.responseBody + ', frame/DOM=' + sourceDiscoveryTotals.frameHtml + '.');
 
+    const queueSnapshot = videoPersistenceQueue.snapshot();
     emitProgress(
       idArray.length,
       idArray.length,
-      `> 🎉 Finished! ${globallyDiscovered.size} unique package${globallyDiscovered.size === 1 ? '' : 's'} discovered from ${idArray.length} ads.`
+      '> Finished! ' + globallyDiscovered.size + ' unique package' + (globallyDiscovered.size === 1 ? '' : 's') +
+        ' discovered from ' + idArray.length + ' ads.' +
+        (queuedVideoPersistenceTasks ? ' Video metadata persistence is queued separately (' + queueSnapshot.pending + ' total queued/in progress).' : '')
     );
-    console.log(`📦 [Broad Scanner] ${idArray.length} ads -> ${globallyDiscovered.size} unique packages (${results.length} creative/package mappings).`);
+    console.log('[Broad Scanner] Async video persistence queue: ' + JSON.stringify(queueSnapshot));
+    console.log('[Broad Scanner] ' + idArray.length + ' ads -> ' + globallyDiscovered.size + ' unique packages (' + results.length + ' creative/package mappings).');
     return results;
   } catch (error) {
-    console.error('❌ Broad scanner ended:', error.message);
-    emitProgress(0, maxAdsToTest, `> 🛑 SCAN ENDED: ${error.message}`);
+    console.error('Broad scanner ended:', error.message);
+    emitProgress(0, maxAdsToTest, '> SCAN ENDED: ' + error.message);
+    if (error && error.code === 'ATLAS_SCAN_BLOCKED') throw error;
     return [];
   } finally {
+    searchPage.off('request', trackDiscoveryRequest);
+    searchPage.off('requestfinished', finishDiscoveryRequest);
+    searchPage.off('requestfailed', finishDiscoveryRequest);
     await browser.close().catch(() => {});
   }
+
+
 }
 
 module.exports = {
