@@ -1,5 +1,5 @@
 const express = require('express');
-const { Pool } = require('pg');
+const { getDatabasePool } = require('./Security');
 const gplayRaw = require('google-play-scraper');
 const gplay = gplayRaw.default || gplayRaw;
 const {
@@ -19,11 +19,7 @@ const {
   mergeScanStatus
 } = require('./ScanDiscoveryRegistry');
 
-const cleanConnectionString = (process.env.DATABASE_URL || '').split('?')[0];
-const extensionPool = new Pool({
-  connectionString: cleanConnectionString,
-  ssl: { rejectUnauthorized: false }
-});
+const extensionPool = getDatabasePool();
 
 let initialized = false;
 let registered = false;
