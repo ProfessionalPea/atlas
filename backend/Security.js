@@ -104,8 +104,16 @@ function getDatabasePool() {
     ? requestedMax
     : 10;
 
+  // Unit tests and local setups may rely on the standard PG* environment
+  // variables instead of DATABASE_URL. Production must always be explicit.
+  const connectionConfig = process.env.DATABASE_URL
+    ? createDatabaseConfig()
+    : isProduction()
+      ? createDatabaseConfig()
+      : {};
+
   sharedPool = new Pool({
-    ...createDatabaseConfig(),
+    ...connectionConfig,
     connectionTimeoutMillis: 8000,
     max,
     idleTimeoutMillis: 30000
