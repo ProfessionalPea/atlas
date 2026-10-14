@@ -16,6 +16,7 @@ const { scanCompetitor, isValidPackage } = require("./GoogleAdsScanner");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const express = require("express");
+require("./AtlasExtensions");
 const cors = require("cors");
 const crypto = require('crypto');
 
@@ -1868,8 +1869,6 @@ app.post("/api/scan", async (req, res) => {
               icon: fixUrl(sim.icon),
               score: sim.score || 0
             }));
-
-
 
           // games.ad_count is intentionally the ALL-TIME detection counter.
           // Increment it by the exact count from this target scan in one shot.
