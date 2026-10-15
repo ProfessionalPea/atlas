@@ -1,3 +1,5 @@
+const { invalidateVideoMetadataCaches } = require('./VideoLibraryMetadata');
+
 async function initializeVideoLifecycle(pool) {
   await pool.query(`
     CREATE OR REPLACE FUNCTION atlas_cleanup_competitor_video_data()
@@ -75,6 +77,7 @@ async function clearVideoLibrary(pool) {
     `);
 
     await client.query('COMMIT');
+    invalidateVideoMetadataCaches();
     return counts.rows[0] || { videos: 0, links: 0, cache_entries: 0 };
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch {}
@@ -118,11 +121,9 @@ async function deleteVideoAsset(pool, assetId) {
       return null;
     }
 
-    // ad_video_links.asset_id uses ON DELETE CASCADE, so deleting the asset
-    // removes only this video's relationships without touching the ad creative,
-    // game, publisher, competitor, or extraction cache records.
     await client.query('DELETE FROM video_assets WHERE id = $1', [id]);
     await client.query('COMMIT');
+    invalidateVideoMetadataCaches();
 
     return {
       id: Number(asset.id),
@@ -140,8 +141,6 @@ async function deleteVideoAsset(pool, assetId) {
 }
 
 function registerVideoLifecycleRoutes({ app, pool }) {
-  // Admin-only automatically because Atlas's existing /api middleware has
-  // already been registered before extension routes are attached.
   app.delete('/api/video-assets/:assetId', async (req, res) => {
     try {
       const deleted = await deleteVideoAsset(pool, req.params.assetId);

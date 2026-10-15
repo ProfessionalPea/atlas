@@ -7,6 +7,9 @@ const API_BASE = window.location.hostname === 'localhost' || window.location.hos
   : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
 const AUTH_TOKEN_KEY = 'atlas_auth_token';
 
+// Client-side cache for package autocomplete suggestions
+const packageSuggestionCache = new Map();
+
 async function fetchJson(url, options = {}) {
   const token = localStorage.getItem(AUTH_TOKEN_KEY);
   const response = await fetch(url, {
@@ -27,6 +30,7 @@ async function fetchJson(url, options = {}) {
 }
 
 function normalizeHref(value) {
+  if (!value) return '';
   try { return new URL(value, window.location.origin).href; }
   catch { return String(value || ''); }
 }
@@ -46,25 +50,47 @@ function findVideoRoot() {
   return heading?.closest('.atlas-google-shell') || null;
 }
 
-function findCardForAsset(root, asset) {
-  if (!root || !asset) return null;
+// Single O(N) pass to index all cards inside the Video Library root
+function buildCardLookupMap(root) {
+  const byId = new Map();
+  const byHref = new Map();
   const articles = [...root.querySelectorAll('article')];
+
+  for (const card of articles) {
+    if (card.dataset.atlasAssetId) {
+      byId.set(Number(card.dataset.atlasAssetId), card);
+    }
+    for (const link of card.querySelectorAll('a[href]')) {
+      const normalized = normalizeHref(link.href);
+      if (normalized && !byHref.has(normalized)) {
+        byHref.set(normalized, card);
+      }
+    }
+  }
+
+  return { articles, byId, byHref };
+}
+
+function resolveCardForAsset(lookup, asset) {
+  if (!lookup || !asset) return null;
+  const numericId = Number(asset.id);
+  if (lookup.byId.has(numericId)) return lookup.byId.get(numericId);
+
   const expectedUrls = [asset.youtubeUrl, !asset.mediaUrlExpired ? asset.mediaUrl : null]
     .filter(Boolean)
     .map(normalizeHref);
 
-  for (const card of articles) {
-    const hrefs = [...card.querySelectorAll('a[href]')].map(link => normalizeHref(link.href));
-    if (expectedUrls.some(url => hrefs.includes(url))) return card;
+  for (const url of expectedUrls) {
+    if (lookup.byHref.has(url)) return lookup.byHref.get(url);
   }
 
   if (asset.youtubeId) {
-    const card = articles.find(article => article.textContent?.includes(asset.youtubeId));
+    const card = lookup.articles.find(article => article.textContent?.includes(asset.youtubeId));
     if (card) return card;
   }
 
   if (asset.assetKey) {
-    const card = articles.find(article => article.textContent?.includes(asset.assetKey));
+    const card = lookup.articles.find(article => article.textContent?.includes(asset.assetKey));
     if (card) return card;
   }
 
@@ -109,16 +135,24 @@ function VideoMetadataPanel({ asset, onClose, onSaved }) {
       return undefined;
     }
 
+    const cacheKey = activePackageQuery.toLowerCase();
+    if (packageSuggestionCache.has(cacheKey)) {
+      setSuggestions(packageSuggestionCache.get(cacheKey));
+      return undefined;
+    }
+
     let cancelled = false;
     const timer = window.setTimeout(() => {
       fetchJson(`${API_BASE}/api/video-assets/package-options?q=${encodeURIComponent(activePackageQuery)}`)
         .then(data => {
-          if (!cancelled) setSuggestions(Array.isArray(data) ? data : []);
+          const list = Array.isArray(data) ? data : [];
+          packageSuggestionCache.set(cacheKey, list);
+          if (!cancelled) setSuggestions(list);
         })
         .catch(() => {
           if (!cancelled) setSuggestions([]);
         });
-    }, 180);
+    }, 150);
 
     return () => {
       cancelled = true;
@@ -136,19 +170,30 @@ function VideoMetadataPanel({ asset, onClose, onSaved }) {
   const save = async () => {
     setSaving(true);
     setError('');
+    const normalizedTitle = title.trim() || null;
+    const normalizedPackages = packageTokens.map(pkg => pkg.toLowerCase());
+    const normalizedTags = tagTokens;
+
     try {
-      await fetchJson(`${API_BASE}/api/video-assets/${encodeURIComponent(asset.id)}/metadata`, {
+      const response = await fetchJson(`${API_BASE}/api/video-assets/${encodeURIComponent(asset.id)}/metadata`, {
         method: 'PATCH',
         body: JSON.stringify({
-          customTitle: title,
-          packageNames: packageTokens,
-          tags: tagTokens
+          customTitle: normalizedTitle,
+          packageNames: normalizedPackages,
+          tags: normalizedTags
         })
       });
-      await onSaved();
+
+      const savedMeta = response?.metadata || {
+        customTitle: normalizedTitle,
+        packageNames: normalizedPackages,
+        tags: normalizedTags,
+        updatedAt: new Date().toISOString()
+      };
+
+      onSaved(asset.id, savedMeta);
     } catch (err) {
       setError(err.message || 'Unable to save video metadata.');
-    } finally {
       setSaving(false);
     }
   };
@@ -198,6 +243,12 @@ function VideoMetadataPanel({ asset, onClose, onSaved }) {
           <input
             value={title}
             onChange={event => setTitle(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && !saving) {
+                event.preventDefault();
+                void save();
+              }
+            }}
             maxLength={120}
             placeholder="e.g. Fake messenger choice ad"
             className="mt-2 w-full h-10 rounded-xl border border-border-subtle bg-input-bg px-3 text-[13px] text-text-main outline-none focus:border-electric-blue/45"
@@ -250,6 +301,12 @@ function VideoMetadataPanel({ asset, onClose, onSaved }) {
           <input
             value={tags}
             onChange={event => setTags(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && !saving) {
+                event.preventDefault();
+                void save();
+              }
+            }}
             placeholder="UGC, gameplay, fake UI"
             className="mt-2 w-full h-10 rounded-xl border border-border-subtle bg-input-bg px-3 text-[13px] text-text-main outline-none focus:border-electric-blue/45"
           />
@@ -297,15 +354,14 @@ export default function VideoLibraryEditor() {
   const [assets, setAssets] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [unassignedOnly, setUnassignedOnly] = useState(false);
-  const refreshTimerRef = useRef(null);
+  const isDecoratingRef = useRef(false);
 
   const refreshAssets = useCallback(async () => {
     try {
       const data = await fetchJson(`${API_BASE}/api/video-assets`);
       setAssets(Array.isArray(data) ? data : []);
     } catch {
-      // The normal Video Library handles its own load errors. This enhancer is
-      // deliberately silent so it never makes the core library unusable.
+      // Silent fallback
     }
   }, []);
 
@@ -316,9 +372,6 @@ export default function VideoLibraryEditor() {
 
   useEffect(() => {
     void refreshAssets();
-    return () => {
-      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
-    };
   }, [refreshAssets]);
 
   useEffect(() => {
@@ -327,131 +380,189 @@ export default function VideoLibraryEditor() {
 
     const decorate = () => {
       scheduled = false;
-      if (disposed) return;
+      if (disposed || isDecoratingRef.current) return;
       const root = findVideoRoot();
       if (!root) return;
 
-      const directButton = [...root.querySelectorAll('button')]
-        .find(button => button.textContent?.trim() === 'Direct video');
-      const filterGroup = directButton?.parentElement;
-      if (filterGroup && !filterGroup.querySelector('[data-atlas-unassigned-filter="1"]')) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.dataset.atlasUnassignedFilter = '1';
-        button.textContent = 'Unassigned';
-        button.onclick = event => {
-          event.preventDefault();
-          event.stopPropagation();
-          setUnassignedOnly(value => !value);
-        };
-        filterGroup.appendChild(button);
-      }
-
-      const unassignedButton = root.querySelector('[data-atlas-unassigned-filter="1"]');
-      if (unassignedButton) {
-        unassignedButton.className = `h-9 px-3.5 rounded-[11px] text-[11px] font-medium whitespace-nowrap transition-all ${
-          unassignedOnly
-            ? 'bg-surface-solid text-text-main shadow-sm'
-            : 'text-text-muted hover:text-text-main'
-        }`;
-      }
-
-      for (const asset of assets) {
-        const card = findCardForAsset(root, asset);
-        if (!card) continue;
-        card.dataset.atlasAssetId = String(asset.id);
-        card.style.display = unassignedOnly && asset.reviewState !== 'unassigned' ? 'none' : '';
-
-        const deleteButton = card.querySelector('button[title="Delete video asset"]');
-        if (deleteButton && !card.querySelector('[data-atlas-video-edit="1"]')) {
-          const editButton = document.createElement('button');
-          editButton.type = 'button';
-          editButton.dataset.atlasVideoEdit = '1';
-          editButton.title = 'Edit video details';
-          editButton.setAttribute('aria-label', 'Edit video details');
-          editButton.className = 'w-8 h-8 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted hover:text-electric-blue hover:border-electric-blue/25 transition-colors';
-          editButton.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px">edit</span>';
-          editButton.onclick = event => {
+      isDecoratingRef.current = true;
+      try {
+        const directButton = [...root.querySelectorAll('button')]
+          .find(button => button.textContent?.trim() === 'Direct video');
+        const filterGroup = directButton?.parentElement;
+        if (filterGroup && !filterGroup.querySelector('[data-atlas-unassigned-filter="1"]')) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.atlasUnassignedFilter = '1';
+          button.textContent = 'Unassigned';
+          button.onclick = event => {
             event.preventDefault();
             event.stopPropagation();
-            setEditingId(Number(asset.id));
+            setUnassignedOnly(value => !value);
           };
-          deleteButton.insertAdjacentElement('beforebegin', editButton);
+          filterGroup.appendChild(button);
         }
 
-        const title = card.querySelector('h2');
-        const titleRow = title?.parentElement;
-        if (titleRow && asset.hasManualMetadata && !titleRow.querySelector('[data-atlas-manual-badge="1"]')) {
-          const badge = document.createElement('span');
-          badge.dataset.atlasManualBadge = '1';
-          badge.className = 'px-2 py-0.5 rounded-full border border-electric-blue/20 bg-electric-blue/10 text-electric-blue text-[8px] font-medium';
-          badge.textContent = 'Manual';
-          titleRow.appendChild(badge);
-        }
-
-        if (asset.tags?.length && title) {
-          const info = titleRow?.parentElement;
-          if (info && !info.querySelector('[data-atlas-video-tags="1"]')) {
-            const tags = document.createElement('div');
-            tags.dataset.atlasVideoTags = '1';
-            tags.className = 'mt-2 flex flex-wrap gap-1.5';
-            tags.innerHTML = asset.tags.slice(0, 5).map(tag =>
-              `<span class="px-2 py-0.5 rounded-full bg-input-bg border border-border-subtle text-[8px] text-text-muted">#${String(tag).replace(/[<>&"']/g, '')}</span>`
-            ).join('');
-            info.appendChild(tags);
+        const unassignedButton = root.querySelector('[data-atlas-unassigned-filter="1"]');
+        if (unassignedButton) {
+          const desiredClass = `h-9 px-3.5 rounded-[11px] text-[11px] font-medium whitespace-nowrap transition-all ${
+            unassignedOnly
+              ? 'bg-surface-solid text-text-main shadow-sm'
+              : 'text-text-muted hover:text-text-main'
+          }`;
+          if (unassignedButton.className !== desiredClass) {
+            unassignedButton.className = desiredClass;
           }
         }
-      }
 
-      for (const card of root.querySelectorAll('article[data-atlas-asset-id]')) {
-        const id = Number(card.dataset.atlasAssetId);
-        const asset = assets.find(item => Number(item.id) === id);
-        if (!asset) card.style.display = '';
+        const lookup = buildCardLookupMap(root);
+
+        for (const asset of assets) {
+          const card = resolveCardForAsset(lookup, asset);
+          if (!card) continue;
+
+          const assetIdStr = String(asset.id);
+          if (card.dataset.atlasAssetId !== assetIdStr) {
+            card.dataset.atlasAssetId = assetIdStr;
+          }
+
+          const desiredDisplay = unassignedOnly && asset.reviewState !== 'unassigned' ? 'none' : '';
+          if (card.style.display !== desiredDisplay) {
+            card.style.display = desiredDisplay;
+          }
+
+          const deleteButton = card.querySelector('button[title="Delete video asset"]');
+          if (deleteButton && !card.querySelector('[data-atlas-video-edit="1"]')) {
+            const editButton = document.createElement('button');
+            editButton.type = 'button';
+            editButton.dataset.atlasVideoEdit = '1';
+            editButton.title = 'Edit video details';
+            editButton.setAttribute('aria-label', 'Edit video details');
+            editButton.className = 'w-8 h-8 rounded-full bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted hover:text-electric-blue hover:border-electric-blue/25 transition-colors';
+            editButton.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px">edit</span>';
+            editButton.onclick = event => {
+              event.preventDefault();
+              event.stopPropagation();
+              setEditingId(Number(asset.id));
+            };
+            deleteButton.insertAdjacentElement('beforebegin', editButton);
+          }
+
+          const titleEl = card.querySelector('h2');
+          if (titleEl) {
+            const autoTitle = asset.automaticGames?.[0]?.title || asset.manualPackageNames?.[0] || null;
+            const desiredTitle = asset.customTitle || autoTitle;
+            if (desiredTitle && titleEl.textContent !== desiredTitle) {
+              titleEl.textContent = desiredTitle;
+            }
+          }
+
+          const titleRow = titleEl?.parentElement;
+          if (titleRow) {
+            const existingBadge = titleRow.querySelector('[data-atlas-manual-badge="1"]');
+            if (asset.hasManualMetadata && !existingBadge) {
+              const badge = document.createElement('span');
+              badge.dataset.atlasManualBadge = '1';
+              badge.className = 'px-2 py-0.5 rounded-full border border-electric-blue/20 bg-electric-blue/10 text-electric-blue text-[8px] font-medium';
+              badge.textContent = 'Manual';
+              titleRow.appendChild(badge);
+            } else if (!asset.hasManualMetadata && existingBadge) {
+              existingBadge.remove();
+            }
+          }
+
+          const info = titleRow?.parentElement;
+          if (info) {
+            let tagsContainer = info.querySelector('[data-atlas-video-tags="1"]');
+            if (asset.tags?.length) {
+              const desiredHtml = asset.tags.slice(0, 5).map(tag =>
+                `<span class="px-2 py-0.5 rounded-full bg-input-bg border border-border-subtle text-[8px] text-text-muted">#${String(tag).replace(/[<>&"']/g, '')}</span>`
+              ).join('');
+              if (!tagsContainer) {
+                tagsContainer = document.createElement('div');
+                tagsContainer.dataset.atlasVideoTags = '1';
+                tagsContainer.className = 'mt-2 flex flex-wrap gap-1.5';
+                tagsContainer.innerHTML = desiredHtml;
+                info.appendChild(tagsContainer);
+              } else if (tagsContainer.innerHTML !== desiredHtml) {
+                tagsContainer.innerHTML = desiredHtml;
+              }
+            } else if (tagsContainer) {
+              tagsContainer.remove();
+            }
+          }
+        }
+      } finally {
+        isDecoratingRef.current = false;
       }
     };
 
     const schedule = () => {
-      if (scheduled) return;
+      if (scheduled || isDecoratingRef.current) return;
       scheduled = true;
       window.requestAnimationFrame(decorate);
     };
 
     schedule();
-    const observer = new MutationObserver(schedule);
+
+    const observer = new MutationObserver((mutations) => {
+      if (isDecoratingRef.current) return;
+      // Ignore mutations caused by our own editor panel or badges
+      const relevant = mutations.some(mutation => {
+        const target = mutation.target;
+        if (!(target instanceof Element)) return false;
+        if (target.closest('[data-atlas-video-editor-panel="1"]')) return false;
+        return true;
+      });
+      if (relevant) schedule();
+    });
+
     observer.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener('resize', schedule);
 
     const videoClickHandler = event => {
       const button = event.target.closest?.('[data-atlas-video-library="1"]');
       if (!button) return;
-      window.setTimeout(() => { void refreshAssets(); }, 80);
+      window.setTimeout(() => { void refreshAssets(); }, 50);
     };
     document.addEventListener('click', videoClickHandler, true);
 
     return () => {
       disposed = true;
       observer.disconnect();
-      window.removeEventListener('resize', schedule);
       document.removeEventListener('click', videoClickHandler, true);
-      document.querySelectorAll('[data-atlas-video-edit="1"], [data-atlas-manual-badge="1"], [data-atlas-video-tags="1"], [data-atlas-unassigned-filter="1"]').forEach(node => node.remove());
-      document.querySelectorAll('article[data-atlas-asset-id]').forEach(card => {
-        card.style.display = '';
-        delete card.dataset.atlasAssetId;
-      });
     };
   }, [assets, refreshAssets, unassignedOnly]);
 
-  const handleSaved = useCallback(async () => {
+  const handleSaved = useCallback((assetId, savedMeta) => {
+    const customTitle = savedMeta?.customTitle || null;
+    const packageNames = Array.isArray(savedMeta?.packageNames) ? savedMeta.packageNames : [];
+    const tags = Array.isArray(savedMeta?.tags) ? savedMeta.tags : [];
+    const hasManualMetadata = Boolean(customTitle || packageNames.length || tags.length);
+
+    // 1. Close modal and update local state immediately (0ms perceived latency)
     setEditingId(null);
-    await refreshAssets();
-    // Refresh the canonical React Video Library so custom titles/package links
-    // become part of its own search state immediately rather than waiting for a
-    // page reload or future scan.
+    setAssets(prev => prev.map(item => {
+      if (Number(item.id) !== Number(assetId)) return item;
+      const linkedPackageCount = Number(item.linkedPackageCount) || 0;
+      return {
+        ...item,
+        customTitle,
+        manualPackageNames: packageNames,
+        tags,
+        hasManualMetadata,
+        manualMetadataUpdatedAt: savedMeta?.updatedAt || new Date().toISOString(),
+        reviewState: linkedPackageCount === 1
+          ? 'resolved'
+          : hasManualMetadata
+            ? 'manually_organized'
+            : 'unassigned'
+      };
+    }));
+
+    // 2. Sync the underlying Video Library search state in the background
     window.setTimeout(() => {
       findVideoRoot()?.querySelector('button[title="Refresh library"]')?.click();
-      void refreshAssets();
-    }, 30);
-  }, [refreshAssets]);
+    }, 20);
+  }, []);
 
   if (!editingAsset) return null;
 

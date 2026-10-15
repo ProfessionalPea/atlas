@@ -37,6 +37,14 @@ const authInitialization = initializeAuthStorage(pool);
         first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+
+      CREATE INDEX IF NOT EXISTS idx_ad_creatives_game_id ON ad_creatives(game_id);
+      CREATE INDEX IF NOT EXISTS idx_ad_creatives_competitor_id ON ad_creatives(competitor_id);
+      CREATE INDEX IF NOT EXISTS idx_account_games_account_id ON account_games(account_id);
+      CREATE INDEX IF NOT EXISTS idx_account_games_game_id ON account_games(game_id);
+      CREATE INDEX IF NOT EXISTS idx_accounts_competitor_id ON accounts(competitor_id);
+      CREATE INDEX IF NOT EXISTS idx_accounts_norm_comp ON accounts(normalized_name, competitor_id);
+      CREATE INDEX IF NOT EXISTS idx_games_ad_count_desc ON games(ad_count DESC);
     `);
   } catch (e) {
     console.error("⚠️ [DB] Failed to initialize ad_creatives table:", e.message);
@@ -931,45 +939,66 @@ app.post("/api/country-scans", async (req, res) => {
           await client.query("BEGIN");
           await client.query("DELETE FROM package_country_scan_results WHERE scan_id = $1", [scan.id]);
 
-          for (const item of countryResult.results) {
+         if (countryResult.results.length > 0) {
+            const payloadJson = JSON.stringify(countryResult.results.map(item => ({
+              country_code: item.countryCode,
+              country_name: item.countryName,
+              release_state: item.state,
+              confidence: item.confidence,
+              play_rating: item.playRating ?? null,
+              ratings_count: item.ratingsCount || 0,
+              reviews_count: item.reviewsCount || 0,
+              rating_histogram: item.histogram || null,
+              positive_ratings: item.positiveRatings || 0,
+              negative_ratings: item.negativeRatings || 0,
+              positive_share: item.positiveShare ?? null,
+              negative_share: item.negativeShare ?? null,
+              atlas_market_score: item.atlasMarketScore ?? null,
+              performance_confidence: item.performanceConfidence || "none",
+              is_paid: item.isPaid === true,
+              price: item.price ?? null,
+              currency: item.currency || null,
+              price_text: item.priceText || null,
+              evidence: item.evidence || {}
+            })));
+
             await client.query(
-              `INSERT INTO package_country_scan_results
-                 (
-                   scan_id, country_code, country_name, release_state, confidence,
-                   play_rating, ratings_count, reviews_count, rating_histogram,
-                   positive_ratings, negative_ratings, positive_share, negative_share,
-                   atlas_market_score, performance_confidence,
-                   is_paid, price, currency, price_text, evidence
-                 )
-               VALUES (
-                 $1, $2, $3, $4, $5,
-                 $6, $7, $8, $9::jsonb,
-                 $10, $11, $12, $13,
-                 $14, $15,
-                 $16, $17, $18, $19, $20::jsonb
+              `INSERT INTO package_country_scan_results (
+                 scan_id, country_code, country_name, release_state, confidence,
+                 play_rating, ratings_count, reviews_count, rating_histogram,
+                 positive_ratings, negative_ratings, positive_share, negative_share,
+                 atlas_market_score, performance_confidence,
+                 is_paid, price, currency, price_text, evidence
+               )
+               SELECT
+                 $1,
+                 r.country_code, r.country_name, r.release_state, r.confidence,
+                 r.play_rating, r.ratings_count, r.reviews_count, r.rating_histogram,
+                 r.positive_ratings, r.negative_ratings, r.positive_share, r.negative_share,
+                 r.atlas_market_score, r.performance_confidence,
+                 r.is_paid, r.price, r.currency, r.price_text, COALESCE(r.evidence, '{}'::jsonb)
+               FROM jsonb_to_recordset($2::jsonb) AS r(
+                 country_code CHAR(2),
+                 country_name TEXT,
+                 release_state TEXT,
+                 confidence TEXT,
+                 play_rating NUMERIC(4,3),
+                 ratings_count BIGINT,
+                 reviews_count BIGINT,
+                 rating_histogram JSONB,
+                 positive_ratings BIGINT,
+                 negative_ratings BIGINT,
+                 positive_share NUMERIC(6,2),
+                 negative_share NUMERIC(6,2),
+                 atlas_market_score NUMERIC(6,2),
+                 performance_confidence TEXT,
+                 is_paid BOOLEAN,
+                 price NUMERIC(12,4),
+                 currency TEXT,
+                 price_text TEXT,
+                 evidence JSONB
                )`,
-              [
-                scan.id,
-                item.countryCode,
-                item.countryName,
-                item.state,
-                item.confidence,
-                item.playRating ?? null,
-                item.ratingsCount || 0,
-                item.reviewsCount || 0,
-                item.histogram ? JSON.stringify(item.histogram) : null,
-                item.positiveRatings || 0,
-                item.negativeRatings || 0,
-                item.positiveShare ?? null,
-                item.negativeShare ?? null,
-                item.atlasMarketScore ?? null,
-                item.performanceConfidence || "none",
-                item.isPaid === true,
-                item.price ?? null,
-                item.currency || null,
-                item.priceText || null,
-                JSON.stringify(item.evidence || {})
-              ]
+              [scan.id, payloadJson]
             );
           }
 

@@ -1,5 +1,16 @@
 let videoMetadataInitPromise = null;
 
+// Short-lived in-memory caches to eliminate repetitive remote Supabase round-trips
+const VIDEO_ASSETS_CACHE_TTL_MS = 15000;
+const PACKAGE_OPTIONS_CACHE_TTL_MS = 30000;
+const videoAssetsCache = new Map(); // key: packageName || '__ALL__' -> { expiresAt, data }
+const packageOptionsCache = new Map(); // key: normalized query -> { expiresAt, data }
+
+function invalidateVideoMetadataCaches() {
+  videoAssetsCache.clear();
+  packageOptionsCache.clear();
+}
+
 function initializeVideoMetadata(pool) {
   if (videoMetadataInitPromise) return videoMetadataInitPromise;
 
@@ -9,6 +20,21 @@ function initializeVideoMetadata(pool) {
       ADD COLUMN IF NOT EXISTS manual_package_names JSONB NOT NULL DEFAULT '[]'::jsonb,
       ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb,
       ADD COLUMN IF NOT EXISTS manual_metadata_updated_at TIMESTAMPTZ;
+
+    CREATE INDEX IF NOT EXISTS idx_ad_video_links_asset_id
+      ON ad_video_links(asset_id);
+
+    CREATE INDEX IF NOT EXISTS idx_ad_video_links_creative_id
+      ON ad_video_links(creative_id);
+
+    CREATE INDEX IF NOT EXISTS idx_ad_video_links_game_id
+      ON ad_video_links(game_id);
+
+    CREATE INDEX IF NOT EXISTS idx_games_lower_package_name
+      ON games(LOWER(package_name));
+
+    CREATE INDEX IF NOT EXISTS idx_video_assets_last_seen
+      ON video_assets(last_seen_at DESC, id DESC);
   `).catch(error => {
     videoMetadataInitPromise = null;
     throw error;
@@ -91,11 +117,111 @@ function toGame(row, { manual = false } = {}) {
   };
 }
 
+function buildVideoAssetDisplayFields(item, manualGameMap = new Map()) {
+  const automaticGame = Array.isArray(item.automaticGames) && item.automaticGames.length > 0
+    ? item.automaticGames[0]
+    : null;
+  const customTitle = item.customTitle || null;
+  const packages = Array.isArray(item.manualPackageNames)
+    ? item.manualPackageNames.map(value => String(value || '').trim().toLowerCase()).filter(Boolean)
+    : [];
+  const tags = Array.isArray(item.tags)
+    ? item.tags.map(value => String(value || '').trim()).filter(Boolean)
+    : [];
+
+  const manualGames = packages.map(pkg => manualGameMap.get(pkg) || {
+    id: null,
+    title: pkg,
+    packageName: pkg,
+    publisherName: null,
+    competitorName: null,
+    icon: null,
+    headerImage: null,
+    rating: null,
+    installs: null,
+    isPaid: false,
+    priceText: null,
+    manual: true
+  });
+
+  const displayGames = [];
+  const packageKeys = new Set();
+  const baseGame = automaticGame || manualGames[0] || null;
+
+  if (baseGame) {
+    displayGames.push({
+      ...baseGame,
+      title: customTitle || baseGame.title || baseGame.packageName,
+      manualTitle: Boolean(customTitle)
+    });
+    if (baseGame.packageName) packageKeys.add(String(baseGame.packageName).toLowerCase());
+  } else if (customTitle) {
+    displayGames.push({
+      id: null,
+      title: customTitle,
+      packageName: null,
+      publisherName: null,
+      competitorName: null,
+      icon: null,
+      headerImage: null,
+      rating: null,
+      installs: null,
+      isPaid: false,
+      priceText: null,
+      manual: true,
+      manualTitle: true
+    });
+  }
+
+  for (const game of manualGames) {
+    const key = String(game.packageName || '').toLowerCase();
+    if (!key || packageKeys.has(key)) continue;
+    packageKeys.add(key);
+    displayGames.push(game);
+  }
+
+  if (tags.length) {
+    displayGames.push({
+      id: null,
+      title: tags.join(' '),
+      packageName: null,
+      publisherName: null,
+      competitorName: null,
+      searchOnly: true,
+      manual: true
+    });
+  }
+
+  const hasManualMetadata = Boolean(customTitle || packages.length || tags.length);
+  const linkedPackageCount = Number(item.linkedPackageCount) || 0;
+
+  return {
+    ...item,
+    customTitle,
+    manualPackageNames: packages,
+    tags,
+    hasManualMetadata,
+    reviewState: linkedPackageCount === 1
+      ? 'resolved'
+      : hasManualMetadata
+        ? 'manually_organized'
+        : 'unassigned',
+    manualGames,
+    games: displayGames
+  };
+}
+
 function registerVideoMetadataRoutes({ app, pool }) {
   app.get('/api/video-assets/package-options', async (req, res) => {
     try {
       await initializeVideoMetadata(pool);
       const query = String(req.query.q || '').trim();
+      const cacheKey = query.toLowerCase();
+      const cached = packageOptionsCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return res.json(cached.data);
+      }
+
       const like = `%${query}%`;
       const { rows } = await pool.query(`
         SELECT package_name, title, icon
@@ -110,11 +236,18 @@ function registerVideoMetadataRoutes({ app, pool }) {
         LIMIT 15
       `, [query, like]);
 
-      return res.json(rows.map(row => ({
+      const payload = rows.map(row => ({
         packageName: row.package_name,
         title: row.title || row.package_name,
         icon: row.icon || null
-      })));
+      }));
+
+      packageOptionsCache.set(cacheKey, {
+        expiresAt: Date.now() + PACKAGE_OPTIONS_CACHE_TTL_MS,
+        data: payload
+      });
+
+      return res.json(payload);
     } catch (error) {
       console.error('Video package options fetch failed:', error);
       return res.status(500).json({ error: 'Unable to load package suggestions.' });
@@ -148,13 +281,63 @@ function registerVideoMetadataRoutes({ app, pool }) {
       }
 
       const saved = rows[0];
+      const updatedPackages = Array.isArray(saved.manual_package_names) ? saved.manual_package_names : [];
+      const updatedTags = Array.isArray(saved.tags) ? saved.tags : [];
+      const updatedAt = saved.manual_metadata_updated_at || null;
+
+      // Update any warm cache entries in-place so an immediate subsequent
+      // GET /api/video-assets from the frontend returns in <1ms without re-running the heavy SQL CTE!
+      let manualGameMap = new Map();
+      if (updatedPackages.length && videoAssetsCache.size > 0) {
+        const { rows: gameRows } = await pool.query(`
+          SELECT
+            g.id, g.package_name, g.title, g.icon, g.header_image,
+            g.rating, g.installs, g.is_paid, g.price_text,
+            owner.publisher_name, owner.competitor_name
+          FROM games g
+          LEFT JOIN LATERAL (
+            SELECT a.publisher_name, c.name AS competitor_name
+            FROM account_games ag
+            JOIN accounts a ON a.id = ag.account_id
+            LEFT JOIN competitors c ON c.id = a.competitor_id
+            WHERE ag.game_id = g.id
+            ORDER BY a.id ASC
+            LIMIT 1
+          ) owner ON TRUE
+          WHERE LOWER(g.package_name) = ANY($1::text[])
+        `, [updatedPackages]);
+
+        for (const gameRow of gameRows) {
+          manualGameMap.set(String(gameRow.package_name || '').toLowerCase(), toGame(gameRow, { manual: true }));
+        }
+      }
+
+      for (const [cacheKey, entry] of videoAssetsCache.entries()) {
+        if (!entry || !Array.isArray(entry.data)) continue;
+        if (cacheKey !== '__ALL__') {
+          videoAssetsCache.delete(cacheKey);
+          continue;
+        }
+        entry.data = entry.data.map(item => {
+          if (Number(item.id) !== assetId) return item;
+          return buildVideoAssetDisplayFields({
+            ...item,
+            customTitle: saved.custom_title || null,
+            manualPackageNames: updatedPackages,
+            tags: updatedTags,
+            manualMetadataUpdatedAt: updatedAt
+          }, manualGameMap);
+        });
+        entry.expiresAt = Date.now() + VIDEO_ASSETS_CACHE_TTL_MS;
+      }
+
       return res.json({
         status: 'success',
         metadata: {
           customTitle: saved.custom_title || null,
-          packageNames: Array.isArray(saved.manual_package_names) ? saved.manual_package_names : [],
-          tags: Array.isArray(saved.tags) ? saved.tags : [],
-          updatedAt: saved.manual_metadata_updated_at || null
+          packageNames: updatedPackages,
+          tags: updatedTags,
+          updatedAt
         }
       });
     } catch (error) {
@@ -170,6 +353,15 @@ function registerVideoMetadataRoutes({ app, pool }) {
     try {
       await initializeVideoMetadata(pool);
       const packageName = String(req.query.packageName || '').trim() || null;
+      const cacheKey = packageName ? packageName.toLowerCase() : '__ALL__';
+      const forceRefresh = req.query.refresh === '1' || req.query.force === 'true';
+
+      const cached = !forceRefresh ? videoAssetsCache.get(cacheKey) : null;
+      if (cached && cached.expiresAt > Date.now()) {
+        res.set('Cache-Control', 'no-store');
+        return res.json(cached.data);
+      }
+
       const { rows } = await pool.query(`
         WITH asset_links AS (
           SELECT
@@ -200,55 +392,46 @@ function registerVideoMetadataRoutes({ app, pool }) {
           LEFT JOIN creative_extraction_cache cec
             ON cec.creative_id = avl.creative_id
         ),
+        asset_stats AS (
+          SELECT
+            al.asset_id,
+            COUNT(DISTINCT al.creative_id)::int AS ad_count,
+            ARRAY_AGG(DISTINCT al.creative_id ORDER BY al.creative_id)
+              FILTER (WHERE al.creative_id IS NOT NULL) AS creative_ids,
+            ARRAY_AGG(DISTINCT al.creative_url)
+              FILTER (WHERE al.creative_url IS NOT NULL) AS creative_urls,
+            COUNT(DISTINCT al.frame_package)::int AS strict_package_count
+          FROM asset_links al
+          GROUP BY al.asset_id
+        ),
         asset_package_evidence AS (
-          SELECT asset_id, frame_package AS package_name, 'frame'::text AS source
-          FROM asset_links
-          WHERE frame_package IS NOT NULL
-
-          UNION ALL
-
-          SELECT asset_id, linked_game_package AS package_name, 'linked_game'::text AS source
-          FROM asset_links
-          WHERE linked_game_package IS NOT NULL
-
-          UNION ALL
-
-          SELECT asset_id, creative_package AS package_name, 'creative'::text AS source
-          FROM asset_links
-          WHERE creative_package IS NOT NULL
-
-          UNION ALL
-
-          SELECT asset_id, cached_package AS package_name, 'cache'::text AS source
-          FROM asset_links
-          WHERE cached_package IS NOT NULL
+          SELECT
+            al.asset_id,
+            pkg.package_name
+          FROM asset_links al
+          CROSS JOIN LATERAL (
+            VALUES
+              (al.frame_package),
+              (al.linked_game_package),
+              (al.creative_package),
+              (al.cached_package)
+          ) AS pkg(package_name)
+          WHERE pkg.package_name IS NOT NULL
         ),
         asset_resolution AS (
           SELECT
-            ids.asset_id,
+            stats.asset_id,
             COUNT(DISTINCT evidence.package_name)::int AS linked_package_count,
-            COUNT(DISTINCT evidence.package_name)
-              FILTER (WHERE evidence.source = 'frame')::int AS strict_package_count,
+            stats.strict_package_count,
             CASE
               WHEN COUNT(DISTINCT evidence.package_name) = 1
                 THEN MIN(evidence.package_name)
               ELSE NULL
             END AS resolved_package
-          FROM (SELECT DISTINCT asset_id FROM asset_links) ids
+          FROM asset_stats stats
           LEFT JOIN asset_package_evidence evidence
-            ON evidence.asset_id = ids.asset_id
-          GROUP BY ids.asset_id
-        ),
-        asset_stats AS (
-          SELECT
-            avl.asset_id,
-            COUNT(DISTINCT avl.creative_id)::int AS ad_count,
-            ARRAY_AGG(DISTINCT avl.creative_id ORDER BY avl.creative_id)
-              FILTER (WHERE avl.creative_id IS NOT NULL) AS creative_ids,
-            ARRAY_AGG(DISTINCT avl.creative_url)
-              FILTER (WHERE avl.creative_url IS NOT NULL) AS creative_urls
-          FROM ad_video_links avl
-          GROUP BY avl.asset_id
+            ON evidence.asset_id = stats.asset_id
+          GROUP BY stats.asset_id, stats.strict_package_count
         )
         SELECT
           va.id,
@@ -376,88 +559,13 @@ function registerVideoMetadataRoutes({ app, pool }) {
         const automaticGame = linkedPackageCount === 1
           ? toGame(rawAutomaticGames.find(game => game?.packageName) || null)
           : null;
-        const customTitle = row.custom_title || null;
-        const packages = Array.isArray(row.manual_package_names)
-          ? row.manual_package_names.map(value => String(value || '').trim().toLowerCase()).filter(Boolean)
-          : [];
-        const tags = Array.isArray(row.tags)
-          ? row.tags.map(value => String(value || '').trim()).filter(Boolean)
-          : [];
-
-        const manualGames = packages.map(pkg => manualGameMap.get(pkg) || {
-          id: null,
-          title: pkg,
-          packageName: pkg,
-          publisherName: null,
-          competitorName: null,
-          icon: null,
-          headerImage: null,
-          rating: null,
-          installs: null,
-          isPaid: false,
-          priceText: null,
-          manual: true
-        });
-
-        const displayGames = [];
-        const packageKeys = new Set();
-        const baseGame = automaticGame || manualGames[0] || null;
-
-        if (baseGame) {
-          displayGames.push({
-            ...baseGame,
-            title: customTitle || baseGame.title || baseGame.packageName,
-            manualTitle: Boolean(customTitle)
-          });
-          if (baseGame.packageName) packageKeys.add(String(baseGame.packageName).toLowerCase());
-        } else if (customTitle) {
-          displayGames.push({
-            id: null,
-            title: customTitle,
-            packageName: null,
-            publisherName: null,
-            competitorName: null,
-            icon: null,
-            headerImage: null,
-            rating: null,
-            installs: null,
-            isPaid: false,
-            priceText: null,
-            manual: true,
-            manualTitle: true
-          });
-        }
-
-        for (const game of manualGames) {
-          const key = String(game.packageName || '').toLowerCase();
-          if (!key || packageKeys.has(key)) continue;
-          packageKeys.add(key);
-          displayGames.push(game);
-        }
-
-        // The legacy Video Library search already searches game titles. A
-        // search-only sentinel makes manual tags searchable without changing
-        // the visible first game/card title.
-        if (tags.length) {
-          displayGames.push({
-            id: null,
-            title: tags.join(' '),
-            packageName: null,
-            publisherName: null,
-            competitorName: null,
-            searchOnly: true,
-            manual: true
-          });
-        }
-
-        const hasManualMetadata = Boolean(customTitle || packages.length || tags.length);
         const associationState = linkedPackageCount === 1
           ? 'resolved'
           : linkedPackageCount > 1
             ? 'ambiguous'
             : 'unassigned';
 
-        return {
+        return buildVideoAssetDisplayFields({
           id: Number(row.id),
           assetKey: row.asset_key,
           source: row.source,
@@ -481,20 +589,17 @@ function registerVideoMetadataRoutes({ app, pool }) {
           associationSource: linkedPackageCount === 1
             ? (strictPackageCount > 0 ? 'frame' : 'ownership_consensus')
             : null,
-          reviewState: linkedPackageCount === 1
-            ? 'resolved'
-            : hasManualMetadata
-              ? 'manually_organized'
-              : 'unassigned',
-          customTitle,
-          manualPackageNames: packages,
-          tags,
+          customTitle: row.custom_title || null,
+          manualPackageNames: Array.isArray(row.manual_package_names) ? row.manual_package_names : [],
+          tags: Array.isArray(row.tags) ? row.tags : [],
           manualMetadataUpdatedAt: row.manual_metadata_updated_at || null,
-          hasManualMetadata,
-          automaticGames: automaticGame ? [automaticGame] : [],
-          manualGames,
-          games: displayGames
-        };
+          automaticGames: automaticGame ? [automaticGame] : []
+        }, manualGameMap);
+      });
+
+      videoAssetsCache.set(cacheKey, {
+        expiresAt: Date.now() + VIDEO_ASSETS_CACHE_TTL_MS,
+        data: result
       });
 
       res.set('Cache-Control', 'no-store');
@@ -508,5 +613,6 @@ function registerVideoMetadataRoutes({ app, pool }) {
 
 module.exports = {
   initializeVideoMetadata,
-  registerVideoMetadataRoutes
+  registerVideoMetadataRoutes,
+  invalidateVideoMetadataCaches
 };

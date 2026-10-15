@@ -1,7 +1,28 @@
 const { analyzeGameKeywords } = require('./KeywordAnalyzer');
+const videoMetadataModule = require('./VideoLibraryMetadata');
+const invalidateVideoMetadataCaches =
+  typeof videoMetadataModule.invalidateVideoMetadataCaches === 'function'
+    ? videoMetadataModule.invalidateVideoMetadataCaches
+    : () => {};
 
 const VIDEO_ATTRIBUTION_VERSION = 3;
+const MAX_CLEARED_CREATIVE_LINKS = 5000;
 const clearedCreativeLinks = new Set();
+
+// Short-lived in-memory caches for keyword corpus & analysis to avoid
+// pulling all game descriptions from Supabase on every click.
+const CORPUS_CACHE_TTL_MS = 60000;
+const KEYWORD_RESULT_CACHE_TTL_MS = 60000;
+let corpusCache = { expiresAt: 0, rows: null };
+const keywordResultCache = new Map();
+
+function trackClearedCreative(id) {
+  if (clearedCreativeLinks.size >= MAX_CLEARED_CREATIVE_LINKS) {
+    const oldestKey = clearedCreativeLinks.values().next().value;
+    if (oldestKey !== undefined) clearedCreativeLinks.delete(oldestKey);
+  }
+  clearedCreativeLinks.add(id);
+}
 
 function normalizeHttpUrl(value) {
   const raw = String(value || '').trim();
@@ -74,6 +95,12 @@ async function initializeIntelligenceFeatures(pool) {
     CREATE INDEX IF NOT EXISTS idx_ad_video_links_competitor
       ON ad_video_links(competitor_id);
 
+    CREATE INDEX IF NOT EXISTS idx_ad_video_links_asset_id
+      ON ad_video_links(asset_id);
+
+    CREATE INDEX IF NOT EXISTS idx_ad_video_links_creative_id
+      ON ad_video_links(creative_id);
+
     CREATE TABLE IF NOT EXISTS creative_extraction_cache (
       creative_id TEXT PRIMARY KEY,
       package_names JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -91,24 +118,24 @@ async function initializeIntelligenceFeatures(pool) {
   `);
 }
 
+// Single round-trip conditional delete instead of SELECT followed by DELETE
 async function resetStaleCreativeLinks(pool, creativeId) {
   const id = String(creativeId || '').trim();
   if (!id || clearedCreativeLinks.has(id)) return;
 
-  const { rows } = await pool.query(
-    `SELECT extraction_version
-     FROM creative_extraction_cache
-     WHERE creative_id = $1
-     LIMIT 1`,
-    [id]
+  await pool.query(
+    `DELETE FROM ad_video_links avl
+     WHERE avl.creative_id = $1
+       AND NOT EXISTS (
+         SELECT 1
+         FROM creative_extraction_cache cec
+         WHERE cec.creative_id = $1
+           AND cec.extraction_version = $2
+       )`,
+    [id, VIDEO_ATTRIBUTION_VERSION]
   );
 
-  const storedVersion = Number(rows[0]?.extraction_version) || 0;
-  if (storedVersion !== VIDEO_ATTRIBUTION_VERSION) {
-    await pool.query(`DELETE FROM ad_video_links WHERE creative_id = $1`, [id]);
-  }
-
-  clearedCreativeLinks.add(id);
+  trackClearedCreative(id);
 }
 
 async function persistVideoAssets(pool, {
@@ -128,6 +155,8 @@ async function persistVideoAssets(pool, {
     ? `https://adstransparency.google.com/advertiser/${advertiserId}/creative/${creativeId}?region=any`
     : null);
 
+  let persistedAny = false;
+
   for (const rawAsset of assets) {
     const assetKey = getAssetKey(rawAsset);
     if (!assetKey) continue;
@@ -141,54 +170,68 @@ async function persistVideoAssets(pool, {
     const mediaUrl = normalizeHttpUrl(rawAsset.mediaUrl);
     const expiresAt = rawAsset.mediaUrlExpiresAt ? new Date(rawAsset.mediaUrlExpiresAt) : null;
 
-    const { rows } = await pool.query(
-      `INSERT INTO video_assets (
-         asset_key, source, youtube_id, youtube_url, thumbnail_url, media_url,
-         media_url_expires_at, mime_type, duration_seconds, width, height,
-         metadata, first_seen_at, last_seen_at
-       )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,now(),now())
-       ON CONFLICT (asset_key) DO UPDATE SET
-         source = EXCLUDED.source,
-         youtube_id = COALESCE(EXCLUDED.youtube_id, video_assets.youtube_id),
-         youtube_url = COALESCE(EXCLUDED.youtube_url, video_assets.youtube_url),
-         thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, video_assets.thumbnail_url),
-         media_url = COALESCE(EXCLUDED.media_url, video_assets.media_url),
-         media_url_expires_at = COALESCE(EXCLUDED.media_url_expires_at, video_assets.media_url_expires_at),
-         mime_type = COALESCE(EXCLUDED.mime_type, video_assets.mime_type),
-         duration_seconds = COALESCE(EXCLUDED.duration_seconds, video_assets.duration_seconds),
-         width = COALESCE(EXCLUDED.width, video_assets.width),
-         height = COALESCE(EXCLUDED.height, video_assets.height),
-         metadata = video_assets.metadata || EXCLUDED.metadata,
-         last_seen_at = now()
-       RETURNING id`,
-      [
-        assetKey, source, youtubeId, youtubeUrl, thumbnailUrl, mediaUrl,
-        Number.isNaN(expiresAt?.getTime?.()) ? null : expiresAt,
-        rawAsset.mimeType || null,
-        Number.isFinite(Number(rawAsset.durationSeconds)) ? Number(rawAsset.durationSeconds) : null,
-        Number.isFinite(Number(rawAsset.width)) ? Number(rawAsset.width) : null,
-        Number.isFinite(Number(rawAsset.height)) ? Number(rawAsset.height) : null,
-        JSON.stringify(rawAsset.metadata || {})
-      ]
-    );
-
-    const assetId = rows[0]?.id;
-    if (!assetId) continue;
-
+    // Combine video_assets upsert and ad_video_links upsert into 1 single round-trip
     await pool.query(
-      `INSERT INTO ad_video_links (
+      `WITH upserted_asset AS (
+         INSERT INTO video_assets (
+           asset_key, source, youtube_id, youtube_url, thumbnail_url, media_url,
+           media_url_expires_at, mime_type, duration_seconds, width, height,
+           metadata, first_seen_at, last_seen_at
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,now(),now())
+         ON CONFLICT (asset_key) DO UPDATE SET
+           source = EXCLUDED.source,
+           youtube_id = COALESCE(EXCLUDED.youtube_id, video_assets.youtube_id),
+           youtube_url = COALESCE(EXCLUDED.youtube_url, video_assets.youtube_url),
+           thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, video_assets.thumbnail_url),
+           media_url = COALESCE(EXCLUDED.media_url, video_assets.media_url),
+           media_url_expires_at = COALESCE(EXCLUDED.media_url_expires_at, video_assets.media_url_expires_at),
+           mime_type = COALESCE(EXCLUDED.mime_type, video_assets.mime_type),
+           duration_seconds = COALESCE(EXCLUDED.duration_seconds, video_assets.duration_seconds),
+           width = COALESCE(EXCLUDED.width, video_assets.width),
+           height = COALESCE(EXCLUDED.height, video_assets.height),
+           metadata = video_assets.metadata || EXCLUDED.metadata,
+           last_seen_at = now()
+         RETURNING id
+       )
+       INSERT INTO ad_video_links (
          asset_id, creative_id, package_name, game_id, competitor_id,
          creative_url, first_seen_at, last_seen_at
        )
-       VALUES ($1,$2,$3,$4,$5,$6,now(),now())
+       SELECT
+         upserted_asset.id, $13, $14, $15, $16, $17, now(), now()
+       FROM upserted_asset
        ON CONFLICT (asset_id, creative_id, package_name) DO UPDATE SET
          game_id = COALESCE(EXCLUDED.game_id, ad_video_links.game_id),
          competitor_id = COALESCE(EXCLUDED.competitor_id, ad_video_links.competitor_id),
          creative_url = COALESCE(EXCLUDED.creative_url, ad_video_links.creative_url),
          last_seen_at = now()`,
-      [assetId, creativeId, packageName || '', gameId || null, competitorId || null, creativeUrl]
+      [
+        assetKey,
+        source,
+        youtubeId,
+        youtubeUrl,
+        thumbnailUrl,
+        mediaUrl,
+        Number.isNaN(expiresAt?.getTime?.()) ? null : expiresAt,
+        rawAsset.mimeType || null,
+        Number.isFinite(Number(rawAsset.durationSeconds)) ? Number(rawAsset.durationSeconds) : null,
+        Number.isFinite(Number(rawAsset.width)) ? Number(rawAsset.width) : null,
+        Number.isFinite(Number(rawAsset.height)) ? Number(rawAsset.height) : null,
+        JSON.stringify(rawAsset.metadata || {}),
+        creativeId,
+        packageName || '',
+        gameId || null,
+        competitorId || null,
+        creativeUrl
+      ]
     );
+
+    persistedAny = true;
+  }
+
+  if (persistedAny) {
+    invalidateVideoMetadataCaches();
   }
 }
 
@@ -220,48 +263,46 @@ async function getCreativeExtractionCache(pool, creativeIds) {
   }));
 }
 
+// Single-round-trip CTE instead of N+2 sequential queries
 async function collapseAmbiguousCreativeLinks(pool, creativeId) {
   const id = String(creativeId || '').trim();
   if (!id) return;
 
-  const { rows } = await pool.query(
-    `SELECT DISTINCT ON (asset_id)
-       asset_id, creative_id, competitor_id, creative_url, first_seen_at, last_seen_at
-     FROM ad_video_links
-     WHERE creative_id = $1
-     ORDER BY asset_id, last_seen_at DESC`,
-    [id]
-  );
-
-  for (const row of rows) {
-    await pool.query(
-      `INSERT INTO ad_video_links (
+  await pool.query(
+    `WITH latest_per_asset AS (
+       SELECT DISTINCT ON (asset_id)
+         asset_id,
+         creative_id,
+         competitor_id,
+         creative_url,
+         COALESCE(first_seen_at, now()) AS first_seen_at,
+         COALESCE(last_seen_at, now()) AS last_seen_at
+       FROM ad_video_links
+       WHERE creative_id = $1
+       ORDER BY asset_id, last_seen_at DESC
+     ),
+     upserted_blank AS (
+       INSERT INTO ad_video_links (
          asset_id, creative_id, package_name, game_id, competitor_id,
          creative_url, first_seen_at, last_seen_at
        )
-       VALUES ($1,$2,'',NULL,$3,$4,$5,$6)
+       SELECT
+         asset_id, creative_id, '', NULL, competitor_id,
+         creative_url, first_seen_at, last_seen_at
+       FROM latest_per_asset
        ON CONFLICT (asset_id, creative_id, package_name) DO UPDATE SET
          game_id = NULL,
          competitor_id = COALESCE(EXCLUDED.competitor_id, ad_video_links.competitor_id),
          creative_url = COALESCE(EXCLUDED.creative_url, ad_video_links.creative_url),
          first_seen_at = LEAST(ad_video_links.first_seen_at, EXCLUDED.first_seen_at),
-         last_seen_at = GREATEST(ad_video_links.last_seen_at, EXCLUDED.last_seen_at)`,
-      [
-        row.asset_id,
-        row.creative_id,
-        row.competitor_id || null,
-        row.creative_url || null,
-        row.first_seen_at || new Date(),
-        row.last_seen_at || new Date()
-      ]
-    );
-  }
-
-  await pool.query(
-    `DELETE FROM ad_video_links
+         last_seen_at = GREATEST(ad_video_links.last_seen_at, EXCLUDED.last_seen_at)
+     )
+     DELETE FROM ad_video_links
      WHERE creative_id = $1 AND COALESCE(package_name, '') <> ''`,
     [id]
   );
+
+  invalidateVideoMetadataCaches();
 }
 
 async function persistCreativeExtractionCache(pool, {
@@ -278,33 +319,48 @@ async function persistCreativeExtractionCache(pool, {
       .filter(Boolean)
   )];
 
-  // Video/package attribution is resolved by the scanner at iframe level.
-  // Multiple packages in the overall creative are therefore not enough to
-  // invalidate a package link if a particular video was proven inside one
-  // unambiguous frame. Only a fresh scan with no videos should clear links.
-  if (Number(videoCount) <= 0) {
-    await pool.query(`DELETE FROM ad_video_links WHERE creative_id = $1`, [id]);
-  }
+  const numericVideoCount = Math.max(0, Number(videoCount) || 0);
 
-  await pool.query(
-    `INSERT INTO creative_extraction_cache (
-       creative_id, package_names, video_checked_at, last_deep_scanned_at,
-       last_video_count, extraction_version
-     )
-     VALUES ($1, $2::jsonb, now(), now(), $3, $4)
-     ON CONFLICT (creative_id) DO UPDATE SET
-       package_names = EXCLUDED.package_names,
-       video_checked_at = now(),
-       last_deep_scanned_at = now(),
-       last_video_count = EXCLUDED.last_video_count,
-       extraction_version = EXCLUDED.extraction_version`,
-    [
-      id,
-      JSON.stringify(normalizedPackages),
-      Math.max(0, Number(videoCount) || 0),
-      VIDEO_ATTRIBUTION_VERSION
-    ]
-  );
+  if (numericVideoCount <= 0) {
+    await pool.query(
+      `WITH deleted_links AS (
+         DELETE FROM ad_video_links WHERE creative_id = $1
+       )
+       INSERT INTO creative_extraction_cache (
+         creative_id, package_names, video_checked_at, last_deep_scanned_at,
+         last_video_count, extraction_version
+       )
+       VALUES ($1, $2::jsonb, now(), now(), 0, $3)
+       ON CONFLICT (creative_id) DO UPDATE SET
+         package_names = EXCLUDED.package_names,
+         video_checked_at = now(),
+         last_deep_scanned_at = now(),
+         last_video_count = 0,
+         extraction_version = EXCLUDED.extraction_version`,
+      [id, JSON.stringify(normalizedPackages), VIDEO_ATTRIBUTION_VERSION]
+    );
+    invalidateVideoMetadataCaches();
+  } else {
+    await pool.query(
+      `INSERT INTO creative_extraction_cache (
+         creative_id, package_names, video_checked_at, last_deep_scanned_at,
+         last_video_count, extraction_version
+       )
+       VALUES ($1, $2::jsonb, now(), now(), $3, $4)
+       ON CONFLICT (creative_id) DO UPDATE SET
+         package_names = EXCLUDED.package_names,
+         video_checked_at = now(),
+         last_deep_scanned_at = now(),
+         last_video_count = EXCLUDED.last_video_count,
+         extraction_version = EXCLUDED.extraction_version`,
+      [
+        id,
+        JSON.stringify(normalizedPackages),
+        numericVideoCount,
+        VIDEO_ATTRIBUTION_VERSION
+      ]
+    );
+  }
 
   clearedCreativeLinks.delete(id);
 }
@@ -424,11 +480,15 @@ async function loadKeywordGame(pool, selector, value) {
 }
 
 async function getGameKeywordAnalysis(pool, gplay, selector, value) {
+  const cacheKey = `${selector}:${String(value).toLowerCase()}`;
+  const cachedResult = keywordResultCache.get(cacheKey);
+  if (cachedResult && cachedResult.expiresAt > Date.now()) {
+    return cachedResult.data;
+  }
+
   const game = await loadKeywordGame(pool, selector, value);
   if (!game) return null;
 
-  // Older rows predate short-description storage. Refresh once on demand so
-  // the feature becomes useful immediately, without waiting for another ad scan.
   if (!game.short_description && game.package_name) {
     try {
       const appData = await gplay.app({ appId: game.package_name, country: 'us', lang: 'en' });
@@ -441,18 +501,38 @@ async function getGameKeywordAnalysis(pool, gplay, selector, value) {
          WHERE id = $1`,
         [game.id, game.short_description, game.description]
       );
+      corpusCache.expiresAt = 0;
     } catch (error) {
       console.warn('Keyword metadata refresh failed:', game.package_name, error.message);
     }
   }
 
-  const { rows: corpus } = await pool.query(
-    `SELECT package_name, short_description, description
-     FROM games
-     WHERE COALESCE(short_description, '') <> '' OR COALESCE(description, '') <> ''`
-  );
+  let corpus = corpusCache.rows;
+  if (!corpus || corpusCache.expiresAt <= Date.now()) {
+    const { rows } = await pool.query(
+      `SELECT package_name, short_description, description
+       FROM games
+       WHERE COALESCE(short_description, '') <> '' OR COALESCE(description, '') <> ''`
+    );
+    corpus = rows;
+    corpusCache = {
+      expiresAt: Date.now() + CORPUS_CACHE_TTL_MS,
+      rows: corpus
+    };
+  }
 
-  return analyzeGameKeywords({ game, corpus, limit: 30 });
+  const analysis = analyzeGameKeywords({ game, corpus, limit: 30 });
+
+  if (keywordResultCache.size >= 200) {
+    const oldest = keywordResultCache.keys().next().value;
+    if (oldest !== undefined) keywordResultCache.delete(oldest);
+  }
+  keywordResultCache.set(cacheKey, {
+    expiresAt: Date.now() + KEYWORD_RESULT_CACHE_TTL_MS,
+    data: analysis
+  });
+
+  return analysis;
 }
 
 function registerIntelligenceRoutes({ app, pool, gplay }) {
@@ -502,6 +582,7 @@ module.exports = {
   getCreativeExtractionCache,
   persistCreativeExtractionCache,
   touchCreativeVideoAssets,
+  collapseAmbiguousCreativeLinks,
   registerIntelligenceRoutes,
   getAssetKey,
   VIDEO_ATTRIBUTION_VERSION

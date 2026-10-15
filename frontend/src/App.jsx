@@ -44,7 +44,6 @@ function getCountryFlag(code) {
   return String.fromCodePoint(...normalized.split("").map(char => 127397 + char.charCodeAt(0)));
 }
 
-
 function PaidBadge({ item, compact = false, showPrice = true }) {
   const isPaid = item?.is_paid === true || item?.isPaid === true;
   if (!isPaid) return null;
@@ -602,6 +601,7 @@ function App() {
   const [historyData, setHistoryData] = useState({ data: [], lines: [] });
 
   const [directorySearch, setDirectorySearch] = useState("");
+  const deferredDirectorySearch = useDeferredValue(directorySearch);
   const [directoryFilter, setDirectoryFilter] = useState("all"); 
   const [directoryGameSort, setDirectoryGameSort] = useState("activity");
   const [suspendedGames, setSuspendedGames] = useState([]);
@@ -656,6 +656,7 @@ function App() {
   const [isCountryScanMinimized, setIsCountryScanMinimized] = useState(false);
   const [countryScanFilter, setCountryScanFilter] = useState("all");
   const [countryScanSearch, setCountryScanSearch] = useState("");
+  const deferredCountryScanSearch = useDeferredValue(countryScanSearch);
   const [countryScanViewTab, setCountryScanViewTab] = useState("availability");
   const [countryPerformanceSort, setCountryPerformanceSort] = useState("atlas_desc");
   const [selectedGameCountryScan, setSelectedGameCountryScan] = useState(null);
@@ -664,12 +665,14 @@ function App() {
   const [selectedGameVideosLoading, setSelectedGameVideosLoading] = useState(false);
   const [countryScanLibrary, setCountryScanLibrary] = useState([]);
   const [countryLibrarySearch, setCountryLibrarySearch] = useState("");
+  const deferredCountryLibrarySearch = useDeferredValue(countryLibrarySearch);
 
   const [activeStatPanel, setActiveStatPanel] = useState(null);
   const [statPanelSearch, setStatPanelSearch] = useState("");
   const deferredStatPanelSearch = useDeferredValue(statPanelSearch);
   const [scanProgress, setScanProgress] = useState({ target: "", currentAd: 0, totalAds: 0, timeRemaining: "Calculating...", logs: [] });
   const countryScanDetailCacheRef = useRef(new Map());
+  const selectedGameVideosCacheRef = useRef(new Map());
   const lastHandledTerminalRef = useRef(null);
   const scanLaunchPendingRef = useRef(false);
 
@@ -740,17 +743,14 @@ function App() {
     };
   }, [activeStatPanel]);
 
+  // Parallel data load without blocking on a sequential /api/health call first
   const loadAllData = useCallback(async () => {
     if (!authToken || !currentUser) return;
-    try {
-      await fetchJson(`${API_BASE}/api/health`);
-      setIsNodeOnline(true);
-    } catch {
-      setIsNodeOnline(false);
-      return;
-    }
     const requests = [
-      fetchJson(`${API_BASE}/api/stats`).then(data => setStats(data?.error ? { competitors: 0, accounts: 0, games: 0 } : data)),
+      fetchJson(`${API_BASE}/api/stats`).then(data => {
+        setIsNodeOnline(true);
+        setStats(data?.error ? { competitors: 0, accounts: 0, games: 0 } : data);
+      }),
       fetchJson(`${API_BASE}/api/competitors`).then(data => setCompetitorTree(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/trending`).then(data => setTrending(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/lists`).then(data => setTargetLists(Array.isArray(data) ? data : [])),
@@ -762,6 +762,8 @@ function App() {
       fetchJson(`${API_BASE}/api/suspended-games`).then(data => setSuspendedGames(Array.isArray(data) ? data : [])),
     ];
     const results = await Promise.allSettled(requests);
+    const anyFulfilled = results.some(result => result.status === "fulfilled");
+    setIsNodeOnline(anyFulfilled);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
   }, [authToken, currentUser]);
 
@@ -769,6 +771,7 @@ function App() {
     if (authToken && currentUser) {
       loadAllData(); 
       const heartbeat = setInterval(async () => {
+        if (document.hidden) return;
         try { await fetchJson(`${API_BASE}/api/health`); setIsNodeOnline(true); } 
         catch { setIsNodeOnline(false); }
       }, 30000);
@@ -781,9 +784,6 @@ function App() {
 
     const state = status.state || (status.running ? "running" : "idle");
 
-    // "idle" is the normal backend state when no scan has been started since
-    // the Node process booted. Ignore it while a new POST /api/scan is still
-    // travelling to the backend so the UI cannot flicker back to idle.
     if (state === "idle") {
       if (!scanLaunchPendingRef.current) {
         setIsScanning(false);
@@ -814,9 +814,6 @@ function App() {
 
     if (status.running || state === "starting" || state === "running" || state === "cancelling") {
       setIsScanning(true);
-      // Background progress polling must not steal the user's All time / Latest
-      // choice. Keeping All time selected makes the rest of Atlas usable while
-      // a long scan is running.
       return;
     }
 
@@ -843,6 +840,7 @@ function App() {
         setLastScanTime(displayTime);
         localStorage.setItem("atlas_last_scan_time", displayTime);
         lastHandledTerminalRef.current = terminalKey;
+        selectedGameVideosCacheRef.current.clear();
         void loadAllData();
       }
 
@@ -853,6 +851,7 @@ function App() {
     if (state === "cancelled" || status.isCancelled || state === "error" || status.isError || status.fatalError) {
       if (isNewTerminalState) {
         lastHandledTerminalRef.current = terminalKey;
+        selectedGameVideosCacheRef.current.clear();
         void loadAllData();
       }
 
@@ -860,39 +859,51 @@ function App() {
     }
   }, [loadAllData]);
 
-  // Durable scan progress: use normal authenticated HTTP polling instead of a
-  // long-lived SSE connection. This survives ngrok/proxy stream disconnects
-  // and can recover the live scan UI after a browser refresh.
+  // Adaptive scan polling: 1.5s while scanning, 8s while idle, paused when tab is hidden
   useEffect(() => {
     if (!authToken || !currentUser) return;
 
     let disposed = false;
     let requestInFlight = false;
+    let timerId = null;
 
     const pollScanStatus = async () => {
+      if (disposed) return;
+      if (document.hidden && !isScanning && !scanLaunchPendingRef.current) {
+        timerId = window.setTimeout(pollScanStatus, 8000);
+        return;
+      }
       if (requestInFlight) return;
       requestInFlight = true;
 
+      let nextInterval = isScanning || scanLaunchPendingRef.current ? 1500 : 8000;
+
       try {
         const status = await fetchJson(`${API_BASE}/api/scan-status`);
-        if (!disposed) applyScanStatus(status);
+        if (!disposed) {
+          applyScanStatus(status);
+          const active = status?.running || ["starting", "running", "cancelling"].includes(status?.state);
+          nextInterval = active || scanLaunchPendingRef.current ? 1500 : 8000;
+        }
       } catch (err) {
         if (!disposed && err?.message && !err.message.includes("Unauthorized")) {
           console.warn("Scan status poll failed:", err.message);
         }
       } finally {
         requestInFlight = false;
+        if (!disposed) {
+          timerId = window.setTimeout(pollScanStatus, nextInterval);
+        }
       }
     };
 
     void pollScanStatus();
-    const poller = setInterval(pollScanStatus, 1500);
 
     return () => {
       disposed = true;
-      clearInterval(poller);
+      if (timerId) window.clearTimeout(timerId);
     };
-  }, [authToken, currentUser, applyScanStatus]);
+  }, [authToken, currentUser, isScanning, applyScanStatus]);
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
@@ -927,10 +938,17 @@ function App() {
     e.stopPropagation();
     if (!isAdmin) return;
     if (window.confirm(`Are you sure you want to permanently delete all data for ${name}, including associated games and publishers? This cannot be undone.`)) {
+      // Optimistic removal for instant UI response
+      setCompetitorTree(prev => prev.filter(comp => String(comp.id) !== String(id)));
+      setSavedCompetitors(prev => prev.filter(comp => String(comp.id) !== String(id)));
+      setTrending(prev => prev.filter(game => String(game.competitor_id) !== String(id)));
       try {
         await fetchJson(`${API_BASE}/api/competitors/${id}/data`, { method: "DELETE" });
-        loadAllData();
-      } catch { alert("Failed to delete competitor."); }
+        void loadAllData();
+      } catch {
+        alert("Failed to delete competitor.");
+        void loadAllData();
+      }
     }
   }, [isAdmin, loadAllData]);
 
@@ -938,10 +956,19 @@ function App() {
     e.stopPropagation();
     if (!isAdmin) return;
     if (window.confirm(`Are you sure you want to permanently delete all data for publisher ${name}?`)) {
+      // Optimistic removal for instant UI response
+      setCompetitorTree(prev => prev.map(comp => ({
+        ...comp,
+        accounts: (comp.accounts || []).filter(acc => String(acc.id) !== String(id))
+      })));
+      setTrending(prev => prev.filter(game => game.publisher_name !== name));
       try {
         await fetchJson(`${API_BASE}/api/publishers/${id}/data`, { method: "DELETE" });
-        loadAllData();
-      } catch { alert("Failed to delete publisher."); }
+        void loadAllData();
+      } catch {
+        alert("Failed to delete publisher.");
+        void loadAllData();
+      }
     }
   }, [isAdmin, loadAllData]);
 
@@ -959,20 +986,41 @@ function App() {
       return;
     }
 
+    const packageName = game.package_name;
+
+    // Optimistic state update so the card disappears immediately
+    setTrending(prev => prev.filter(item => item.id !== game.id && (!packageName || item.package_name !== packageName)));
+    setCompetitorTree(prev => prev.map(comp => ({
+      ...comp,
+      accounts: (comp.accounts || []).map(acc => ({
+        ...acc,
+        games: (acc.games || []).filter(g => g.id !== game.id && (!packageName || g.package_name !== packageName))
+      }))
+    })));
+    setSelectedGame(prev => {
+      const sameGame = prev && (prev.id === game.id || (packageName && prev.package_name === packageName));
+      if (sameGame) {
+        setIsDrawerOpen(false);
+        return null;
+      }
+      return prev;
+    });
+
     try {
       const deleted = await fetchJson(`${API_BASE}/api/games/${game.id}/data`, { method: "DELETE" });
-      const packageName = deleted?.package_name || game.package_name;
+      const resolvedPkg = deleted?.package_name || packageName;
 
-      if (packageName) {
+      if (resolvedPkg) {
+        selectedGameVideosCacheRef.current.delete(resolvedPkg);
         setLatestScanPackages(prev => {
-          const next = (prev || []).filter(pkg => pkg !== packageName);
+          const next = (prev || []).filter(pkg => pkg !== resolvedPkg);
           localStorage.setItem("atlas_latest_packages", JSON.stringify(next));
           return next;
         });
 
         setLatestScanAdCounts(prev => {
           const next = { ...(prev || {}) };
-          delete next[packageName];
+          delete next[resolvedPkg];
           localStorage.setItem("atlas_latest_ad_counts", JSON.stringify(next));
           return next;
         });
@@ -981,7 +1029,7 @@ function App() {
           const next = {};
           for (const [competitorId, counts] of Object.entries(prev || {})) {
             const nextCounts = { ...(counts || {}) };
-            delete nextCounts[packageName];
+            delete nextCounts[resolvedPkg];
             if (Object.keys(nextCounts).length > 0) next[competitorId] = nextCounts;
           }
           localStorage.setItem("atlas_latest_ad_counts_by_competitor", JSON.stringify(next));
@@ -989,18 +1037,10 @@ function App() {
         });
       }
 
-      setSelectedGame(prev => {
-        const sameGame = prev && (prev.id === game.id || (packageName && prev.package_name === packageName));
-        if (sameGame) {
-          setIsDrawerOpen(false);
-          return null;
-        }
-        return prev;
-      });
-
-      await loadAllData();
+      void loadAllData();
     } catch (err) {
       alert(err?.message || "Failed to delete game.");
+      void loadAllData();
     }
   }, [isAdmin, isScanning, loadAllData]);
 
@@ -1015,21 +1055,34 @@ function App() {
 
     if (!window.confirm(message)) return;
 
+    // Optimistic state update
+    setTrending(prev => prev.map(item => item.id === game.id ? { ...item, is_suspended: suspended } : item));
+    setCompetitorTree(prev => prev.map(comp => ({
+      ...comp,
+      accounts: (comp.accounts || []).map(acc => ({
+        ...acc,
+        games: (acc.games || []).map(g => g.id === game.id ? { ...g, is_suspended: suspended } : g)
+      }))
+    })));
+    if (!suspended) {
+      setSuspendedGames(prev => prev.filter(item => Number(item.gameId) !== Number(game.id) && item.packageName !== game.package_name));
+    }
+
+    if (selectedGame && selectedGame.id === game.id) {
+      setIsDrawerOpen(false);
+      setSelectedGame(null);
+    }
+
     try {
       await fetchJson(`${API_BASE}/api/games/${game.id}/suspended`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ suspended })
       });
-
-      if (selectedGame && selectedGame.id === game.id) {
-        setIsDrawerOpen(false);
-        setSelectedGame(null);
-      }
-
-      await loadAllData();
+      void loadAllData();
     } catch (error) {
       alert(error?.message || "Unable to update suspension state.");
+      void loadAllData();
     }
   }, [isAdmin, loadAllData, selectedGame]);
 
@@ -1115,8 +1168,6 @@ function App() {
       .filter(isFromLatestScan)
       .map(withLatestScanAdCount);
 
-    // Keep the UI resilient even if a future backend join or stale payload
-    // returns the same package more than once.
     return dedupeGames(visibleGames);
   }, [trending, viewMode, hasLatestScan, latestScanPackages, latestScanCompId, latestScanTargetName, latestScanAdCountsByCompetitor, withLatestScanAdCount]);
 
@@ -1146,8 +1197,6 @@ function App() {
     }).filter(comp => {
       if (viewMode === "all") return true;
 
-      // When exact per-competitor counts are available (the new scan model),
-      // keep every competitor that actually contributed at least one package.
       if (latestScanAdCountsByCompetitor?.[String(comp.id)]) {
         return Object.keys(latestScanAdCountsByCompetitor[String(comp.id)] || {}).length > 0;
       }
@@ -1199,31 +1248,9 @@ function App() {
     return publishers.sort((a, b) => (a.publisher_name || "").localeCompare(b.publisher_name || ""));
   }, [visibleCompetitorTree]);
 
+  // visibleTrending is already deduplicated via dedupeGames(); sort directly without re-running Map deduplication
   const statGames = useMemo(() => {
-    const uniqueGames = new Map();
-
-    visibleTrending.forEach((game) => {
-      const key = getGameIdentity(game);
-      const existing = uniqueGames.get(key);
-
-      if (!existing) {
-        uniqueGames.set(key, game);
-        return;
-      }
-
-      const existingInstalls = getInstallCount(existing);
-      const incomingInstalls = getInstallCount(game);
-
-      uniqueGames.set(key, {
-        ...existing,
-        ...game,
-        ad_count: Math.max(Number(existing.ad_count) || 0, Number(game.ad_count) || 0),
-        min_installs: Math.max(existingInstalls, incomingInstalls),
-        installs: incomingInstalls >= existingInstalls ? game.installs : existing.installs,
-      });
-    });
-
-    return Array.from(uniqueGames.values()).sort((a, b) =>
+    return [...visibleTrending].sort((a, b) =>
       (a.title || "").localeCompare(b.title || "")
     );
   }, [visibleTrending]);
@@ -1258,7 +1285,7 @@ function App() {
   }, [activeStatPanel, deferredStatPanelSearch, statCompetitors, statPublishers, statGames]);
 
   const globalSearchResults = useMemo(() => {
-    const query = directorySearch.trim().toLowerCase();
+    const query = deferredDirectorySearch.trim().toLowerCase();
     if (query.length < 2) return { games: [], publishers: [], competitors: [] };
 
     const games = statGames.filter((game) =>
@@ -1278,7 +1305,7 @@ function App() {
     ).slice(0, 4);
 
     return { games, publishers, competitors };
-  }, [directorySearch, statGames, statPublishers, statCompetitors]);
+  }, [deferredDirectorySearch, statGames, statPublishers, statCompetitors]);
 
   const globalSearchResultCount =
     globalSearchResults.games.length +
@@ -1286,30 +1313,7 @@ function App() {
     globalSearchResults.competitors.length;
 
   const sortedTrending = useMemo(() => {
-    const uniqueGames = new Map();
-
-    visibleTrending.forEach((game) => {
-      const key = getGameIdentity(game);
-      const existing = uniqueGames.get(key);
-
-      if (!existing) {
-        uniqueGames.set(key, game);
-        return;
-      }
-
-      const existingInstalls = getInstallCount(existing);
-      const incomingInstalls = getInstallCount(game);
-
-      uniqueGames.set(key, {
-        ...existing,
-        ...game,
-        ad_count: Math.max(Number(existing.ad_count) || 0, Number(game.ad_count) || 0),
-        min_installs: Math.max(existingInstalls, incomingInstalls),
-        installs: incomingInstalls >= existingInstalls ? game.installs : existing.installs,
-      });
-    });
-
-    const games = Array.from(uniqueGames.values());
+    const games = [...visibleTrending];
 
     return games.sort((a, b) => {
       let difference = 0;
@@ -1331,9 +1335,10 @@ function App() {
     });
   }, [visibleTrending, trendingSort]);
 
-  const searchLower = directorySearch.toLowerCase();
+  const searchLower = deferredDirectorySearch.toLowerCase();
 
   const filteredGames = useMemo(() => {
+    if (!searchLower) return visibleTrending;
     return visibleTrending.filter(g => 
       (g.title || "").toLowerCase().includes(searchLower) || (g.publisher_name || "").toLowerCase().includes(searchLower) || (g.package_name || "").toLowerCase().includes(searchLower)
     );
@@ -1352,8 +1357,6 @@ function App() {
       let difference = 0;
 
       if (directoryGameSort === "activity") {
-        // In Latest Scan mode ad_count has already been replaced with the exact
-        // per-scan count. In All Time mode it is the historical detection count.
         difference = (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0);
       } else if (directoryGameSort === "installs") {
         difference = getInstallCount(b) - getInstallCount(a);
@@ -1373,6 +1376,7 @@ function App() {
   }, [filteredGames, directoryGameSort]);
 
   const filteredCompetitors = useMemo(() => {
+    if (!searchLower) return visibleCompetitorTree;
     return visibleCompetitorTree.filter(c => 
       (c.name || "").toLowerCase().includes(searchLower) || (c.ads_id || "").toLowerCase().includes(searchLower)
     );
@@ -1382,7 +1386,7 @@ function App() {
     const accounts = [];
     visibleCompetitorTree.forEach(comp => {
       (comp.accounts || []).forEach(acc => {
-        if ((acc.publisher_name || "").toLowerCase().includes(searchLower) || (comp.name || "").toLowerCase().includes(searchLower)) {
+        if (!searchLower || (acc.publisher_name || "").toLowerCase().includes(searchLower) || (comp.name || "").toLowerCase().includes(searchLower)) {
           let totalGames = acc.games ? acc.games.length : 0;
           let totalInstalls = (acc.games || []).reduce((sum, g) => sum + parseInstalls(g.installs), 0);
           let recentGame = hasRecentGame(acc.games);
@@ -1417,18 +1421,19 @@ function App() {
     e.preventDefault();
     if (!isAdmin || !newListName || !newListTargets || isSaving) return;
     setIsSaving(true);
+    const parsedTargets = newListTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean);
     try {
-      await fetchJson(`${API_BASE}/api/lists`, {
+      const created = await fetchJson(`${API_BASE}/api/lists`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: newListName,
-          targets: newListTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+          targets: parsedTargets
         })
       });
+      setTargetLists(prev => [created, ...prev]);
       setNewListName("");
       setNewListTargets("");
-      loadAllData();
     } catch (err) {
       console.error("List creation error:", err);
     } finally {
@@ -1441,14 +1446,17 @@ function App() {
     if (!isAdmin || !newCompName || !newCompAdsId || isSaving) return;
     setIsSaving(true);
     try {
-      await fetchJson(`${API_BASE}/api/competitors`, {
+      const created = await fetchJson(`${API_BASE}/api/competitors`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newCompName, adsId: newCompAdsId, country: "Any" })
       });
+      const newEntry = { id: created.id, name: newCompName, ads_id: newCompAdsId, country: "Any" };
+      setSavedCompetitors(prev => [newEntry, ...prev]);
+      setCompetitorTree(prev => [{ ...newEntry, accounts: [] }, ...prev]);
+      setStats(prev => ({ ...prev, competitors: (Number(prev.competitors) || 0) + 1 }));
       setNewCompName("");
       setNewCompAdsId("");
-      loadAllData();
     } catch (err) {
       console.error("Competitor save error:", err);
     } finally {
@@ -1460,18 +1468,20 @@ function App() {
     e.preventDefault();
     if (!isAdmin || !newEmailName || !newEmailTargets || isSaving) return;
     setIsSaving(true);
+    const parsedEmails = newEmailTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean);
     try {
       await fetchJson(`${API_BASE}/api/emails`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: newEmailName,
-          emails: newEmailTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean)
+          emails: parsedEmails
         })
       });
       setNewEmailName("");
       setNewEmailTargets("");
-      loadAllData();
+      const updatedEmails = await fetchJson(`${API_BASE}/api/emails`);
+      setEmailLists(Array.isArray(updatedEmails) ? updatedEmails : []);
     } catch (err) {
       console.error("Email list save error:", err);
     } finally {
@@ -1482,11 +1492,12 @@ function App() {
   const handleDeleteList = async (id) => {
     if (!isAdmin) return;
     if (window.confirm("Delete this target list?")) {
+      setTargetLists(prev => prev.filter(item => item.id !== id));
       try {
         await fetchJson(`${API_BASE}/api/lists/${id}`, { method: "DELETE" });
-        loadAllData();
       } catch (err) {
         console.error("List delete error:", err);
+        void loadAllData();
       }
     }
   };
@@ -1494,11 +1505,14 @@ function App() {
   const handleDeleteCompetitor = async (id) => {
     if (!isAdmin) return;
     if (window.confirm("Delete this saved competitor?")) {
+      setSavedCompetitors(prev => prev.filter(item => item.id !== id));
+      setCompetitorTree(prev => prev.filter(item => item.id !== id));
       try {
         await fetchJson(`${API_BASE}/api/saved-competitors/${id}`, { method: "DELETE" });
-        loadAllData();
+        void loadAllData();
       } catch (err) {
         console.error("Competitor delete error:", err);
+        void loadAllData();
       }
     }
   };
@@ -1506,11 +1520,12 @@ function App() {
   const handleDeleteEmail = async (id) => {
     if (!isAdmin) return;
     if (window.confirm("Delete this email target?")) {
+      setEmailLists(prev => prev.filter(item => item.id !== id));
       try {
         await fetchJson(`${API_BASE}/api/emails/${id}`, { method: "DELETE" });
-        loadAllData();
       } catch (err) {
         console.error("Email delete error:", err);
+        void loadAllData();
       }
     }
   };
@@ -1561,8 +1576,6 @@ function App() {
     if (targetCompId) localStorage.setItem("atlas_latest_comp_id", targetCompId);
     else localStorage.removeItem("atlas_latest_comp_id");
 
-    // Keep historical data visible while the new scan snapshot is still being
-    // built. Latest remains available if the user explicitly chooses it.
     setViewMode("all");
     setIsScanning(true);
     setIsScanMinimized(false);
@@ -1608,8 +1621,6 @@ function App() {
 
       scanLaunchPendingRef.current = false;
 
-      // Pull the freshly-created backend state immediately instead of waiting
-      // for the next 1.5s polling tick.
       const status = await fetchJson(`${API_BASE}/api/scan-status`);
       applyScanStatus(status);
     } catch (err) {
@@ -1700,8 +1711,6 @@ function App() {
       return;
     }
 
-    // Open immediately so View never feels unresponsive. The backend request
-    // can still take a moment over a remote database/ngrok connection.
     setCountryScanData(null);
     setCountryScanLoading(true);
     setCountryScanModalOpen(true);
@@ -1764,9 +1773,6 @@ function App() {
     }
   }, [countryPackage, isAdmin]);
 
-  // Reattach to a country scan after a browser refresh. The backend scan is
-  // independent of the tab; this restores the floating progress UI and result
-  // popup instead of making a refresh look like the scan stopped.
   useEffect(() => {
     if (!authToken || !currentUser) return undefined;
 
@@ -1827,8 +1833,15 @@ function App() {
       return undefined;
     }
 
-    let cancelled = false;
     const packageName = selectedGame.package_name;
+    const cached = countryScanDetailCacheRef.current.get(packageName);
+    if (cached) {
+      setSelectedGameCountryLoading(false);
+      setSelectedGameCountryScan(cached);
+      return undefined;
+    }
+
+    let cancelled = false;
     setSelectedGameCountryLoading(true);
     setSelectedGameCountryScan(null);
 
@@ -1853,14 +1866,26 @@ function App() {
       return undefined;
     }
 
-    let cancelled = false;
     const packageName = selectedGame.package_name;
+    const cachedEntry = selectedGameVideosCacheRef.current.get(packageName);
+    if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
+      setSelectedGameVideos(cachedEntry.data);
+      setSelectedGameVideosLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
     setSelectedGameVideos([]);
     setSelectedGameVideosLoading(true);
 
     fetchJson(API_BASE + "/api/video-assets?packageName=" + encodeURIComponent(packageName))
       .then(payload => {
-        if (!cancelled) setSelectedGameVideos(Array.isArray(payload) ? payload : []);
+        const list = Array.isArray(payload) ? payload : [];
+        selectedGameVideosCacheRef.current.set(packageName, {
+          expiresAt: Date.now() + 15000,
+          data: list
+        });
+        if (!cancelled) setSelectedGameVideos(list);
       })
       .catch(error => {
         if (!cancelled) {
@@ -1890,11 +1915,6 @@ function App() {
         if (cancelled) return;
 
         if (status.state === "complete") {
-          // Load the persisted snapshot before publishing the terminal job state.
-          // Previously setCountryScanJob(status) happened first, which caused this
-          // effect to clean itself up and discard the result request. If this fetch
-          // is temporarily unavailable, leave shouldContinue=true so the next poll
-          // retries the completed snapshot instead of getting stuck.
           const payload = await fetchLatestCountryScan(status.packageName);
           if (cancelled) return;
           shouldContinue = false;
@@ -1951,7 +1971,7 @@ function App() {
   }, [countryScanData]);
 
   const visibleCountryResults = useMemo(() => {
-    const search = countryScanSearch.trim().toLowerCase();
+    const search = deferredCountryScanSearch.trim().toLowerCase();
     return (countryScanData?.results || []).filter(item => {
       const matchesSearch = !search ||
         String(item.countryName || "").toLowerCase().includes(search) ||
@@ -1961,10 +1981,10 @@ function App() {
       if (countryScanFilter === "changed") return countryChangesByCode.has(item.countryCode);
       return item.state === countryScanFilter;
     });
-  }, [countryScanData, countryScanFilter, countryScanSearch, countryChangesByCode]);
+  }, [countryScanData, countryScanFilter, deferredCountryScanSearch, countryChangesByCode]);
 
   const filteredCountryScanLibrary = useMemo(() => {
-    const query = countryLibrarySearch.trim().toLowerCase();
+    const query = deferredCountryLibrarySearch.trim().toLowerCase();
     if (!query) return countryScanLibrary;
 
     return countryScanLibrary.filter(item =>
@@ -1973,10 +1993,10 @@ function App() {
       String(item.packageName || "").toLowerCase().includes(query) ||
       (item.competitors || []).some(name => String(name || "").toLowerCase().includes(query))
     );
-  }, [countryScanLibrary, countryLibrarySearch]);
+  }, [countryScanLibrary, deferredCountryLibrarySearch]);
 
   const visibleSuspendedGames = useMemo(() => {
-    const query = directorySearch.trim().toLowerCase();
+    const query = deferredDirectorySearch.trim().toLowerCase();
     if (!query) return suspendedGames;
 
     return suspendedGames.filter(item => {
@@ -1985,10 +2005,10 @@ function App() {
         String(item.packageName || game.package_name || "").toLowerCase().includes(query) ||
         String(item.publisherName || game.publisher_name || "").toLowerCase().includes(query);
     });
-  }, [suspendedGames, directorySearch]);
+  }, [suspendedGames, deferredDirectorySearch]);
 
   const countryPerformanceRows = useMemo(() => {
-    const query = countryScanSearch.trim().toLowerCase();
+    const query = deferredCountryScanSearch.trim().toLowerCase();
     const rows = (countryScanData?.results || [])
       .filter(item => {
         if (item.playRating == null && item.atlasMarketScore == null && !item.ratingsCount && !item.reviewsCount) return false;
@@ -2034,7 +2054,7 @@ function App() {
     });
 
     return rows;
-  }, [countryScanData, countryScanSearch, countryPerformanceSort]);
+  }, [countryScanData, deferredCountryScanSearch, countryPerformanceSort]);
 
   const countryScanSummary = useMemo(() => {
     if (!countryScanData?.scan) return "";
@@ -2196,7 +2216,6 @@ function App() {
       </div>
     );
   }
-
   return (
     <div className="atlas-google-shell bg-bg-base text-text-main min-h-screen relative transition-colors duration-300 overflow-x-hidden pb-24 md:pb-0">
       <style>{`
@@ -2301,7 +2320,7 @@ function App() {
                               className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
                             >
                               <div className="w-9 h-9 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0 flex items-center justify-center">
-                                {game.icon ? <img src={game.icon} alt="" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted text-[18px]">sports_esports</span>}
+                                {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt="" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted text-[18px]">sports_esports</span>}
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="text-sm font-medium text-text-main truncate">{game.title || game.package_name}</div>
@@ -2503,7 +2522,6 @@ function App() {
                   </div>
 
                   <div className="grid grid-cols-2 md:flex flex-[3] gap-4 w-full">
-                    {/* DUAL COLUMN SEARCHABLE DROPDOWN */}
                     <div className="flex-[1.5] min-w-[140px] space-y-2 relative">
                       <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Target source</label>
                       <div onClick={(e) => { 
@@ -2819,7 +2837,6 @@ function App() {
                     )}
                   </div>
                 </div>
-
               </motion.div>
 
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
@@ -2893,7 +2910,6 @@ function App() {
           {/* DIRECTORY SEARCH TAB */}
           {activeTab === "directory" && (
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-6 md:gap-8">
-              {/* Page Title (Scrolls away naturally) */}
               <div>
                 <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
                   Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15">● Latest</span>}
@@ -2903,10 +2919,7 @@ function App() {
                 </p>
               </div>
 
-              {/* FROZEN / STICKY BAR: Docks right underneath the fixed top header on scroll */}
               <div className="sticky top-16 md:top-20 z-20 bg-bg-base/95 backdrop-blur-xl py-3 -mx-3 sm:-mx-6 lg:-mx-8 px-3 sm:px-6 lg:px-8 border-b border-border-subtle flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm transition-colors">
-                
-                {/* Filter Category Pills */}
                 <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
                   {[
                     { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
@@ -2919,7 +2932,7 @@ function App() {
                       key={tab.id} 
                       onClick={() => setDirectoryFilter(tab.id)} 
                       className={cn(
-                        "px-4 py-2 rounded-xl text-xs  font-bold transition-all whitespace-nowrap flex-shrink-0", 
+                        "px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex-shrink-0", 
                         directoryFilter === tab.id ? "bg-electric-blue text-white" : "bg-surface-glass text-text-muted hover:text-text-main border border-border-subtle shadow-sm"
                       )}
                     >
@@ -2928,7 +2941,6 @@ function App() {
                   ))}
                 </div>
 
-                {/* Pinned Search Input */}
                 <div className="relative w-full md:w-80 flex-shrink-0">
                   <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">search</span>
                   <input 
@@ -2943,7 +2955,6 @@ function App() {
                     </button>
                   )}
                 </div>
-
               </div>
 
               {directoryFilter === "suspended" && visibleSuspendedGames.length > 0 && (
@@ -2985,14 +2996,14 @@ function App() {
 
                           {game.header_image ? (
                             <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
-                              <img src={game.header_image} alt={suspendedGame.title} className="w-full h-full object-cover opacity-70 grayscale-[20%]" />
+                              <img loading="lazy" decoding="async" src={game.header_image} alt={suspendedGame.title} className="w-full h-full object-cover opacity-70 grayscale-[20%]" />
                             </div>
                           ) : <div className="h-14 bg-urgent-red/5" />}
 
                           <div className="p-4 flex-1 flex flex-col">
                             <div className="flex items-start gap-3">
                               <div className="w-12 h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0">
-                                {game.icon ? <img src={game.icon} alt={suspendedGame.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted h-full flex items-center justify-center">sports_esports</span>}
+                                {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt={suspendedGame.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted h-full flex items-center justify-center">sports_esports</span>}
                               </div>
                               <div className="min-w-0 flex-1">
                                 <h4 className="text-sm font-semibold text-text-main truncate">{suspendedGame.title}</h4>
@@ -3163,14 +3174,14 @@ function App() {
                         )}
                         {game.header_image && (
                           <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
-                            <img src={game.header_image} alt={game.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                            <img loading="lazy" decoding="async" src={game.header_image} alt={game.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                             {game.video && <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md text-[9px] md:text-[10px] text-white flex items-center gap-1"><span className="material-symbols-outlined text-[12px] text-white/80">play_arrow</span> Trailer</div>}
                           </div>
                         )}
                         <div className="p-4 md:p-5 flex-1 flex flex-col justify-between relative z-10">
                           <div className="flex gap-3 md:gap-4 items-start">
                             <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-surface-solid border border-border-subtle overflow-hidden flex-shrink-0 shadow-sm">
-                              {game.icon ? <img src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted flex h-full items-center justify-center">sports_esports</span>}
+                              {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted flex h-full items-center justify-center">sports_esports</span>}
                             </div>
                             <div className="min-w-0 flex-1 pr-8">
                               <h4 className="font-body-sm md:font-body-md font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h4>
@@ -3245,7 +3256,6 @@ function App() {
                       const encoded = encodeURIComponent(acc.publisher_name).replace(/%20/g, '+');
                       return (
                         <motion.div whileHover={{ y: -2 }} key={acc.id} className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-xl p-3 md:p-4 shadow-sm flex flex-col justify-between hover:shadow-lg transition-all gap-3 relative overflow-hidden group">
-                          
                           <div className="flex justify-between items-start min-w-0 relative z-10">
                             <div className="min-w-0 pr-2">
                               <h5 className="font-body-sm md:font-body-md font-semibold text-text-main truncate">{acc.publisher_name}</h5>
@@ -3286,7 +3296,7 @@ function App() {
                             <button onClick={(e) => handleNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1.5 rounded-lg transition-colors border border-transparent hover:border-border-subtle hover:bg-surface-solid opacity-0 group-hover:opacity-100" title="Delete group data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
                           )}
                           {isAdmin && (
-                            <button onClick={() => { setSelectedSource(`comp_${comp.id}`); setActiveTab("dashboard"); window.scrollTo(0,0); }} className="bg-surface-solid hover:bg-electric-blue hover:text-white border border-border-subtle px-3 py-1.5 md:px-4 md:py-2 rounded-lg md:rounded-xl text-[10px] md:text-xs  font-bold transition-all shadow-sm">Target</button>
+                            <button onClick={() => { setSelectedSource(`comp_${comp.id}`); setActiveTab("dashboard"); window.scrollTo(0,0); }} className="bg-surface-solid hover:bg-electric-blue hover:text-white border border-border-subtle px-3 py-1.5 md:px-4 md:py-2 rounded-lg md:rounded-xl text-[10px] md:text-xs font-bold transition-all shadow-sm">Target</button>
                           )}
                         </div>
                       </motion.div>
@@ -3536,7 +3546,6 @@ function App() {
               </motion.div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8">
-                {/* FORMS (ADMIN ONLY) */}
                 {isAdmin && (
                   <motion.div variants={FADE_UP} className="lg:col-span-4 space-y-6 md:space-y-8">
                     <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm">
@@ -3568,7 +3577,6 @@ function App() {
                   </motion.div>
                 )}
 
-                {/* LISTS */}
                 <motion.div variants={FADE_UP} className={cn("space-y-6 md:space-y-8", isAdmin ? "lg:col-span-8" : "lg:col-span-12")}>
                   <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 min-h-[250px] shadow-sm">
                     <h2 className="text-sm font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">person</span> Saved competitors</h2>
@@ -3714,8 +3722,7 @@ function App() {
 
         </main>
       </div>
-
-      {/* MOBILE MATERIAL NAVIGATION BAR */}
+{/* MOBILE MATERIAL NAVIGATION BAR */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-bg-base/95 backdrop-blur-xl border-t border-border-subtle px-2 pb-[env(safe-area-inset-bottom)]">
         <div className="h-[72px] flex items-center justify-around">
           {[
@@ -3944,7 +3951,7 @@ function App() {
                     <h1 className="font-headline-lg text-text-main text-xl md:text-2xl leading-tight truncate">{selectedGame.title}</h1>
                     <PaidBadge item={selectedGame} showPrice />
                   </div>
-                  <p className="font-body-xs md:font-body-sm text-text-muted  font-medium mb-3 truncate">{selectedGame.publisher_name}</p>
+                  <p className="font-body-xs md:font-body-sm text-text-muted font-medium mb-3 truncate">{selectedGame.publisher_name}</p>
                   
                   {(() => {
                     const compName = getCompetitorForGame(selectedGame, competitorTree);
@@ -3995,8 +4002,8 @@ function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col gap-8 custom-scrollbar pb-24">
               <div className="grid grid-cols-2 gap-4">
-                <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted  mb-2 font-bold">Rating</p><div className="flex items-center gap-2"><p className="font-headline-lg text-2xl text-text-main font-bold">{Number(selectedGame.rating) > 0 ? Number(selectedGame.rating).toFixed(1) : "N/A"}</p><span className="material-symbols-outlined text-electric-blue text-[22px] mb-0.5" style={{fontVariationSettings: "'FILL' 1"}}>star</span></div></div>
-                <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted  mb-2 font-bold">Reviews</p><p className="font-headline-lg text-2xl text-text-main font-bold">{selectedGame.ratings_count || 0}</p></div>
+                <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted mb-2 font-bold">Rating</p><div className="flex items-center gap-2"><p className="font-headline-lg text-2xl text-text-main font-bold">{Number(selectedGame.rating) > 0 ? Number(selectedGame.rating).toFixed(1) : "N/A"}</p><span className="material-symbols-outlined text-electric-blue text-[22px] mb-0.5" style={{fontVariationSettings: "'FILL' 1"}}>star</span></div></div>
+                <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted mb-2 font-bold">Reviews</p><p className="font-headline-lg text-2xl text-text-main font-bold">{selectedGame.ratings_count || 0}</p></div>
               </div>
               <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl">
                 <div className="flex items-start justify-between gap-3">
@@ -4150,7 +4157,7 @@ function App() {
 
               {selectedGame.screenshots && (
                 <div className="flex flex-col gap-4">
-                  <h3 className="text-xs text-text-muted  flex items-center gap-3 font-bold"><span className="w-8 h-[1px] bg-border-subtle"></span> Screenshots</h3>
+                  <h3 className="text-xs text-text-muted flex items-center gap-3 font-bold"><span className="w-8 h-[1px] bg-border-subtle"></span> Screenshots</h3>
                   <div className="flex overflow-x-auto gap-4 pb-4 snap-x snap-mandatory custom-scrollbar">
                     {parseJsonArray(selectedGame.screenshots).slice(0, 4).map((url, i) => <div key={i} className="w-[140px] h-[280px] flex-shrink-0 bg-surface-glass rounded-xl overflow-hidden snap-center border border-border-subtle shadow-sm"><img loading="lazy" decoding="async" src={url} alt={`Screenshot ${i}`} className="w-full h-full object-cover hover:scale-105 transition-transform duration-500" /></div>)}
                   </div>
@@ -4158,7 +4165,7 @@ function App() {
               )}
               {selectedGame.similar_apps && (
                 <div className="flex flex-col gap-4">
-                  <div className="flex items-center justify-between"><h3 className="text-xs text-text-muted  flex items-center gap-2 font-bold"><span className="material-symbols-outlined text-[16px] text-electric-blue">radar</span> Similar apps</h3><span className="font-mono text-[10px] text-text-muted bg-surface-solid px-2.5 py-1 rounded border border-border-subtle font-bold">{parseJsonArray(selectedGame.similar_apps).length} Found</span></div>
+                  <div className="flex items-center justify-between"><h3 className="text-xs text-text-muted flex items-center gap-2 font-bold"><span className="material-symbols-outlined text-[16px] text-electric-blue">radar</span> Similar apps</h3><span className="font-mono text-[10px] text-text-muted bg-surface-solid px-2.5 py-1 rounded border border-border-subtle font-bold">{parseJsonArray(selectedGame.similar_apps).length} Found</span></div>
                   <div className="space-y-3">
                     {parseJsonArray(selectedGame.similar_apps).length === 0 ? <p className="font-body-sm text-xs text-text-muted italic">No direct copycats detected.</p> : parseJsonArray(selectedGame.similar_apps).map((sim, i) => (
                       <div key={i} className="flex items-center justify-between p-3.5 rounded-xl bg-surface-glass border border-border-subtle shadow-sm group">

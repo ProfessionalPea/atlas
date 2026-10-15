@@ -95,7 +95,8 @@ function createDatabaseConfig() {
 }
 
 // Atlas uses one process-wide pool for the main API, extensions and scanners.
-// This avoids each module opening another default-sized pool against Supabase.
+// keepAlive keeps remote Supabase TLS sockets warm so mutations don't pay a
+// fresh TCP+TLS handshake cost after brief idle periods.
 function getDatabasePool() {
   if (sharedPool) return sharedPool;
 
@@ -104,8 +105,6 @@ function getDatabasePool() {
     ? requestedMax
     : 10;
 
-  // Unit tests and local setups may rely on the standard PG* environment
-  // variables instead of DATABASE_URL. Production must always be explicit.
   const connectionConfig = process.env.DATABASE_URL
     ? createDatabaseConfig()
     : isProduction()
@@ -116,7 +115,13 @@ function getDatabasePool() {
     ...connectionConfig,
     connectionTimeoutMillis: 8000,
     max,
-    idleTimeoutMillis: 30000
+    idleTimeoutMillis: 30000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000
+  });
+
+  sharedPool.on("error", (err) => {
+    console.warn("⚠️ [DB Pool] Idle client error (recovered automatically):", err.message);
   });
 
   return sharedPool;
@@ -184,8 +189,6 @@ async function verifyPassword(password, storedHash) {
     const r = Number(rawR);
     const p = Number(rawP);
 
-    // Accept only parameters Atlas currently creates. Do not let a malformed
-    // database row request unbounded scrypt CPU or memory during login.
     if (N !== SCRYPT_PARAMS.N || r !== SCRYPT_PARAMS.r || p !== SCRYPT_PARAMS.p) {
       return { valid: false, needsUpgrade: false };
     }
@@ -203,8 +206,6 @@ async function verifyPassword(password, storedHash) {
     }
   }
 
-  // Legacy Atlas rows used an unsalted SHA-256 digest. A successful login
-  // remains possible and the caller upgrades the row to scrypt immediately.
   if (/^[a-f0-9]{64}$/i.test(encoded)) {
     const actual = Buffer.from(crypto.createHash("sha256").update(value).digest("hex"), "hex");
     const expected = Buffer.from(encoded, "hex");
@@ -226,16 +227,12 @@ async function initializeAuthStorage(pool) {
     ");"
   ].join("\n"));
 
-  // Normalize the old role spelling so existing non-default admins retain
-  // their privileges after the UI/backend standardized on "admin".
   await pool.query([
     "UPDATE users",
     "SET role = 'admin'",
     "WHERE LOWER(TRIM(role)) IN ('admin', 'full access', 'full-access', 'full_access')"
   ].join("\n"));
 
-  // Remove only the historical accounts that still use the known public
-  // credentials. Custom passwords on accounts with these usernames are kept.
   for (const legacy of LEGACY_PUBLIC_DEFAULTS) {
     const removed = await pool.query(
       "DELETE FROM users " +
