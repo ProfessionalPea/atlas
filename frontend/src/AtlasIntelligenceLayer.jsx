@@ -670,10 +670,22 @@ export default function AtlasIntelligenceLayer() {
     document.addEventListener('click', closeVideoWhenNativeNavClicked, true);
 
     ensureNavButtons(); ensureKeywordButtons();
-    const observer = new MutationObserver(() => { ensureNavButtons(); ensureKeywordButtons(); });
+
+    // Coalesce bursts of DOM mutations into a single pass per frame instead of
+    // re-querying the whole document on every mutation record.
+    let frame = 0;
+    const observer = new MutationObserver(() => {
+      if (frame || disposed) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        if (disposed) return;
+        ensureNavButtons(); ensureKeywordButtons();
+      });
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     return () => {
       disposed = true;
+      if (frame) window.cancelAnimationFrame(frame);
       observer.disconnect();
       document.removeEventListener('click', closeVideoWhenNativeNavClicked, true);
       document.querySelectorAll('[data-atlas-video-library="1"]').forEach(node => node.remove());

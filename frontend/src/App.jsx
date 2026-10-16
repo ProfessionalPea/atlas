@@ -674,6 +674,7 @@ function App() {
   const countryScanDetailCacheRef = useRef(new Map());
   const selectedGameVideosCacheRef = useRef(new Map());
   const lastHandledTerminalRef = useRef(null);
+  const lastAppliedTerminalSnapshotRef = useRef(null);
   const scanLaunchPendingRef = useRef(false);
 
   const [targetLists, setTargetLists] = useState([]);
@@ -789,6 +790,21 @@ function App() {
         setIsScanning(false);
       }
       return;
+    }
+
+    // A finished scan's status is retained by the server until the next scan,
+    // so polling keeps returning the identical snapshot. Re-applying it would
+    // create new state objects and re-render the whole app every poll. The
+    // server bumps updatedAt on any real change (e.g. a package removal), so
+    // changed snapshots still go through.
+    const isActiveState = Boolean(status.running) || state === "starting" || state === "running" || state === "cancelling";
+    if (!isActiveState && status.updatedAt) {
+      const snapshotKey = `${status.scanId || "scan"}:${state}:${status.updatedAt}`;
+      if (lastAppliedTerminalSnapshotRef.current === snapshotKey) {
+        setIsScanning(false);
+        return;
+      }
+      lastAppliedTerminalSnapshotRef.current = snapshotKey;
     }
 
     setScanProgress(prev => ({

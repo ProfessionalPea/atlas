@@ -85,9 +85,22 @@ function retireEmailControls() {
 if (typeof window !== "undefined" && typeof document !== "undefined") {
   const start = () => {
     retireEmailControls();
-    const observer = new MutationObserver(() => retireEmailControls());
+
+    // Coalesce bursts of DOM mutations into a single scan per frame. rAF runs
+    // before the next paint, so retired controls still never flash on screen.
+    let frame = 0;
+    const observer = new MutationObserver(() => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        retireEmailControls();
+      });
+    });
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener("beforeunload", () => observer.disconnect(), { once: true });
+    window.addEventListener("beforeunload", () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    }, { once: true });
   };
 
   if (document.readyState === "loading") {
