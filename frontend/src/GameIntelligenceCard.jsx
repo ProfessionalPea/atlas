@@ -9,6 +9,7 @@ const NETWORK_COLOR_MAP = {
   Meta: "#0ea5e9",
   Liftoff: "#ec4899",
   Mintegral: "#8b5cf6",
+  InMobi: "#f43f5e",
   Chartboost: "#14b8a6",
   Pangle: "#f97316",
 };
@@ -65,6 +66,50 @@ export function isTimestampStale(value, maxDays = 14) {
   return ageMs > maxDays * 86400000;
 }
 
+export function resolveCardState(game) {
+  const latestCreativeSeen = game?.latest_creative_seen || null;
+  if (latestCreativeSeen) {
+    const parsed = new Date(latestCreativeSeen);
+    if (!Number.isNaN(parsed.getTime())) {
+      const ageMs = Date.now() - parsed.getTime();
+      return ageMs <= 14 * 86400000 ? "active" : "closed";
+    }
+  }
+
+  const rawStatus = String(game?.card_status || "").trim().toLowerCase();
+  const adCount = Number(game?.ad_count);
+  const hasCompetitorContext = Boolean(
+    game?.account_id || game?.competitor_id || game?.competitor_name
+  );
+
+  if (Number.isFinite(adCount) && adCount > 0) {
+    return "active";
+  }
+
+  if (rawStatus === "active" || rawStatus === "open") {
+    return "active";
+  }
+
+  if (rawStatus === "unscanned" || rawStatus === "unknown") {
+    return "unscanned";
+  }
+
+  if (rawStatus === "closed") {
+    if (hasCompetitorContext && Number.isFinite(adCount) && adCount === 0) {
+      return "closed";
+    }
+    if (game?.card_scanned_at && isTimestampStale(game.card_scanned_at, 14)) {
+      return "closed";
+    }
+  }
+
+  if (hasCompetitorContext && Number.isFinite(adCount) && adCount === 0) {
+    return "closed";
+  }
+
+  return "unscanned";
+}
+
 function normalizeSubcategories(game) {
   let subs = game?.subcategories;
   if (typeof subs === "string") {
@@ -83,8 +128,8 @@ function normalizeSubcategories(game) {
   return ["Simulation"];
 }
 
-function normalizeAdNetworks(game) {
-  let net = game?.ad_networks;
+export function normalizeAdNetworks(game) {
+  let net = game?.ad_networks ?? game?.network_data?.adNetworks;
   if (typeof net === "string") {
     try {
       net = JSON.parse(net);
@@ -95,7 +140,7 @@ function normalizeAdNetworks(game) {
   if (net && typeof net === "object" && !Array.isArray(net) && Object.keys(net).length > 0) {
     return net;
   }
-  return { Admob: 100 };
+  return {};
 }
 
 function normalizeInstallHistory(game) {
@@ -220,7 +265,8 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
   const revConfidence = game.rev_confidence || "low";
 
   const subcategories = normalizeSubcategories(game);
-  const cardStatus = (game.card_status || "closed").toLowerCase();
+  const cardState = resolveCardState(game);
+  const cardDateSource = game.latest_creative_seen || game.card_scanned_at || null;
   const formattedReleaseDate = formatReleaseDate(game.release_date || game.released);
 
   const adNetworks = normalizeAdNetworks(game);
@@ -229,9 +275,15 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
     .filter(([, pct]) => pct > 0)
     .sort((a, b) => b[1] - a[1]);
 
-  const topNetworkLabel = networkEntries
-    .map(([name, pct]) => `${name} · ${Math.round(pct)}%`)
-    .join("  ");
+  const topNetworkLabel =
+    networkEntries.length === 0
+      ? "Unknown Network"
+      : networkEntries.length === 1
+        ? `${networkEntries[0][0]} · ${Math.round(networkEntries[0][1])}%`
+        : networkEntries
+            .slice(0, 3)
+            .map(([name, pct]) => `${name} · ${Math.round(pct)}%`)
+            .join(" | ");
 
   const developerDisplay =
     game.developer_name || game.publisher_name || "Unknown Developer";
@@ -246,8 +298,9 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
     { key: "store", label: "Store", ts: game.store_scanned_at },
     { key: "installs", label: "Installs", ts: game.installs_scanned_at },
     { key: "networks", label: "Networks", ts: game.networks_scanned_at },
-    { key: "card", label: "Card", ts: game.card_scanned_at },
   ];
+
+  const cardFooterDateText = formatShortScanDate(cardDateSource);
 
   return (
     <div
@@ -382,13 +435,17 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
 
         {/* Row 2: Card status pill + Release date pill */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {cardStatus === "open" ? (
+          {cardState === "active" ? (
             <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-              ✅ Card Open
+              🟢 Card Active
             </span>
-          ) : (
+          ) : cardState === "closed" ? (
             <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
               ⏹ Card Closed
+            </span>
+          ) : (
+            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-slate-500/12 text-slate-600 dark:text-slate-300 border border-slate-500/25">
+              ⚪ Unscanned
             </span>
           )}
 
@@ -403,20 +460,29 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
       {/* 6. Ad Network Bar */}
       <div className="flex flex-col gap-1.5 pt-0.5">
         <div className="text-[11px] font-bold text-text-main flex items-center justify-between">
-          <span>{topNetworkLabel || "Admob · 100%"}</span>
+          <span className={cn(networkEntries.length === 0 && "text-text-muted font-medium")}>
+            {topNetworkLabel}
+          </span>
         </div>
         <div className="w-full h-2 rounded-full bg-input-bg overflow-hidden flex">
-          {networkEntries.map(([name, pct]) => (
+          {networkEntries.length > 0 ? (
+            networkEntries.map(([name, pct]) => (
+              <div
+                key={name}
+                style={{
+                  width: `${Math.max(2, Math.min(100, pct))}%`,
+                  backgroundColor: NETWORK_COLOR_MAP[name] || "#3b82f6",
+                }}
+                className="h-full transition-all"
+                title={`${name}: ${Math.round(pct)}%`}
+              />
+            ))
+          ) : (
             <div
-              key={name}
-              style={{
-                width: `${Math.max(2, Math.min(100, pct))}%`,
-                backgroundColor: NETWORK_COLOR_MAP[name] || "#3b82f6",
-              }}
-              className="h-full transition-all"
-              title={`${name}: ${Math.round(pct)}%`}
+              className="h-full w-full bg-slate-400/25 dark:bg-slate-600/30"
+              title="No verified app-ads.txt network declarations found"
             />
-          ))}
+          )}
         </div>
       </div>
 
@@ -457,9 +523,26 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
             </span>
           );
         })}
+        <span className="inline-flex items-center gap-1">
+          <span className="opacity-50">·</span>
+          {cardState === "active" ? (
+            <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 font-semibold inline-flex items-center gap-0.5">
+              🟢 Card: Active{cardFooterDateText !== "—" ? ` (${cardFooterDateText})` : ""}
+            </span>
+          ) : cardState === "closed" ? (
+            <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-semibold inline-flex items-center gap-0.5">
+              ⚠️ Card: Closed{cardFooterDateText !== "—" ? ` (${cardFooterDateText})` : ""}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-0.5">
+              ⚪ Card: Unscanned
+            </span>
+          )}
+        </span>
       </div>
     </div>
   );
 });
 
 export default GameIntelligenceCard;
+

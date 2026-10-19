@@ -11,16 +11,20 @@ const execFileAsync = promisify(execFile);
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
+// Top Mobile Ad Networks mapped by their canonical app-ads.txt domains
 const KNOWN_AD_NETWORKS = {
   'google.com': 'Admob',
   'applovin.com': 'AppLovin',
-  'unity3d.com': 'Unity Ads',
-  'unity.com': 'Unity Ads',
+  'supersonicads.com': 'ironSource',
   'ironsrc.com': 'ironSource',
-  'facebook.com': 'Meta',
+  'unity3d.com': 'Unity Ads',
+  'unityads.unity3d.com': 'Unity Ads',
+  'unity.com': 'Unity Ads',
+  'mintegral.com': 'Mintegral',
   'vungle.com': 'Liftoff',
   'liftoff.io': 'Liftoff',
-  'mintegral.com': 'Mintegral',
+  'inmobi.com': 'InMobi',
+  'facebook.com': 'Meta',
   'chartboost.com': 'Chartboost',
   'pangle.cn': 'Pangle',
   'pangleglobal.com': 'Pangle'
@@ -188,18 +192,6 @@ function parsePlayStoreDs5Html(html, packageName = '') {
 
   const subcategories = extractSubcategoriesFromDs5(data, title || packageName, `${shortDescription} ${longDescription}`);
 
-  // Detect whether the Play Store details payload has its primary media/details stream
-  // expanded (155-slot layout with top-level [118]/[136]/[148]) or collapsed into the
-  // secondary [103] container (104-slot layout with [103]['137'] & [103]['149'][0] === 0).
-  const hasCollapsedSecondaryStream =
-    root.length <= 110 &&
-    root[103] != null &&
-    typeof root[103] === 'object' &&
-    !Array.isArray(root[103]) &&
-    root[136] === undefined;
-
-  const inferredCardStatus = hasCollapsedSecondaryStream ? 'closed' : 'open';
-
   return {
     packageName,
     title,
@@ -216,7 +208,6 @@ function parsePlayStoreDs5Html(html, packageName = '') {
     headerImage,
     rating: Number.isFinite(Number(ratingRaw)) ? Number(ratingRaw) : null,
     ratingsCount: Number.isFinite(Number(ratingsCountRaw)) ? Math.trunc(Number(ratingsCountRaw)) : null,
-    inferredCardStatus,
     rawDs5: data
   };
 }
@@ -267,9 +258,10 @@ async function initializePlayTelemetryStorage(pool) {
       ADD COLUMN IF NOT EXISTS rev_confidence TEXT,
       ADD COLUMN IF NOT EXISTS subcategories JSONB DEFAULT '[]'::jsonb,
       ADD COLUMN IF NOT EXISTS release_date DATE,
-      ADD COLUMN IF NOT EXISTS card_status TEXT DEFAULT 'unknown',
+      ADD COLUMN IF NOT EXISTS card_status TEXT DEFAULT 'unscanned',
       ADD COLUMN IF NOT EXISTS ad_networks JSONB DEFAULT '{}'::jsonb,
       ADD COLUMN IF NOT EXISTS ad_networks_all JSONB DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS network_data JSONB DEFAULT '{}'::jsonb,
       ADD COLUMN IF NOT EXISTS developer_name TEXT,
       ADD COLUMN IF NOT EXISTS developer_website TEXT,
       ADD COLUMN IF NOT EXISTS advertiser_legal_name TEXT,
@@ -317,7 +309,6 @@ function computeVelocityMetrics({ todayInstalls, historyRows = [], releaseDate =
     };
   }
 
-  // Sort snapshots ascending by snapshot_date (YYYY-MM-DD)
   const normalized = historyRows
     .map(row => ({
       date: parseDateSafe(row.snapshot_date || row.date),
@@ -338,7 +329,6 @@ function computeVelocityMetrics({ todayInstalls, historyRows = [], releaseDate =
     const yesterdayRow = previousSnapshots[previousSnapshots.length - 1];
     installsDelta1d = Math.max(0, Math.round(realInstalls - yesterdayRow.realInstalls));
 
-    // Find snapshot closest to t-7 (or oldest available within 7 days)
     const target7dDate = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
     const rowAtOrBefore7d = [...previousSnapshots].reverse().find(r => r.date <= target7dDate);
     const anchorRow = rowAtOrBefore7d || previousSnapshots[0];
@@ -349,10 +339,6 @@ function computeVelocityMetrics({ todayInstalls, historyRows = [], releaseDate =
     installsTotal7d = Math.max(0, Math.round(realInstalls - anchorRow.realInstalls));
     installsAvgDaily7d = Math.round(installsTotal7d / elapsedDays);
   } else {
-    // First-day observation: if the app has real_installs above its milestone tier floor,
-    // or a known release_date, estimate velocity from excess installs above the tier floor
-    // or elapsed days since release so newly scanned packages immediately show meaningful velocity
-    // and synthetic 7-day trajectory until multi-day snapshots accumulate.
     const tierFloor = fallbackInstallsTier
       ? Number(String(fallbackInstallsTier).replace(/[^0-9]/g, '')) || 0
       : 0;
@@ -386,7 +372,6 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
   const ds5 = prefetchedDs5 || await fetchPlayStoreDs5(packageName);
   const realInstalls = Number(ds5.realInstalls ?? 0);
 
-  // Fetch up to 30 days of existing snapshots before upserting today
   const { rows: existingHistory } = await pool.query(
     `SELECT snapshot_date::text AS snapshot_date, real_installs, daily_delta
      FROM app_install_history
@@ -396,7 +381,6 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
     [packageName]
   );
 
-  // Also check if games table already has a release_date
   const { rows: existingGameRows } = await pool.query(
     `SELECT id, released, release_date FROM games WHERE package_name = $1 LIMIT 1`,
     [packageName]
@@ -415,7 +399,6 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
     fallbackInstallsTier: ds5.installsTier
   });
 
-  // Upsert today's snapshot into app_install_history
   await pool.query(
     `INSERT INTO app_install_history (package_name, snapshot_date, real_installs, daily_delta)
      VALUES ($1, CURRENT_DATE, $2, $3)
@@ -426,12 +409,8 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
     [packageName, velocity.realInstalls, velocity.installsDelta1d]
   );
 
-  // If this is the very first snapshot for this package and we computed a 7-day velocity,
-  // seed the prior 7 days of baseline points (without overwriting any real dates) so the
-  // sparkline polyline has a 7-14 point series immediately on day 1.
   if (existingHistory.length <= 1 && velocity.installsTotal7d > 0 && velocity.realInstalls > velocity.installsTotal7d) {
     const startInstalls = velocity.realInstalls - velocity.installsTotal7d;
-    // Non-linear realistic 7-day ramp summing to installsTotal7d
     const weights = [0.10, 0.12, 0.13, 0.14, 0.16, 0.16, 0.19];
     let cumulative = startInstalls;
     for (let i = 0; i < 7; i++) {
@@ -449,7 +428,6 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
     }
   }
 
-  // Update the games row if it exists
   await pool.query(
     `UPDATE games
      SET installs_tier = COALESCE($2, installs_tier, installs),
@@ -501,21 +479,54 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
 }
 
 // ============================================================================
-// Step 3: Pipeline 2 — Ad Network Share & Legal Advertiser Unmasker
+// Step 3: Pipeline 2 — Dynamic Ad Network Share & Legal Advertiser Unmasker
 // ============================================================================
+function computeProportionalShareMap(countsByNetwork) {
+  const entries = Object.entries(countsByNetwork || {})
+    .map(([name, count]) => [name, Number(count) || 0])
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1]);
+
+  if (entries.length === 0) return {};
+  if (entries.length === 1) return { [entries[0][0]]: 100 };
+
+  const total = entries.reduce((sum, [, count]) => sum + count, 0);
+  const shareMap = {};
+  let allocated = 0;
+
+  entries.forEach(([name, count], idx) => {
+    if (idx === entries.length - 1) {
+      shareMap[name] = Math.max(1, 100 - allocated);
+    } else {
+      const pct = Math.max(1, Math.round((count / total) * 100));
+      shareMap[name] = pct;
+      allocated += pct;
+    }
+  });
+
+  return shareMap;
+}
+
 function parseAppAdsTxtContent(rawText) {
   if (!rawText || typeof rawText !== 'string') {
     return {
       adNetworks: {},
       adNetworksAll: {},
+      directCounts: {},
+      resellerCounts: {},
       googleDirectPubIds: [],
       allDirectEntries: []
     };
   }
 
   const directEntries = [];
-  const knownNetworkCounts = {};
+  const directKnownCounts = {};
+  const resellerKnownCounts = {};
+  const combinedWeightedCounts = {};
   const googleDirectPubIdSet = new Set();
+
+  // Deduplicate identical (domain, publisherId, relationship) lines
+  const seenTriples = new Set();
 
   for (const rawLine of rawText.split(/\r?\n/)) {
     const withoutComment = rawLine.split('#')[0].trim();
@@ -528,51 +539,47 @@ function parseAppAdsTxtContent(rawText) {
     const relationship = parts[2].toUpperCase();
     const certId = parts[3] || null;
 
-    if (relationship !== 'DIRECT') continue;
+    if (relationship !== 'DIRECT' && relationship !== 'RESELLER') continue;
     if (!domain || !publisherId) continue;
 
-    directEntries.push({ domain, publisherId, relationship, certId });
+    const tripleKey = `${domain}|${publisherId.toLowerCase()}|${relationship}`;
+    if (seenTriples.has(tripleKey)) continue;
+    seenTriples.add(tripleKey);
 
-    if (domain === 'google.com' || domain.endsWith('.google.com')) {
-      googleDirectPubIdSet.add(publisherId);
+    if (relationship === 'DIRECT') {
+      directEntries.push({ domain, publisherId, relationship, certId });
+      if (domain === 'google.com' || domain.endsWith('.google.com')) {
+        googleDirectPubIdSet.add(publisherId);
+      }
     }
 
     const mappedName = KNOWN_AD_NETWORKS[domain];
     if (mappedName) {
-      knownNetworkCounts[mappedName] = (knownNetworkCounts[mappedName] || 0) + 1;
+      if (relationship === 'DIRECT') {
+        directKnownCounts[mappedName] = (directKnownCounts[mappedName] || 0) + 1;
+        combinedWeightedCounts[mappedName] = (combinedWeightedCounts[mappedName] || 0) + 3;
+      } else {
+        resellerKnownCounts[mappedName] = (resellerKnownCounts[mappedName] || 0) + 1;
+        combinedWeightedCounts[mappedName] = (combinedWeightedCounts[mappedName] || 0) + 1;
+      }
     }
   }
 
-  // Compute percentage share across the 9 known mobile ad networks
-  const totalKnown = Object.values(knownNetworkCounts).reduce((sum, c) => sum + c, 0);
-  const adNetworksAll = {};
-  if (totalKnown > 0) {
-    const entries = Object.entries(knownNetworkCounts).sort((a, b) => b[1] - a[1]);
-    let allocated = 0;
-    entries.forEach(([name, count], idx) => {
-      if (idx === entries.length - 1) {
-        adNetworksAll[name] = Math.max(1, 100 - allocated);
-      } else {
-        const pct = Math.max(1, Math.round((count / totalKnown) * 100));
-        adNetworksAll[name] = pct;
-        allocated += pct;
-      }
-    });
-  }
+  // Compute dynamic proportional share across the Top Mobile Ad Networks:
+  // Prefer DIRECT lines among the major mobile ad networks; if none are marked DIRECT,
+  // fall back to DIRECT + RESELLER weighted counts.
+  const hasDirectKnown = Object.keys(directKnownCounts).length > 0;
+  const adNetworks = hasDirectKnown
+    ? computeProportionalShareMap(directKnownCounts)
+    : computeProportionalShareMap(combinedWeightedCounts);
 
-  // Primary ad_networks share:
-  // Many mobile publishers use managed app-ads.txt hosts (like app-ads-txt.com) that bundle
-  // 200+ SSP reseller/mediation entries alongside the studio's primary AdMob publisher account.
-  // When AdMob is the dominant / primary direct network, or in Google/AdMob-primary mode,
-  // expose {"Admob": 100} while preserving the full known-network breakdown in adNetworksAll.
-  let adNetworks = { ...adNetworksAll };
-  if (googleDirectPubIdSet.size > 0) {
-    adNetworks = { Admob: 100 };
-  }
+  const adNetworksAll = computeProportionalShareMap(combinedWeightedCounts);
 
   return {
     adNetworks,
     adNetworksAll,
+    directCounts: directKnownCounts,
+    resellerCounts: resellerKnownCounts,
     googleDirectPubIds: [...googleDirectPubIdSet],
     allDirectEntries: directEntries
   };
@@ -625,12 +632,45 @@ async function fetchAndParseAppAdsTxt(developerWebsite, timeoutMs = 10000) {
   return null;
 }
 
+// Fallback when app-ads.txt is missing or 404: inspect creative domains / video links
+// in ad_video_links + video_assets, or return {} so UI shows "Unknown Network" rather than fake Admob 100%.
+async function inferNetworksFromCreativeLinks(pool, packageName) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT va.source, va.media_url, va.youtube_url, avl.creative_url
+       FROM ad_video_links avl
+       LEFT JOIN video_assets va ON va.id = avl.video_asset_id
+       WHERE avl.package_name = $1
+       LIMIT 50`,
+      [packageName]
+    );
+    if (!rows || rows.length === 0) return {};
+
+    const counts = {};
+    for (const row of rows) {
+      const blob = `${row.source || ''} ${row.media_url || ''} ${row.youtube_url || ''} ${row.creative_url || ''}`.toLowerCase();
+      if (blob.includes('applovin')) counts.AppLovin = (counts.AppLovin || 0) + 1;
+      else if (blob.includes('unity')) counts['Unity Ads'] = (counts['Unity Ads'] || 0) + 1;
+      else if (blob.includes('ironsrc') || blob.includes('supersonic')) counts.ironSource = (counts.ironSource || 0) + 1;
+      else if (blob.includes('vungle') || blob.includes('liftoff')) counts.Liftoff = (counts.Liftoff || 0) + 1;
+      else if (blob.includes('mintegral')) counts.Mintegral = (counts.Mintegral || 0) + 1;
+      else if (blob.includes('inmobi')) counts.InMobi = (counts.InMobi || 0) + 1;
+      else if (blob.includes('facebook') || blob.includes('fbcdn')) counts.Meta = (counts.Meta || 0) + 1;
+      else if (blob.includes('adstransparency.google.com') || blob.includes('googlesyndication') || blob.includes('doubleclick') || blob.includes('youtube')) {
+        counts.Admob = (counts.Admob || 0) + 1;
+      }
+    }
+    return computeProportionalShareMap(counts);
+  } catch {
+    return {};
+  }
+}
+
 // Stream Google's sellers.json dictionary and look up target seller_ids (and cache them in PostgreSQL)
 async function lookupGoogleSellersJson(pool, pubIds = [], options = {}) {
   const cleanIds = [...new Set(pubIds.map(id => String(id || '').trim()).filter(Boolean))];
   if (cleanIds.length === 0) return [];
 
-  // 1. Check PostgreSQL cache first
   const { rows: cachedRows } = await pool.query(
     `SELECT seller_id, name, domain, seller_type, is_confidential, updated_at
      FROM google_sellers_cache
@@ -642,7 +682,6 @@ async function lookupGoogleSellersJson(pool, pubIds = [], options = {}) {
   const cachedById = new Map(cachedRows.map(r => [r.seller_id.toLowerCase(), r]));
   const missingIds = cleanIds.filter(id => !cachedById.has(id.toLowerCase()));
 
-  // 2. If any pub IDs are missing from the 7-day cache, stream Google's sellers.json and index matches
   if (missingIds.length > 0 && options.allowRemoteFetch !== false) {
     const wantSet = new Set(missingIds.map(id => id.toLowerCase()));
     const timeoutMs = Number(options.timeoutMs) || 120000;
@@ -719,12 +758,10 @@ async function lookupGoogleSellersJson(pool, pubIds = [], options = {}) {
   return cleanIds.map(id => cachedById.get(id.toLowerCase())).filter(Boolean);
 }
 
-// Select the real studio entity from sellers.json matches (filtering out SSP aggregators)
 function selectPrimaryStudioSeller(sellers = [], developerName = '') {
   const valid = sellers.filter(s => s && !s.is_confidential && s.name && s.name.trim());
   if (valid.length === 0) return null;
 
-  // Prefer PUBLISHER-only records that are not known SSP aggregators
   const nonAggregatorPublishers = valid.filter(s => {
     const dom = String(s.domain || '').toLowerCase();
     if (dom && KNOWN_SSP_AGGREGATOR_DOMAINS.has(dom)) return false;
@@ -732,7 +769,6 @@ function selectPrimaryStudioSeller(sellers = [], developerName = '') {
   });
 
   if (nonAggregatorPublishers.length > 0) {
-    // Prefer one matching developerName or having no third-party SSP domain
     const devLower = String(developerName || '').toLowerCase();
     const exactMatch = nonAggregatorPublishers.find(s => devLower && s.name.toLowerCase().includes(devLower));
     if (exactMatch) return exactMatch;
@@ -744,7 +780,6 @@ function selectPrimaryStudioSeller(sellers = [], developerName = '') {
   return nonAggregators[0] || valid[0];
 }
 
-// Method B: Google Ads Transparency Center RPC SearchSuggestions lookup
 async function queryAdsTransparencySuggestions(queryText, timeoutMs = 8000) {
   const cleanQuery = String(queryText || '').trim();
   if (!cleanQuery) return null;
@@ -786,7 +821,6 @@ async function queryAdsTransparencySuggestions(queryText, timeoutMs = 8000) {
 }
 
 async function resolveAdvertiserLegalName(pool, { packageName, developerName, googleDirectPubIds = [] }) {
-  // Step 3.2 Method A: sellers.json lookup
   let candidateFromSellers = null;
   if (googleDirectPubIds.length > 0) {
     const sellers = await lookupGoogleSellersJson(pool, googleDirectPubIds);
@@ -796,10 +830,6 @@ async function resolveAdvertiserLegalName(pool, { packageName, developerName, go
     }
   }
 
-  // Step 3.2 Method B: Google Ads Transparency Center SearchSuggestions RPC
-  // Query with package_name first (per spec), then verify/canonicalize with sellers.json name or developerName
-  // so e.g. "The Game Storm Studios Pvt Ltd" resolves to its official Google Ads Transparency legal entity
-  // "THE GAME STORM STUDIOS (PVT.) LIMITED".
   const rpcQueries = [
     packageName,
     candidateFromSellers,
@@ -818,7 +848,6 @@ async function resolveAdvertiserLegalName(pool, { packageName, developerName, go
     return candidateFromSellers.toUpperCase();
   }
 
-  // Fallback: check if Atlas already linked this game to a competitor in the DB
   if (packageName) {
     const { rows } = await pool.query(
       `SELECT c.name
@@ -840,14 +869,35 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
   let developerWebsite = options.developerWebsite || null;
   let developerName = options.developerName || null;
 
-  if (!developerWebsite || !developerName) {
-    const { rows } = await pool.query(
-      `SELECT developer_website, developer_name FROM games WHERE package_name = $1 LIMIT 1`,
-      [packageName]
-    );
-    developerWebsite = developerWebsite || rows[0]?.developer_website || null;
-    developerName = developerName || rows[0]?.developer_name || null;
+  const { rows: existingRows } = await pool.query(
+    `SELECT developer_website, developer_name, ad_networks, ad_networks_all, network_data, advertiser_legal_name, networks_scanned_at
+     FROM games WHERE package_name = $1 LIMIT 1`,
+    [packageName]
+  );
+  const existing = existingRows[0] || {};
+
+  // Use 7-day cached network_data unless forceRefresh is requested
+  if (
+    !options.forceRefresh &&
+    existing.networks_scanned_at &&
+    existing.network_data &&
+    typeof existing.network_data === 'object' &&
+    existing.network_data.verified === true &&
+    Date.now() - new Date(existing.networks_scanned_at).getTime() < 7 * 86400000
+  ) {
+    return {
+      adNetworks: existing.ad_networks || {},
+      adNetworksAll: existing.ad_networks_all || {},
+      networkData: existing.network_data,
+      advertiserLegalName: existing.advertiser_legal_name || null,
+      developerName: existing.developer_name || developerName,
+      developerWebsite: existing.developer_website || developerWebsite,
+      cached: true
+    };
   }
+
+  developerWebsite = developerWebsite || existing.developer_website || null;
+  developerName = developerName || existing.developer_name || null;
 
   if (!developerWebsite) {
     try {
@@ -858,9 +908,20 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
   }
 
   const adsTxtResult = await fetchAndParseAppAdsTxt(developerWebsite);
-  const adNetworks = adsTxtResult?.adNetworks || {};
-  const adNetworksAll = adsTxtResult?.adNetworksAll || {};
+  let adNetworks = adsTxtResult?.adNetworks || {};
+  let adNetworksAll = adsTxtResult?.adNetworksAll || {};
   const googleDirectPubIds = adsTxtResult?.googleDirectPubIds || [];
+  let sourceType = adsTxtResult ? 'app-ads.txt' : 'unverified';
+
+  // If app-ads.txt could not be fetched or had no major networks, fall back to creative domain inspection
+  if (Object.keys(adNetworks).length === 0) {
+    const inferred = await inferNetworksFromCreativeLinks(pool, packageName);
+    if (Object.keys(inferred).length > 0) {
+      adNetworks = inferred;
+      adNetworksAll = inferred;
+      sourceType = 'creative_domain_inspection';
+    }
+  }
 
   const advertiserLegalName = await resolveAdvertiserLegalName(pool, {
     packageName,
@@ -868,19 +929,32 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
     googleDirectPubIds
   });
 
+  const networkData = {
+    verified: Object.keys(adNetworks).length > 0,
+    source: sourceType,
+    appAdsUrl: adsTxtResult?.sourceUrl || null,
+    directCounts: adsTxtResult?.directCounts || {},
+    resellerCounts: adsTxtResult?.resellerCounts || {},
+    adNetworks,
+    adNetworksAll,
+    scannedAt: new Date().toISOString()
+  };
+
   await pool.query(
     `UPDATE games
-     SET ad_networks = CASE WHEN $2::jsonb <> '{}'::jsonb THEN $2::jsonb ELSE COALESCE(ad_networks, '{}'::jsonb) END,
-         ad_networks_all = CASE WHEN $3::jsonb <> '{}'::jsonb THEN $3::jsonb ELSE COALESCE(ad_networks_all, '{}'::jsonb) END,
-         advertiser_legal_name = COALESCE($4, advertiser_legal_name),
-         developer_name = COALESCE($5, developer_name),
-         developer_website = COALESCE($6, developer_website),
+     SET ad_networks = $2::jsonb,
+         ad_networks_all = $3::jsonb,
+         network_data = $4::jsonb,
+         advertiser_legal_name = COALESCE($5, advertiser_legal_name),
+         developer_name = COALESCE($6, developer_name),
+         developer_website = COALESCE($7, developer_website),
          networks_scanned_at = now()
      WHERE package_name = $1`,
     [
       packageName,
       JSON.stringify(adNetworks),
       JSON.stringify(adNetworksAll),
+      JSON.stringify(networkData),
       advertiserLegalName,
       developerName,
       developerWebsite
@@ -890,6 +964,7 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
   return {
     adNetworks,
     adNetworksAll,
+    networkData,
     advertiserLegalName,
     developerName,
     developerWebsite,
@@ -899,133 +974,100 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
 }
 
 // ============================================================================
-// Step 4: Pipeline 3 — Mobile Play Store "Card Closed vs. Card Open" Scanner
+// Step 4: Pipeline 3 — Live Ad-Signal Card Status ('active' | 'closed' | 'unscanned')
 // ============================================================================
+function evaluateCardStatusFromAdSignals({
+  latestCreativeSeen = null,
+  totalCreatives = 0,
+  adCount = null,
+  hasCompetitorLink = false,
+  nowMs = Date.now()
+}) {
+  const FOURTEEN_DAYS_MS = 14 * 86400000;
+  const parsedLatest = latestCreativeSeen ? new Date(latestCreativeSeen) : null;
+  const hasValidLatest = parsedLatest && !Number.isNaN(parsedLatest.getTime());
 
-// Method 4.1: Google Play Internal fdfe Protobuf API (when burner gsfId + authSubToken are configured)
-async function checkCardStatusViaFdfeProtobuf(packageName) {
-  const gsfId = String(process.env.ATLAS_GOOGLE_GSF_ID || '').trim();
-  const authSubToken = String(process.env.ATLAS_GOOGLE_AUTH_SUB_TOKEN || '').trim();
-  if (!gsfId || !authSubToken) return null;
-
-  const url = `https://android.clients.google.com/fdfe/details?doc=${encodeURIComponent(packageName)}`;
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(10000),
-    headers: {
-      'Authorization': `GoogleLogin auth=${authSubToken}`,
-      'X-DFE-Device-Id': gsfId,
-      'X-DFE-Client-Id': 'am-android-google',
-      'X-DFE-SmallestScreenWidthDp': '411',
-      'X-DFE-Filter-Level': '3',
-      'Accept-Language': 'en-US',
-      'User-Agent': 'Android-Finsky/41.2.29-31 (api=3,versionCode=84122900,sdk=34,device=husky,hardware=husky,product=husky,platformVersionRelease=14,model=Pixel%208%20Pro,buildId=UQ1A.240205.004,isWideScreen=0)'
+  if (hasValidLatest) {
+    const ageMs = nowMs - parsedLatest.getTime();
+    if (ageMs <= FOURTEEN_DAYS_MS) {
+      return {
+        cardStatus: 'active',
+        cardScannedAt: parsedLatest.toISOString(),
+        reason: 'creative_seen_within_14d'
+      };
     }
+    return {
+      cardStatus: 'closed',
+      cardScannedAt: parsedLatest.toISOString(),
+      reason: 'creative_older_than_14d'
+    };
+  }
+
+  const numericAdCount = Number(adCount);
+  if (Number.isFinite(numericAdCount) && numericAdCount > 0) {
+    return {
+      cardStatus: 'active',
+      cardScannedAt: new Date(nowMs).toISOString(),
+      reason: 'active_ad_count'
+    };
+  }
+
+  if (hasCompetitorLink && Number.isFinite(numericAdCount) && numericAdCount === 0) {
+    return {
+      cardStatus: 'closed',
+      cardScannedAt: new Date(nowMs).toISOString(),
+      reason: 'competitor_scan_zero_creatives'
+    };
+  }
+
+  return {
+    cardStatus: 'unscanned',
+    cardScannedAt: null,
+    reason: 'no_ad_scan_history'
+  };
+}
+
+async function runCardStatusPipeline(pool, packageName) {
+  const { rows: gameRows } = await pool.query(
+    `SELECT g.id, g.ad_count,
+            EXISTS(SELECT 1 FROM account_games ag WHERE ag.game_id = g.id) AS has_competitor_link
+     FROM games g
+     WHERE g.package_name = $1
+     LIMIT 1`,
+    [packageName]
+  );
+  const game = gameRows[0] || null;
+  const gameId = game?.id || null;
+
+  const { rows: creativeRows } = await pool.query(
+    `SELECT MAX(last_seen_at) AS latest_creative_seen, COUNT(*)::int AS total_creatives
+     FROM ad_creatives
+     WHERE package_name = $1 OR ($2::int IS NOT NULL AND game_id = $2::int)`,
+    [packageName, gameId]
+  );
+
+  const latestCreativeSeen = creativeRows[0]?.latest_creative_seen || null;
+  const totalCreatives = Number(creativeRows[0]?.total_creatives || 0);
+
+  const evaluated = evaluateCardStatusFromAdSignals({
+    latestCreativeSeen,
+    totalCreatives,
+    adCount: game?.ad_count ?? null,
+    hasCompetitorLink: Boolean(game?.has_competitor_link)
   });
-
-  if (!response.ok) {
-    throw new Error(`fdfe/details returned HTTP ${response.status}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const ascii = buffer.toString('latin1');
-  // Inspect decoded stream markers for inline screenshot gallery vs collapsed "About this game" stream
-  const hasScreenshotGalleryCluster =
-    ascii.includes('play-lh.googleusercontent.com') &&
-    (ascii.includes('Screenshot') || ascii.includes('sectionImage') || ascii.includes('screenshots'));
-
-  return {
-    cardStatus: hasScreenshotGalleryCluster ? 'open' : 'closed',
-    method: 'fdfe_protobuf'
-  };
-}
-
-// Method 4.2: Headless Android Emulator + ADB uiautomator dump (when ADB / docker-android is available)
-async function checkCardStatusViaAdbUiautomator(packageName) {
-  const adbPath = String(process.env.ATLAS_ADB_PATH || '').trim();
-  const adbSerial = String(process.env.ATLAS_ADB_SERIAL || '').trim();
-  if (!adbPath && process.env.ATLAS_ENABLE_ADB_CARD_SCANNER !== 'true') {
-    return null;
-  }
-
-  const bin = adbPath || 'adb';
-  const baseArgs = adbSerial ? ['-s', adbSerial] : [];
-  const tmpFile = path.join(os.tmpdir(), `${packageName.replace(/[^a-zA-Z0-9._-]/g, '_')}_view.xml`);
-
-  await execFileAsync(bin, [
-    ...baseArgs,
-    'shell', 'am', 'start',
-    '-a', 'android.intent.action.VIEW',
-    '-d', `market://details?id=${packageName}`,
-    'com.android.vending'
-  ], { timeout: 10000 });
-
-  await new Promise(resolve => setTimeout(resolve, 4000));
-
-  await execFileAsync(bin, [...baseArgs, 'shell', 'uiautomator', 'dump', '/sdcard/view.xml'], { timeout: 10000 });
-  await execFileAsync(bin, [...baseArgs, 'pull', '/sdcard/view.xml', tmpFile], { timeout: 10000 });
-
-  const xml = fs.readFileSync(tmpFile, 'utf8');
-  try { fs.unlinkSync(tmpFile); } catch {}
-
-  const hasVisibleScreenshots =
-    /(HorizontalScrollView|RecyclerView)[\s\S]*?content-desc="[^"]*Screenshot/i.test(xml) ||
-    /class="android\.widget\.ImageView"[^>]*content-desc="[^"]*Screenshot/i.test(xml);
-  const hasAboutThisGameAboveFold = /text="(About this game|About this app|See details)"/i.test(xml);
-
-  if (!hasVisibleScreenshots && hasAboutThisGameAboveFold) {
-    return { cardStatus: 'closed', method: 'adb_uiautomator' };
-  }
-  if (hasVisibleScreenshots) {
-    return { cardStatus: 'open', method: 'adb_uiautomator' };
-  }
-  return { cardStatus: 'unknown', method: 'adb_uiautomator' };
-}
-
-// Method 4.3: Zero-Config Mobile Play Store Layout Stream Analyzer
-async function checkCardStatusViaMobileStream(packageName, prefetchedDs5 = null) {
-  const ds5 = prefetchedDs5 || await fetchPlayStoreDs5(packageName, { userAgent: MOBILE_UA });
-  return {
-    cardStatus: ds5.inferredCardStatus || 'unknown',
-    method: 'mobile_stream_analyzer'
-  };
-}
-
-async function runCardStatusPipeline(pool, packageName, prefetchedDs5 = null) {
-  let result = null;
-
-  try {
-    result = await checkCardStatusViaFdfeProtobuf(packageName);
-  } catch (err) {
-    console.warn(`[PlayTelemetry] fdfe protobuf card check failed for ${packageName}:`, err.message);
-  }
-
-  if (!result) {
-    try {
-      result = await checkCardStatusViaAdbUiautomator(packageName);
-    } catch (err) {
-      console.warn(`[PlayTelemetry] ADB uiautomator card check failed for ${packageName}:`, err.message);
-    }
-  }
-
-  if (!result) {
-    result = await checkCardStatusViaMobileStream(packageName, prefetchedDs5);
-  }
-
-  const cardStatus = ['open', 'closed', 'unknown'].includes(result?.cardStatus)
-    ? result.cardStatus
-    : 'unknown';
 
   await pool.query(
     `UPDATE games
      SET card_status = $2,
-         card_scanned_at = now()
+         card_scanned_at = COALESCE($3::timestamptz, card_scanned_at)
      WHERE package_name = $1`,
-    [packageName, cardStatus]
+    [packageName, evaluated.cardStatus, evaluated.cardScannedAt]
   );
 
   return {
-    cardStatus,
-    method: result?.method || 'unknown'
+    ...evaluated,
+    latestCreativeSeen: latestCreativeSeen ? new Date(latestCreativeSeen).toISOString() : null,
+    totalCreatives
   };
 }
 
@@ -1095,7 +1137,6 @@ function computeEngagementAndRevenue({
 
   const d1Frac = Math.max(0.01, Math.min(0.95, retentionD1 / 100));
   const d7Frac = Math.max(0.002, Math.min(d1Frac, retentionD7 / 100));
-  // R(d) = D1 * d^(-b) where R(7) = D7 => b = ln(D1 / D7) / ln(7)
   const b = Math.log(d1Frac / d7Frac) / Math.log(7);
   const retentionAtDay = (d) => {
     if (d <= 0) return 1.0;
@@ -1107,9 +1148,6 @@ function computeEngagementAndRevenue({
   if (panelData && Number.isFinite(panelData.estimatedDau)) {
     estimatedDau = Math.round(panelData.estimatedDau);
   } else {
-    // Build a 31-day daily_delta array (d = 0..30).
-    // When fewer than 30 days of historical snapshots exist, project the steady-state daily install cohort
-    // from observed snapshots / cumulative installs so the decaying cohort sum reflects active users.
     const sorted = [...(historyRows || [])]
       .map(r => ({
         date: parseDateSafe(r.snapshot_date || r.date),
@@ -1136,11 +1174,6 @@ function computeEngagementAndRevenue({
     estimatedDau = Math.max(10, Math.round(cohortSum / 100) * 100);
   }
 
-  // Confidence scoring (rev_confidence):
-  // Flag 'low' whenever:
-  //   1) installs_delta_1d > estimated_dau, OR
-  //   2) released fewer than 30 days ago, OR
-  //   3) heuristic fallback was used
   let releasedWithin30Days = false;
   const parsedRelease = parseDateSafe(releaseDate);
   if (parsedRelease) {
@@ -1155,9 +1188,6 @@ function computeEngagementAndRevenue({
     revConfidence = 'medium';
   }
 
-  // Monthly Steady-State Ad Revenue (SS rev) Formula:
-  // rev_monthly_min = round(estimated_dau * 30 * (avg_session_minutes / 10) * 0.00042)
-  // rev_monthly_max = round(estimated_dau * 30 * (avg_session_minutes / 10) * 0.00377)
   const sessionScale = avgSessionMinutes / 10;
   const revMonthlyMin = Math.round(estimatedDau * 30 * sessionScale * 0.00042);
   const revMonthlyMax = Math.round(estimatedDau * 30 * sessionScale * 0.00377);
@@ -1281,36 +1311,46 @@ async function runFullTelemetryForPackage(pool, packageName, options = {}) {
   const pkg = String(packageName || '').trim();
   if (!pkg) throw new Error('package_name is required');
 
-  const ds5 = await fetchPlayStoreDs5(pkg);
+  let ds5 = null;
+  try {
+    ds5 = await fetchPlayStoreDs5(pkg);
+  } catch (err) {
+    console.warn(`[PlayTelemetry] Play Store ds:5 fetch warning for ${pkg}: ${err.message}`);
+  }
+
   await ensureGameRowForTelemetry(pool, pkg, ds5);
 
-  // Pipeline 1: Exact installs & velocity
-  const p1 = await runInstallVelocityPipeline(pool, pkg, ds5);
+  let p1 = null;
+  if (ds5) {
+    p1 = await runInstallVelocityPipeline(pool, pkg, ds5);
+  }
 
-  // Pipeline 2 & Pipeline 3 can run concurrently
   const [p2, p3] = await Promise.all([
     options.skipNetworks
       ? Promise.resolve(null)
       : runNetworkAdvertiserPipeline(pool, pkg, {
-          developerWebsite: ds5.developerWebsite,
-          developerName: ds5.developerName
+          developerWebsite: ds5?.developerWebsite || null,
+          developerName: ds5?.developerName || null,
+          forceRefresh: Boolean(options.forceRefresh)
         }),
     options.skipCard
       ? Promise.resolve(null)
-      : runCardStatusPipeline(pool, pkg, ds5)
+      : runCardStatusPipeline(pool, pkg)
   ]);
 
-  // Pipeline 4: Engagement & SS rev estimator
   const p4 = await runEngagementRevenuePipeline(pool, pkg, {
-    subcategories: ds5.subcategories,
-    realInstalls: p1.velocity.realInstalls,
-    installsDelta1d: p1.velocity.installsDelta1d,
-    installsAvgDaily7d: p1.velocity.installsAvgDaily7d,
-    releaseDate: p1.releaseDate
+    subcategories: ds5?.subcategories,
+    realInstalls: p1?.velocity?.realInstalls,
+    installsDelta1d: p1?.velocity?.installsDelta1d,
+    installsAvgDaily7d: p1?.velocity?.installsAvgDaily7d,
+    releaseDate: p1?.releaseDate
   });
 
   const { rows } = await pool.query(
     `SELECT g.*,
+            (SELECT MAX(ac.last_seen_at)
+             FROM ad_creatives ac
+             WHERE ac.package_name = g.package_name OR ac.game_id = g.id) AS latest_creative_seen,
             COALESCE(
               (SELECT json_agg(
                  json_build_object(
@@ -1363,11 +1403,9 @@ function startTelemetryBackgroundWorkers(pool) {
     { concurrency: 2, maxPending: 200 }
   );
 
-  // Periodic background sweep for stale packages (runs every 6 hours, checks up to 10 games per tick)
   const sweepIntervalMs = 6 * 60 * 60 * 1000;
   const timer = setInterval(async () => {
     try {
-      // Priority 1: games missing telemetry or with installs_scanned_at older than 24h
       const { rows: dueInstalls } = await pool.query(
         `SELECT package_name
          FROM games
@@ -1380,16 +1418,15 @@ function startTelemetryBackgroundWorkers(pool) {
         void telemetryQueue.enqueue({ packageName: row.package_name });
       }
 
-      // Priority 2: card_status_scanner priority queue (prioritize installs_delta_1d > 1000 or newly added)
       const { rows: dueCards } = await pool.query(
         `SELECT package_name
          FROM games
          WHERE COALESCE(is_suspended, false) = false
-           AND (card_scanned_at IS NULL OR card_scanned_at < now() - INTERVAL '7 days')
+           AND (card_scanned_at IS NULL OR card_scanned_at < now() - INTERVAL '24 hours')
          ORDER BY (CASE WHEN COALESCE(installs_delta_1d, 0) > 1000 THEN 0 ELSE 1 END),
                   COALESCE(installs_delta_1d, 0) DESC,
                   id DESC
-         LIMIT 5`
+         LIMIT 10`
       );
       for (const row of dueCards) {
         void cardQueue.enqueue({ packageName: row.package_name });
@@ -1407,15 +1444,20 @@ function startTelemetryBackgroundWorkers(pool) {
 function registerPlayTelemetryRoutes({ app, pool }) {
   const workers = startTelemetryBackgroundWorkers(pool);
 
-  // Get full telemetry + 14-day sparkline history for a package
   app.get('/api/telemetry/:packageName', async (req, res) => {
     try {
       res.set('Cache-Control', 'no-store');
       const pkg = String(req.params.packageName || '').trim();
       if (!pkg) return res.status(400).json({ error: 'packageName is required' });
 
+      // Always refresh live ad-signal card status quickly from ad_creatives
+      await runCardStatusPipeline(pool, pkg).catch(() => {});
+
       const { rows } = await pool.query(
         `SELECT g.*,
+                (SELECT MAX(ac.last_seen_at)
+                 FROM ad_creatives ac
+                 WHERE ac.package_name = g.package_name OR ac.game_id = g.id) AS latest_creative_seen,
                 COALESCE(
                   (SELECT json_agg(
                      json_build_object(
@@ -1439,12 +1481,18 @@ function registerPlayTelemetryRoutes({ app, pool }) {
         [pkg]
       );
 
-      if (rows.length > 0 && rows[0].real_installs != null && rows[0].store_scanned_at) {
+      if (
+        rows.length > 0 &&
+        rows[0].real_installs != null &&
+        rows[0].store_scanned_at &&
+        rows[0].network_data &&
+        typeof rows[0].network_data === 'object' &&
+        rows[0].network_data.scannedAt
+      ) {
         return res.json(rows[0]);
       }
 
-      // If telemetry hasn't been captured yet for this package, capture it live on demand
-      const result = await runFullTelemetryForPackage(pool, pkg);
+      const result = await runFullTelemetryForPackage(pool, pkg, { forceRefresh: true });
       return res.json(result.game);
     } catch (error) {
       console.error('[PlayTelemetry] GET /api/telemetry error:', error.message);
@@ -1452,14 +1500,16 @@ function registerPlayTelemetryRoutes({ app, pool }) {
     }
   });
 
-  // Trigger a fresh telemetry scan for a package (all 4 pipelines)
   app.post('/api/telemetry/:packageName/scan', async (req, res) => {
     try {
       res.set('Cache-Control', 'no-store');
       const pkg = String(req.params.packageName || '').trim();
       if (!pkg) return res.status(400).json({ error: 'packageName is required' });
 
-      const result = await runFullTelemetryForPackage(pool, pkg, req.body || {});
+      const result = await runFullTelemetryForPackage(pool, pkg, {
+        ...(req.body || {}),
+        forceRefresh: true
+      });
       return res.json(result);
     } catch (error) {
       console.error('[PlayTelemetry] POST /api/telemetry/scan error:', error.message);
@@ -1478,13 +1528,16 @@ module.exports = {
   fetchPlayStoreDs5,
   computeVelocityMetrics,
   runInstallVelocityPipeline,
+  computeProportionalShareMap,
   parseAppAdsTxtContent,
   fetchAndParseAppAdsTxt,
+  inferNetworksFromCreativeLinks,
   lookupGoogleSellersJson,
   selectPrimaryStudioSeller,
   queryAdsTransparencySuggestions,
   resolveAdvertiserLegalName,
   runNetworkAdvertiserPipeline,
+  evaluateCardStatusFromAdSignals,
   runCardStatusPipeline,
   EngagementDataProvider,
   computeEngagementAndRevenue,

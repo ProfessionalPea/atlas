@@ -1447,6 +1447,20 @@ app.get("/api/trending", async (_req, res) => {
   try { 
     const { rows } = await pool.query(`
       SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name,
+             creative_meta.latest_creative_seen,
+             creative_meta.total_creatives,
+             CASE
+               WHEN creative_meta.latest_creative_seen IS NOT NULL
+                AND creative_meta.latest_creative_seen >= (NOW() - INTERVAL '14 days') THEN 'active'
+               WHEN COALESCE(g.ad_count, 0) > 0
+                AND creative_meta.latest_creative_seen IS NULL THEN 'active'
+               WHEN creative_meta.latest_creative_seen IS NOT NULL
+                AND creative_meta.latest_creative_seen < (NOW() - INTERVAL '14 days') THEN 'closed'
+               WHEN g.card_status IN ('active', 'open') THEN 'active'
+               WHEN g.card_status = 'closed' AND COALESCE(g.ad_count, 0) = 0 AND ag.account_id IS NOT NULL THEN 'closed'
+               WHEN ag.account_id IS NOT NULL AND COALESCE(g.ad_count, 0) = 0 THEN 'closed'
+               ELSE 'unscanned'
+             END AS card_status,
              COALESCE(
                (SELECT json_agg(
                   json_build_object(
@@ -1468,6 +1482,12 @@ app.get("/api/trending", async (_req, res) => {
       LEFT JOIN account_games ag ON g.id = ag.game_id
       LEFT JOIN accounts a ON ag.account_id = a.id
       LEFT JOIN competitors c ON a.competitor_id = c.id
+      LEFT JOIN LATERAL (
+        SELECT MAX(ac.last_seen_at) AS latest_creative_seen,
+               COUNT(*)::int AS total_creatives
+        FROM ad_creatives ac
+        WHERE ac.package_name = g.package_name OR ac.game_id = g.id
+      ) creative_meta ON TRUE
       ORDER BY g.ad_count DESC
     `);
     res.json(rows);
@@ -1997,18 +2017,6 @@ app.post("/api/scan", async (req, res) => {
             [accountId, gameId]
           );
 
-          // Capture Play Store ds:5 exact installs, velocity, app-ads.txt networks,
-          // advertiser legal identity, card status, and DAU/SS rev estimates.
-          try {
-            await runWithTimeout(
-              () => runFullTelemetryForPackage(pool, pkg),
-              25000,
-              `Play Store telemetry for ${pkg}`
-            );
-          } catch (telemetryErr) {
-            console.warn(`Play telemetry warning for ${pkg}:`, telemetryErr.message);
-          }
-
           // Batch creative writes to avoid one remote database round-trip per ad ID.
           try {
             await pool.query(
@@ -2051,6 +2059,19 @@ app.post("/api/scan", async (req, res) => {
              DO UPDATE SET ad_count = ad_history.ad_count + EXCLUDED.ad_count`,
             [gameId, newAdCount]
           );
+
+          // Capture Play Store ds:5 exact installs, velocity, app-ads.txt networks,
+          // advertiser legal identity, live card status (now with fresh ad_creatives),
+          // and DAU/SS rev estimates.
+          try {
+            await runWithTimeout(
+              () => runFullTelemetryForPackage(pool, pkg),
+              25000,
+              `Play Store telemetry for ${pkg}`
+            );
+          } catch (telemetryErr) {
+            console.warn(`Play telemetry warning for ${pkg}:`, telemetryErr.message);
+          }
 
           // The report must use THIS scan's count, not the lifetime counter.
           isolatedScanData.push({
@@ -2213,6 +2234,20 @@ app.get("/api/competitors", async (_req, res) => {
       pool.query("SELECT * FROM accounts"),
       pool.query(`
         SELECT ag.account_id, g.*,
+               creative_meta.latest_creative_seen,
+               creative_meta.total_creatives,
+               CASE
+                 WHEN creative_meta.latest_creative_seen IS NOT NULL
+                  AND creative_meta.latest_creative_seen >= (NOW() - INTERVAL '14 days') THEN 'active'
+                 WHEN COALESCE(g.ad_count, 0) > 0
+                  AND creative_meta.latest_creative_seen IS NULL THEN 'active'
+                 WHEN creative_meta.latest_creative_seen IS NOT NULL
+                  AND creative_meta.latest_creative_seen < (NOW() - INTERVAL '14 days') THEN 'closed'
+                 WHEN g.card_status IN ('active', 'open') THEN 'active'
+                 WHEN g.card_status = 'closed' AND COALESCE(g.ad_count, 0) = 0 AND ag.account_id IS NOT NULL THEN 'closed'
+                 WHEN ag.account_id IS NOT NULL AND COALESCE(g.ad_count, 0) = 0 THEN 'closed'
+                 ELSE 'unscanned'
+               END AS card_status,
                COALESCE(
                  (SELECT json_agg(
                     json_build_object(
@@ -2232,6 +2267,12 @@ app.get("/api/competitors", async (_req, res) => {
                ) AS install_history
         FROM account_games ag 
         JOIN games g ON ag.game_id = g.id
+        LEFT JOIN LATERAL (
+          SELECT MAX(ac.last_seen_at) AS latest_creative_seen,
+                 COUNT(*)::int AS total_creatives
+          FROM ad_creatives ac
+          WHERE ac.package_name = g.package_name OR ac.game_id = g.id
+        ) creative_meta ON TRUE
       `)
     ]);
 

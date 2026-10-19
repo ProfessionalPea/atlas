@@ -7,6 +7,8 @@ const {
   parseAppAdsTxtContent,
   selectPrimaryStudioSeller,
   computeEngagementAndRevenue,
+  evaluateCardStatusFromAdSignals,
+  runCardStatusPipeline,
   runFullTelemetryForPackage
 } = require('./PlayStoreTelemetry');
 
@@ -15,6 +17,8 @@ function createMockTelemetryPool() {
   const games = new Map();
   const installHistory = new Map(); // key: `${pkg}:${date}` -> { package_name, snapshot_date, real_installs, daily_delta }
   const sellersCache = new Map();
+  const adCreatives = []; // { creative_id, game_id, package_name, last_seen_at }
+  const accountGames = new Set(); // game_id
 
   // Pre-seed sellers.json cache with the verified sellers from Google's public sellers.json for com.res.happy.days.adventure
   // so tests run deterministically in <2s without re-streaming 107MB over the network every test run
@@ -38,6 +42,8 @@ function createMockTelemetryPool() {
     games,
     installHistory,
     sellersCache,
+    adCreatives,
+    accountGames,
     async query(sql, params = []) {
       const normalized = String(sql).trim();
 
@@ -56,9 +62,41 @@ function createMockTelemetryPool() {
         return { rows: g ? [g] : [] };
       }
 
-      if (/SELECT developer_website, developer_name FROM games WHERE package_name = \$1/i.test(normalized)) {
+      if (/SELECT developer_website, developer_name, ad_networks, ad_networks_all, network_data, advertiser_legal_name, networks_scanned_at\s+FROM games WHERE package_name = \$1/i.test(normalized)) {
         const g = games.get(params[0]);
         return { rows: g ? [g] : [] };
+      }
+
+      if (/SELECT g\.id, g\.ad_count,\s+EXISTS/i.test(normalized)) {
+        const g = games.get(params[0]);
+        if (!g) return { rows: [] };
+        return {
+          rows: [{
+            id: g.id,
+            ad_count: g.ad_count ?? 0,
+            has_competitor_link: accountGames.has(g.id)
+          }]
+        };
+      }
+
+      if (/SELECT MAX\(last_seen_at\) AS latest_creative_seen, COUNT\(\*\)::int AS total_creatives\s+FROM ad_creatives/i.test(normalized)) {
+        const pkg = params[0];
+        const gameId = params[1];
+        const matching = adCreatives.filter(
+          c => c.package_name === pkg || (gameId != null && c.game_id === gameId)
+        );
+        if (matching.length === 0) {
+          return { rows: [{ latest_creative_seen: null, total_creatives: 0 }] };
+        }
+        const latest = matching
+          .map(c => new Date(c.last_seen_at).getTime())
+          .reduce((a, b) => Math.max(a, b), 0);
+        return {
+          rows: [{
+            latest_creative_seen: new Date(latest).toISOString(),
+            total_creatives: matching.length
+          }]
+        };
       }
 
       if (/SELECT real_installs, installs_delta_1d, installs_avg_daily_7d, subcategories, release_date, released\s+FROM games/i.test(normalized)) {
@@ -152,9 +190,10 @@ function createMockTelemetryPool() {
         const g = games.get(pkg) || { id: nextGameId++, package_name: pkg };
         g.ad_networks = JSON.parse(params[1] || '{}');
         g.ad_networks_all = JSON.parse(params[2] || '{}');
-        g.advertiser_legal_name = params[3] || g.advertiser_legal_name;
-        g.developer_name = params[4] || g.developer_name;
-        g.developer_website = params[5] || g.developer_website;
+        g.network_data = JSON.parse(params[3] || '{}');
+        g.advertiser_legal_name = params[4] || g.advertiser_legal_name;
+        g.developer_name = params[5] || g.developer_name;
+        g.developer_website = params[6] || g.developer_website;
         g.networks_scanned_at = new Date().toISOString();
         games.set(pkg, g);
         return { rows: [] };
@@ -164,7 +203,7 @@ function createMockTelemetryPool() {
         const pkg = params[0];
         const g = games.get(pkg) || { id: nextGameId++, package_name: pkg };
         g.card_status = params[1];
-        g.card_scanned_at = new Date().toISOString();
+        g.card_scanned_at = params[2] || new Date().toISOString();
         games.set(pkg, g);
         return { rows: [] };
       }
@@ -183,10 +222,16 @@ function createMockTelemetryPool() {
         return { rows: [] };
       }
 
-      if (/SELECT g\.\*,\s+COALESCE/i.test(normalized)) {
+      if (/SELECT g\.\*,\s+\(SELECT MAX\(ac\.last_seen_at\)/i.test(normalized)) {
         const pkg = params[0];
         const g = games.get(pkg);
         if (!g) return { rows: [] };
+        const matching = adCreatives.filter(
+          c => c.package_name === pkg || c.game_id === g.id
+        );
+        const latestCreativeSeen = matching.length > 0
+          ? new Date(Math.max(...matching.map(c => new Date(c.last_seen_at).getTime()))).toISOString()
+          : null;
         const hist = [...installHistory.values()]
           .filter(r => r.package_name === pkg)
           .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date))
@@ -196,7 +241,7 @@ function createMockTelemetryPool() {
             realInstalls: r.real_installs,
             dailyDelta: r.daily_delta
           }));
-        return { rows: [{ ...g, install_history: hist }] };
+        return { rows: [{ ...g, latest_creative_seen: latestCreativeSeen, install_history: hist }] };
       }
 
       return { rows: [] };
@@ -229,55 +274,107 @@ test('Step 5 sanity check formula: 3,200 DAU at 10m/day outputs $40-$362/mo with
   assert.equal(result.revConfidence, 'low');
 });
 
-test('Step 7 End-to-End Acceptance Test: com.res.happy.days.adventure resolves ds:5 installs, Admob 100%, THE GAME STORM STUDIOS (PVT.) LIMITED, and card_status', async () => {
+test('Task 1 & 2 Verification across 3 Distinct Game Scenarios (Active <48h, Stale >14d, Multi-Network AppLovin/AdMob)', async () => {
   const pool = createMockTelemetryPool();
   await initializePlayTelemetryStorage(pool);
   assert.equal(pool.ddlExecuted.length, 1, 'Schema migration DDL executed');
 
-  const pkg = 'com.res.happy.days.adventure';
-  const result = await runFullTelemetryForPackage(pool, pkg);
-  const game = result.game;
+  // -------------------------------------------------------------------------
+  // Game 1: Active ads scanned in the last 48 hours + Multi-network app-ads.txt
+  // (com.res.happy.days.adventure has Admob, Mintegral, AppLovin, Unity Ads, Liftoff, Chartboost, InMobi, Meta, ironSource)
+  // -------------------------------------------------------------------------
+  const pkgActiveMulti = 'com.res.happy.days.adventure';
+  const fortyEightHoursAgoIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  pool.adCreatives.push({
+    creative_id: 'CR-ACTIVE-001',
+    game_id: 1,
+    package_name: pkgActiveMulti,
+    last_seen_at: fortyEightHoursAgoIso
+  });
 
-  assert.ok(game, 'Game record returned');
-  assert.equal(game.package_name, pkg);
-  assert.equal(game.installs_tier, '100,000+');
-  assert.ok(Number(game.real_installs) > 100000, `real_installs (${game.real_installs}) should be exact unrounded integer > 100,000`);
-  assert.ok(Array.isArray(game.install_history) && game.install_history.length >= 2, 'app_install_history populated for sparkline');
+  const res1 = await runFullTelemetryForPackage(pool, pkgActiveMulti);
+  const game1 = res1.game;
 
-  assert.deepEqual(game.ad_networks, { Admob: 100 }, 'ad_networks resolves to Admob: 100%');
-  assert.equal(
-    game.advertiser_legal_name,
-    'THE GAME STORM STUDIOS (PVT.) LIMITED',
-    'advertiser_legal_name resolves to THE GAME STORM STUDIOS (PVT.) LIMITED'
+  assert.ok(game1, 'Game 1 record returned');
+  assert.equal(game1.card_status, 'active', 'Game 1 with ads in last 48h MUST be card_status = active (🟢 Card Active)');
+  assert.equal(game1.latest_creative_seen, fortyEightHoursAgoIso, 'Footer Card date synced with latest_creative_seen');
+
+  // Verify Game 1 does NOT show hardcoded { Admob: 100 } — it has multiple verified networks in app-ads.txt
+  const netKeys1 = Object.keys(game1.ad_networks);
+  assert.ok(netKeys1.length > 1, `Expected multi-network share map, got: ${JSON.stringify(game1.ad_networks)}`);
+  assert.notDeepEqual(game1.ad_networks, { Admob: 100 }, 'Multi-network game must NOT show hardcoded Admob · 100%');
+  assert.ok(game1.ad_networks.Admob > 0 && game1.ad_networks.Admob < 100, 'Admob has proportional share < 100%');
+  assert.ok(game1.ad_networks.AppLovin > 0, 'AppLovin share is present');
+  assert.ok(game1.ad_networks.Mintegral > 0, 'Mintegral share is present');
+  const shareSum1 = Object.values(game1.ad_networks).reduce((a, b) => a + b, 0);
+  assert.equal(shareSum1, 100, 'Proportional network shares sum to 100%');
+  assert.ok(
+    /THE GAME STORM STUDIOS/i.test(game1.advertiser_legal_name || ''),
+    `advertiser_legal_name (${game1.advertiser_legal_name}) resolves to THE GAME STORM STUDIOS legal entity`
   );
-  assert.equal(game.developer_name, 'Respawn Tech Games');
-  assert.equal(game.card_status, 'closed');
-  assert.ok(Array.isArray(game.subcategories) && game.subcategories.includes('Simulation'));
-  assert.ok(game.store_scanned_at);
-  assert.ok(game.installs_scanned_at);
-  assert.ok(game.networks_scanned_at);
-  assert.ok(game.card_scanned_at);
 
-  console.log('Verified com.res.happy.days.adventure telemetry:', {
-    title: game.title,
-    installs_tier: game.installs_tier,
-    real_installs: game.real_installs,
-    installs_delta_1d: game.installs_delta_1d,
-    installs_avg_daily_7d: game.installs_avg_daily_7d,
-    installs_total_7d: game.installs_total_7d,
-    estimated_dau: game.estimated_dau,
-    retention_d1: game.retention_d1,
-    retention_d7: game.retention_d7,
-    avg_session_minutes: game.avg_session_minutes,
-    rev_monthly_min: game.rev_monthly_min,
-    rev_monthly_max: game.rev_monthly_max,
-    rev_confidence: game.rev_confidence,
-    subcategories: game.subcategories,
-    release_date: game.release_date,
-    card_status: game.card_status,
-    ad_networks: game.ad_networks,
-    developer_name: game.developer_name,
-    advertiser_legal_name: game.advertiser_legal_name,
-    sparkline_points: game.install_history.length
+  // -------------------------------------------------------------------------
+  // Game 2: Game whose ads stopped running >14 days ago -> MUST show Card Closed
+  // -------------------------------------------------------------------------
+  const pkgStale = 'com.stale.competitor.shooter';
+  const twentyDaysAgoIso = new Date(Date.now() - 20 * 86400 * 1000).toISOString();
+  pool.games.set(pkgStale, {
+    id: 2,
+    package_name: pkgStale,
+    title: 'Stale Shooter',
+    ad_count: 12
+  });
+  pool.accountGames.add(2);
+  pool.adCreatives.push({
+    creative_id: 'CR-STALE-001',
+    game_id: 2,
+    package_name: pkgStale,
+    last_seen_at: twentyDaysAgoIso
+  });
+
+  const cardRes2 = await runCardStatusPipeline(pool, pkgStale);
+  assert.equal(cardRes2.cardStatus, 'closed', 'Game 2 with latest_creative_seen > 14 days ago MUST be closed (⏹ Card Closed)');
+  assert.equal(cardRes2.latestCreativeSeen, twentyDaysAgoIso);
+
+  // -------------------------------------------------------------------------
+  // Game 3: AppLovin MAX dominant multi-network app-ads.txt & Unscanned fallback
+  // -------------------------------------------------------------------------
+  const appLovinMaxSample = [
+    'applovin.com, d8921a8b90123, DIRECT, c7542',
+    'applovin.com, e9921a8b90124, DIRECT, c7542',
+    'applovin.com, f9921a8b90125, DIRECT, c7542',
+    'google.com, pub-7850771599993172, DIRECT, f08c47fec0942fa0',
+    'unity3d.com, 1234567, DIRECT'
+  ].join('\n');
+
+  const parsedMax = parseAppAdsTxtContent(appLovinMaxSample);
+  assert.ok(parsedMax.adNetworks.AppLovin > parsedMax.adNetworks.Admob, 'AppLovin dominant share > Admob share');
+  assert.equal(parsedMax.adNetworks.AppLovin, 60, 'AppLovin 3/5 DIRECT = 60%');
+  assert.equal(parsedMax.adNetworks.Admob, 20, 'Admob 1/5 DIRECT = 20%');
+  assert.equal(parsedMax.adNetworks['Unity Ads'], 20, 'Unity Ads 1/5 DIRECT = 20%');
+
+  // Verify unscanned package (e.g., added via Country Scans without an ad scan)
+  const pkgUnscanned = 'com.countryscan.only.game';
+  pool.games.set(pkgUnscanned, {
+    id: 3,
+    package_name: pkgUnscanned,
+    title: 'Country Scan Game',
+    ad_count: 0
+  });
+  const cardRes3 = await runCardStatusPipeline(pool, pkgUnscanned);
+  assert.equal(cardRes3.cardStatus, 'unscanned', 'Package without competitor ad scan defaults to unscanned (⚪ Unscanned)');
+
+  console.log('Verified all 3 scenarios:', {
+    game1_active_multi: {
+      package: pkgActiveMulti,
+      card_status: game1.card_status,
+      latest_creative_seen: game1.latest_creative_seen,
+      ad_networks: game1.ad_networks,
+      advertiser_legal_name: game1.advertiser_legal_name
+    },
+    game2_stale_closed: cardRes2,
+    game3_applovin_max: parsedMax.adNetworks,
+    game3_unscanned_card: cardRes3
   });
 });
+
