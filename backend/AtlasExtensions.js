@@ -18,6 +18,10 @@ const {
   beginScan,
   mergeScanStatus
 } = require('./ScanDiscoveryRegistry');
+const {
+  initializePlayTelemetryStorage,
+  registerPlayTelemetryRoutes
+} = require('./PlayStoreTelemetry');
 
 const extensionPool = getDatabasePool();
 
@@ -79,7 +83,8 @@ async function initialize() {
     await initializeIntelligenceFeatures(extensionPool);
     await initializeVideoLifecycle(extensionPool);
     await initializeVideoMetadata(extensionPool);
-    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword storage ready.');
+    await initializePlayTelemetryStorage(extensionPool);
+    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry storage ready.');
   } catch (error) {
     initialized = false;
     console.error('⚠️ [Atlas Intelligence] Initialization failed:', error.message);
@@ -93,6 +98,7 @@ express.application.listen = function atlasExtensionListen(...args) {
     registerVideoMetadataRoutes({ app: this, pool: extensionPool });
     registerIntelligenceRoutes({ app: this, pool: extensionPool, gplay });
     registerVideoLifecycleRoutes({ app: this, pool: extensionPool });
+    registerPlayTelemetryRoutes({ app: this, pool: extensionPool });
   }
   void initialize();
   return originalListen.apply(this, args);

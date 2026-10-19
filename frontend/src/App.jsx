@@ -2,6 +2,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useSta
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "./lib/utils";
+import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 
 // NGROK URL
 const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
@@ -673,6 +674,8 @@ function App() {
   const [scanProgress, setScanProgress] = useState({ target: "", currentAd: 0, totalAds: 0, timeRemaining: "Calculating...", logs: [] });
   const countryScanDetailCacheRef = useRef(new Map());
   const selectedGameVideosCacheRef = useRef(new Map());
+  const telemetryCacheRef = useRef(new Map());
+  const [telemetryRefreshingPkg, setTelemetryRefreshingPkg] = useState(null);
   const lastHandledTerminalRef = useRef(null);
   const lastAppliedTerminalSnapshotRef = useRef(null);
   const scanLaunchPendingRef = useRef(false);
@@ -1915,6 +1918,63 @@ function App() {
 
     return () => { cancelled = true; };
   }, [isDrawerOpen, selectedGame?.package_name]);
+
+  const applyTelemetryToState = useCallback((updatedGame) => {
+    if (!updatedGame?.package_name) return;
+    const pkg = updatedGame.package_name;
+    telemetryCacheRef.current.set(pkg, updatedGame);
+    setSelectedGame(prev => (prev && prev.package_name === pkg ? { ...prev, ...updatedGame } : prev));
+    setTrending(prev => prev.map(g => (g.package_name === pkg ? { ...g, ...updatedGame } : g)));
+    setCompetitorTree(prev => prev.map(comp => ({
+      ...comp,
+      accounts: (comp.accounts || []).map(acc => ({
+        ...acc,
+        games: (acc.games || []).map(g => (g.package_name === pkg ? { ...g, ...updatedGame } : g))
+      }))
+    })));
+  }, []);
+
+  const handleRefreshGameTelemetry = useCallback(async (game) => {
+    const pkg = game?.package_name;
+    if (!pkg) return;
+    setTelemetryRefreshingPkg(pkg);
+    try {
+      const res = await fetchJson(`${API_BASE}/api/telemetry/${encodeURIComponent(pkg)}/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      if (res?.game) applyTelemetryToState(res.game);
+    } catch (error) {
+      console.warn("Telemetry refresh failed:", error?.message || error);
+    } finally {
+      setTelemetryRefreshingPkg(null);
+    }
+  }, [applyTelemetryToState]);
+
+  useEffect(() => {
+    if (!isDrawerOpen || !selectedGame?.package_name) return undefined;
+    const pkg = selectedGame.package_name;
+    if (selectedGame.real_installs != null && selectedGame.store_scanned_at) {
+      return undefined;
+    }
+    const cached = telemetryCacheRef.current.get(pkg);
+    if (cached) {
+      applyTelemetryToState(cached);
+      return undefined;
+    }
+    let cancelled = false;
+    fetchJson(`${API_BASE}/api/telemetry/${encodeURIComponent(pkg)}`)
+      .then(gamePayload => {
+        if (!cancelled && gamePayload?.package_name) {
+          applyTelemetryToState(gamePayload);
+        }
+      })
+      .catch(error => {
+        if (!cancelled) console.warn("Telemetry lookup failed:", error?.message || error);
+      });
+    return () => { cancelled = true; };
+  }, [isDrawerOpen, selectedGame?.package_name, selectedGame?.real_installs, selectedGame?.store_scanned_at, applyTelemetryToState]);
 
   useEffect(() => {
     const scanId = countryScanJob?.scanId;
@@ -3159,69 +3219,16 @@ function App() {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
                     {sortedDirectoryGames.map(game => (
-                      <motion.div whileHover={{ y: -1 }} key={game.id} onClick={() => handleGameClick(game)} className="bg-surface-glass backdrop-blur-xl rounded-2xl border border-border-subtle overflow-hidden shadow-sm hover:border-electric-blue/25 transition-colors cursor-pointer group flex flex-col relative">
-                        {isAdmin && (
-                          <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                            <button
-                              onClick={(e) => handleSetGameSuspended(game, !game.is_suspended, e)}
-                              className={cn(
-                                "w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border transition-all flex items-center justify-center",
-                                game.is_suspended
-                                  ? "border-emerald-500/25 text-emerald-500 hover:bg-emerald-500/10"
-                                  : "border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10"
-                              )}
-                              title={game.is_suspended ? "Restore suspended game" : "Mark game as suspended"}
-                              aria-label={game.is_suspended
-                                ? `Restore ${game.title || game.package_name || "game"}`
-                                : `Mark ${game.title || game.package_name || "game"} suspended`}
-                            >
-                              <span className="material-symbols-outlined text-[17px]">{game.is_suspended ? "undo" : "block"}</span>
-                            </button>
-                            <button
-                              onClick={(e) => handleDeleteGame(e, game)}
-                              disabled={isScanning}
-                              className="w-8 h-8 rounded-lg bg-surface-solid/90 backdrop-blur-md border border-border-subtle text-text-muted hover:text-urgent-red hover:border-urgent-red/30 hover:bg-urgent-red/10 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"
-                              title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
-                              aria-label={`Delete ${game.title || game.package_name || "game"}`}
-                            >
-                              <span className="material-symbols-outlined text-[17px]">delete</span>
-                            </button>
-                          </div>
-                        )}
-                        {game.header_image && (
-                          <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
-                            <img loading="lazy" decoding="async" src={game.header_image} alt={game.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                            {game.video && <div className="absolute bottom-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-md text-[9px] md:text-[10px] text-white flex items-center gap-1"><span className="material-symbols-outlined text-[12px] text-white/80">play_arrow</span> Trailer</div>}
-                          </div>
-                        )}
-                        <div className="p-4 md:p-5 flex-1 flex flex-col justify-between relative z-10">
-                          <div className="flex gap-3 md:gap-4 items-start">
-                            <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg md:rounded-xl bg-surface-solid border border-border-subtle overflow-hidden flex-shrink-0 shadow-sm">
-                              {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt={game.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted flex h-full items-center justify-center">sports_esports</span>}
-                            </div>
-                            <div className="min-w-0 flex-1 pr-8">
-                              <h4 className="font-body-sm md:font-body-md font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h4>
-                              <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">{game.publisher_name}</p>
-                              <p className="font-mono text-[9px] md:text-[10px] text-text-muted/70 truncate mt-0.5">{game.package_name}</p>
-                              <div className="mt-2 flex items-center gap-1.5">
-                                <PaidBadge item={game} compact />
-                                {game.is_suspended && (
-                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium">
-                                    Suspended
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          
-                          <div className="mt-3 md:mt-4 pt-3 md:pt-4 border-t border-border-subtle/50 flex items-center justify-between">
-                            <span className="text-[10px] md:text-xs font-medium text-electric-blue">{viewMode === "latest" ? `${game.ad_count || 0} Ads Seen` : `${game.ad_count || 0} Detections`}</span>
-                            <div className="flex items-center gap-2">
-                              {game.installs && <span className="text-[9px] md:text-[10px] font-medium bg-input-bg text-text-muted px-1.5 md:px-2 py-0.5 rounded-full">{game.installs}</span>}
-                              {Number(game.rating) > 0 && <span className="text-[9px] md:text-[10px] font-medium bg-input-bg text-text-muted px-1.5 md:px-2 py-0.5 rounded-full flex items-center gap-1"><span className="material-symbols-outlined text-[12px]">star</span>{Number(game.rating).toFixed(1)}</span>}
-                            </div>
-                          </div>
-                        </div>
+                      <motion.div whileHover={{ y: -1 }} key={game.id || game.package_name} className="relative">
+                        <GameIntelligenceCard
+                          game={game}
+                          onClick={() => handleGameClick(game)}
+                          onDelete={handleDeleteGame}
+                          onRefreshTelemetry={handleRefreshGameTelemetry}
+                          isAdmin={isAdmin}
+                          isScanning={isScanning}
+                          isRefreshing={telemetryRefreshingPkg === game.package_name}
+                        />
                       </motion.div>
                     ))}
                   </div>
@@ -4017,6 +4024,12 @@ function App() {
               <button onClick={closeDrawer} className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-glass border border-transparent hover:border-border-subtle transition-all text-text-muted hover:text-text-main bg-surface-solid md:bg-transparent flex-shrink-0"><span className="material-symbols-outlined text-[24px]">close</span></button>
             </div>
             <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col gap-8 custom-scrollbar pb-24">
+              <GameIntelligenceCard
+                game={selectedGame}
+                onRefreshTelemetry={handleRefreshGameTelemetry}
+                isRefreshing={telemetryRefreshingPkg === selectedGame.package_name}
+                inDrawer
+              />
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted mb-2 font-bold">Rating</p><div className="flex items-center gap-2"><p className="font-headline-lg text-2xl text-text-main font-bold">{Number(selectedGame.rating) > 0 ? Number(selectedGame.rating).toFixed(1) : "N/A"}</p><span className="material-symbols-outlined text-electric-blue text-[22px] mb-0.5" style={{fontVariationSettings: "'FILL' 1"}}>star</span></div></div>
                 <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted mb-2 font-bold">Reviews</p><p className="font-headline-lg text-2xl text-text-main font-bold">{selectedGame.ratings_count || 0}</p></div>

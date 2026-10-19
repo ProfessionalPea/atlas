@@ -15,6 +15,7 @@ const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor, isValidPackage } = require("./GoogleAdsScanner");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
+const { runFullTelemetryForPackage } = require("./PlayStoreTelemetry");
 const express = require("express");
 require("./AtlasExtensions");
 const cors = require("cors");
@@ -1444,7 +1445,31 @@ app.post("/api/reset", async (_req, res) => {
 
 app.get("/api/trending", async (_req, res) => {
   try { 
-    const { rows } = await pool.query(`SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name FROM games g LEFT JOIN account_games ag ON g.id = ag.game_id LEFT JOIN accounts a ON ag.account_id = a.id LEFT JOIN competitors c ON a.competitor_id = c.id ORDER BY g.ad_count DESC`);
+    const { rows } = await pool.query(`
+      SELECT g.*, a.publisher_name, c.id AS competitor_id, c.name AS competitor_name,
+             COALESCE(
+               (SELECT json_agg(
+                  json_build_object(
+                    'date', h.snapshot_date::text,
+                    'realInstalls', h.real_installs,
+                    'dailyDelta', h.daily_delta
+                  ) ORDER BY h.snapshot_date ASC
+                )
+                FROM (
+                  SELECT snapshot_date, real_installs, daily_delta
+                  FROM app_install_history
+                  WHERE package_name = g.package_name
+                  ORDER BY snapshot_date DESC
+                  LIMIT 14
+                ) h),
+               '[]'::json
+             ) AS install_history
+      FROM games g
+      LEFT JOIN account_games ag ON g.id = ag.game_id
+      LEFT JOIN accounts a ON ag.account_id = a.id
+      LEFT JOIN competitors c ON a.competitor_id = c.id
+      ORDER BY g.ad_count DESC
+    `);
     res.json(rows);
   } catch { res.status(500).json({ error: "Fail" }); }
 });
@@ -1972,6 +1997,18 @@ app.post("/api/scan", async (req, res) => {
             [accountId, gameId]
           );
 
+          // Capture Play Store ds:5 exact installs, velocity, app-ads.txt networks,
+          // advertiser legal identity, card status, and DAU/SS rev estimates.
+          try {
+            await runWithTimeout(
+              () => runFullTelemetryForPackage(pool, pkg),
+              25000,
+              `Play Store telemetry for ${pkg}`
+            );
+          } catch (telemetryErr) {
+            console.warn(`Play telemetry warning for ${pkg}:`, telemetryErr.message);
+          }
+
           // Batch creative writes to avoid one remote database round-trip per ad ID.
           try {
             await pool.query(
@@ -2175,7 +2212,24 @@ app.get("/api/competitors", async (_req, res) => {
       pool.query("SELECT * FROM competitors ORDER BY id DESC"),
       pool.query("SELECT * FROM accounts"),
       pool.query(`
-        SELECT ag.account_id, g.* 
+        SELECT ag.account_id, g.*,
+               COALESCE(
+                 (SELECT json_agg(
+                    json_build_object(
+                      'date', h.snapshot_date::text,
+                      'realInstalls', h.real_installs,
+                      'dailyDelta', h.daily_delta
+                    ) ORDER BY h.snapshot_date ASC
+                  )
+                  FROM (
+                    SELECT snapshot_date, real_installs, daily_delta
+                    FROM app_install_history
+                    WHERE package_name = g.package_name
+                    ORDER BY snapshot_date DESC
+                    LIMIT 14
+                  ) h),
+                 '[]'::json
+               ) AS install_history
         FROM account_games ag 
         JOIN games g ON ag.game_id = g.id
       `)
