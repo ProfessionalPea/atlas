@@ -1,11 +1,11 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+﻿import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 
 // NGROK URL
-const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
+const NGROK_URL = "https://motors-caused-cameron-wrist.trycloudflare.com";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 const AUTH_USER_KEY = "atlas_auth_user";
@@ -24,7 +24,7 @@ const DIRECTORY_GAME_SORT_OPTIONS = [
   { id: "installs", label: "Installs" },
   { id: "newest", label: "Newest" },
   { id: "rating", label: "Rating" },
-  { id: "az", label: "A–Z" },
+  { id: "az", label: "Aâ€“Z" },
 ];
 
 const COUNTRY_STATE_META = {
@@ -41,7 +41,7 @@ function getCountryStateMeta(state) {
 
 function getCountryFlag(code) {
   const normalized = String(code || "").toUpperCase();
-  if (!/^[A-Z]{2}$/.test(normalized)) return "🌐";
+  if (!/^[A-Z]{2}$/.test(normalized)) return "ðŸŒ";
   return String.fromCodePoint(...normalized.split("").map(char => 127397 + char.charCodeAt(0)));
 }
 
@@ -53,7 +53,7 @@ function PaidBadge({ item, compact = false, showPrice = true }) {
   const priceText = typeof rawPriceText === "string" && rawPriceText.trim() && rawPriceText.trim().toLowerCase() !== "free"
     ? rawPriceText.trim()
     : "";
-  const label = showPrice && priceText ? `Paid · ${priceText}` : "Paid";
+  const label = showPrice && priceText ? `Paid Â· ${priceText}` : "Paid";
 
   return (
     <span
@@ -61,7 +61,7 @@ function PaidBadge({ item, compact = false, showPrice = true }) {
         "inline-flex items-center rounded-full border border-violet-500/25 bg-violet-500/10 text-violet-400 font-medium whitespace-nowrap",
         compact ? "gap-1 px-1.5 py-0.5 text-[8px]" : "gap-1.5 px-2.5 py-1 text-[9px] md:text-[10px]"
       )}
-      title={priceText ? `Paid app · ${priceText}` : "Paid app"}
+      title={priceText ? `Paid app Â· ${priceText}` : "Paid app"}
     >
       <span className={cn("material-symbols-outlined", compact ? "text-[11px]" : "text-[14px]")}>payments</span>
       {label}
@@ -345,7 +345,7 @@ const TrendingTargets = memo(function TrendingTargets({
             <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Trending Targets</h2>
           </div>
           <p className="text-[10px] md:text-xs text-text-muted mt-1 md:ml-[29px]">
-            {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">● Latest</span>}
+            {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">â— Latest</span>}
             Ranked by activity
           </p>
         </div>
@@ -459,7 +459,7 @@ const LiveDirectory = memo(function LiveDirectory({
           <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Live Directory</h2>
         </div>
         <p className="text-[10px] md:text-xs text-text-muted mt-1 md:ml-[29px]">
-          {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">● Latest</span>}
+          {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">â— Latest</span>}
           Hierarchy view
         </p>
       </div>
@@ -2382,7 +2382,7 @@ function App() {
                   className="absolute top-[52px] left-0 right-0 bg-surface-solid border border-border-subtle rounded-[20px] shadow-xl overflow-hidden z-[70]"
                 >
                   {globalSearchResultCount === 0 ? (
-                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for “{directorySearch.trim()}”.</div>
+                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for â€œ{directorySearch.trim()}â€.</div>
                   ) : (
                     <div className="max-h-[430px] overflow-y-auto custom-scrollbar py-2">
                       {globalSearchResults.games.length > 0 && (
@@ -2563,7 +2563,7 @@ function App() {
             <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6 w-full bg-amber-500/10 border border-amber-500/25 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-center gap-2 text-amber-500 text-[11px] md:text-xs z-40 relative">
               <span className="flex items-center gap-2 font-medium"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Server offline</span>
               <span className="hidden sm:block text-amber-500/50">|</span>
-              <span className="text-center sm:text-left">Workstation server is unreachable. Active tracking hours: 9:00 AM – 6:00 PM.</span>
+              <span className="text-center sm:text-left">Workstation server is unreachable. Active tracking hours: 9:00 AM â€“ 6:00 PM.</span>
             </motion.div>
           )}
 
@@ -2988,7 +2988,7 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-6 md:gap-8">
               <div>
                 <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
-                  Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15">● Latest</span>}
+                  Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15">â— Latest</span>}
                 </h1>
                 <p className="font-body-sm md:font-body-md text-text-muted mt-1">
                   Full database index of all intercepted competitors, publishers, and games.
@@ -3040,7 +3040,7 @@ function App() {
                       <span className="material-symbols-outlined text-urgent-red text-[18px]">block</span>
                       Suspended games
                     </h3>
-                    <span className="text-[10px] text-text-muted">Preserved snapshots · reversible</span>
+                    <span className="text-[10px] text-text-muted">Preserved snapshots Â· reversible</span>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
@@ -3094,11 +3094,11 @@ function App() {
                             <div className="grid grid-cols-3 gap-2 mt-4">
                               <div className="rounded-xl bg-input-bg px-2.5 py-2">
                                 <div className="text-[9px] text-text-muted">Rating</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "—"}</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "â€”"}</div>
                               </div>
                               <div className="rounded-xl bg-input-bg px-2.5 py-2">
                                 <div className="text-[9px] text-text-muted">Installs</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "—"}</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "â€”"}</div>
                               </div>
                               <div className="rounded-xl bg-input-bg px-2.5 py-2">
                                 <div className="text-[9px] text-text-muted">Ads</div>
@@ -3505,11 +3505,11 @@ function App() {
                             <div className="mt-4 pt-3 border-t border-border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                               <div className="text-[9px] md:text-[10px] text-text-muted">
                                 <span>{item.completedAt ? new Date(item.completedAt).toLocaleString() : "No completion time"}</span>
-                                <span className="mx-1.5">·</span>
+                                <span className="mx-1.5">Â·</span>
                                 <span>{item.scanCount || 1} {(item.scanCount || 1) === 1 ? "scan" : "scans"}</span>
                                 {item.totalCountries ? (
                                   <>
-                                    <span className="mx-1.5">·</span>
+                                    <span className="mx-1.5">Â·</span>
                                     <span>{item.totalCountries} locations</span>
                                   </>
                                 ) : null}
@@ -3829,7 +3829,7 @@ function App() {
                           <span className={cn("text-[10px] md:text-xs font-medium px-2 py-0.5 rounded-md bg-input-bg border border-border-subtle", meta.color)}>{meta.total}</span>
                         </div>
                         <p className="font-body-xs md:font-body-sm text-text-muted mt-1 truncate">
-                          {viewMode === "latest" && <span className="text-emerald-metric font-bold mr-2">● Latest</span>}
+                          {viewMode === "latest" && <span className="text-emerald-metric font-bold mr-2">â— Latest</span>}
                           {meta.subtitle}
                         </p>
                       </div>
@@ -4247,7 +4247,7 @@ function App() {
                   {countryScanData?.scan?.appTitle && (
                     <div className="mt-0.5 flex items-center gap-2 min-w-0">
                       <p className="text-[10px] text-text-muted truncate">
-                        {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
+                        {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " Â· " + countryScanData.scan.developer : ""}
                       </p>
                       <PaidBadge item={countryScanData.scan} compact showPrice={false} />
                     </div>
@@ -4284,7 +4284,7 @@ function App() {
                     </div>
 
                     <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted">
-                      <span>Loading saved scan…</span>
+                      <span>Loading saved scanâ€¦</span>
                       <span className="font-mono">{countryPackage}</span>
                     </div>
                   </div>
@@ -4366,8 +4366,8 @@ function App() {
 
                     <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <div className="text-[10px] text-text-muted">
-                        Last scanned {countryScanData.scan?.completedAt ? new Date(countryScanData.scan.completedAt).toLocaleString() : "—"}
-                        {countryScanData.previousScan ? " · compared with previous scan" : " · first saved scan"}
+                        Last scanned {countryScanData.scan?.completedAt ? new Date(countryScanData.scan.completedAt).toLocaleString() : "â€”"}
+                        {countryScanData.previousScan ? " Â· compared with previous scan" : " Â· first saved scan"}
                       </div>
                       <div className="flex items-center gap-2">
                         {(countryScanData.changes?.length || 0) > 0 && (
@@ -4483,7 +4483,7 @@ function App() {
                       ) : (
                         <>
                           <div className="mb-3 rounded-xl border border-border-subtle bg-input-bg/60 px-3 py-2.5 text-[10px] text-text-muted">
-                            <span className="font-medium text-text-main">Calculated score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
+                            <span className="font-medium text-text-main">Calculated score</span> is a confidence-adjusted 0â€“100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                             {countryPerformanceRows.map((item, index) => (
@@ -4506,19 +4506,19 @@ function App() {
                                           {item.performanceBand === "strong" ? "Strong" : item.performanceBand === "weak" ? "Weak" : "Typical"}
                                         </span>
                                       </div>
-                                      <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.performanceConfidence || "none"} sample confidence</div>
+                                      <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} Â· {item.performanceConfidence || "none"} sample confidence</div>
                                     </div>
                                   </div>
                                   <div className="text-right flex-shrink-0">
                                     <div className="text-[9px] text-text-muted">Calculated score</div>
-                                    <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "—" : Number(item.atlasMarketScore).toFixed(1)}</div>
+                                    <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "â€”" : Number(item.atlasMarketScore).toFixed(1)}</div>
                                   </div>
                                 </div>
 
                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
                                   <div className="rounded-lg bg-input-bg px-2.5 py-2">
                                     <div className="text-[9px] text-text-muted">Play rating</div>
-                                    <div className="text-xs font-semibold text-text-main mt-0.5">{item.playRating == null ? "—" : Number(item.playRating).toFixed(2)} ★</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{item.playRating == null ? "â€”" : Number(item.playRating).toFixed(2)} â˜…</div>
                                   </div>
                                   <div className="rounded-lg bg-input-bg px-2.5 py-2">
                                     <div className="text-[9px] text-text-muted">Ratings</div>
@@ -4538,12 +4538,12 @@ function App() {
                                   <div className="mt-3">
                                     <div className="flex items-center justify-between text-[9px] text-text-muted">
                                       <span className="text-emerald-500">
-                                        Positive {item.positiveShare == null ? "—" : Number(item.positiveShare).toFixed(1) + "%"}
-                                        {item.positiveRatings ? ` · ${Number(item.positiveRatings).toLocaleString()}` : ""}
+                                        Positive {item.positiveShare == null ? "â€”" : Number(item.positiveShare).toFixed(1) + "%"}
+                                        {item.positiveRatings ? ` Â· ${Number(item.positiveRatings).toLocaleString()}` : ""}
                                       </span>
                                       <span className="text-urgent-red">
-                                        Negative {item.negativeShare == null ? "—" : Number(item.negativeShare).toFixed(1) + "%"}
-                                        {item.negativeRatings ? ` · ${Number(item.negativeRatings).toLocaleString()}` : ""}
+                                        Negative {item.negativeShare == null ? "â€”" : Number(item.negativeShare).toFixed(1) + "%"}
+                                        {item.negativeRatings ? ` Â· ${Number(item.negativeRatings).toLocaleString()}` : ""}
                                       </span>
                                     </div>
                                     <div className="mt-1.5 h-1.5 bg-input-bg rounded-full overflow-hidden flex">
@@ -4573,10 +4573,10 @@ function App() {
                                     <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
                                     <PaidBadge item={item} compact />
                                   </div>
-                                  <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.confidence || "unknown"} confidence</div>
+                                  <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} Â· {item.confidence || "unknown"} confidence</div>
                                   {change && (
                                     <div className="text-[9px] text-amber-500 mt-1">
-                                      {getCountryStateMeta(change.from).label} → {getCountryStateMeta(change.to).label}
+                                      {getCountryStateMeta(change.from).label} â†’ {getCountryStateMeta(change.to).label}
                                     </div>
                                   )}
                                 </div>
@@ -4639,7 +4639,7 @@ function App() {
                   </div>
                   <p className="text-[10px] md:text-[11px] text-text-muted truncate mt-0.5">
                     {countryScanJob?.packageName || countryPackage}
-                    {countryScanJob?.currentCountryName ? ` · ${countryScanJob.currentCountryName}` : ""}
+                    {countryScanJob?.currentCountryName ? ` Â· ${countryScanJob.currentCountryName}` : ""}
                   </p>
                 </div>
               </div>
@@ -4680,11 +4680,11 @@ function App() {
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
                         <span className="text-text-main font-medium">{countryScanJob?.checked || 0}</span>
-                        {" "}of {countryScanJob?.total || "—"} countries
-                        {countryScanJob?.total ? <span className="ml-1.5">· {countryScanPercentage}%</span> : null}
+                        {" "}of {countryScanJob?.total || "â€”"} countries
+                        {countryScanJob?.total ? <span className="ml-1.5">Â· {countryScanPercentage}%</span> : null}
                       </span>
                       <span className="tabular-nums flex-shrink-0">
-                        {countryScanJob?.currentCountry || (countryScanJob?.state === "starting" ? "Starting…" : "")}
+                        {countryScanJob?.currentCountry || (countryScanJob?.state === "starting" ? "Startingâ€¦" : "")}
                       </span>
                     </div>
 
@@ -4693,7 +4693,7 @@ function App() {
                       <span className="truncate">
                         {countryScanJob?.currentCountryName
                           ? `Checking Google Play in ${countryScanJob.currentCountryName}`
-                          : "Preparing Google Play storefront scan…"}
+                          : "Preparing Google Play storefront scanâ€¦"}
                       </span>
                     </div>
                   </div>
@@ -4742,7 +4742,7 @@ function App() {
                     </div>
                   </div>
                   <p className="text-[10px] md:text-[11px] text-text-muted truncate mt-0.5">
-                    {scanProgress.target} · {scanProgress.targetIndex}/{scanProgress.totalTargets}
+                    {scanProgress.target} Â· {scanProgress.targetIndex}/{scanProgress.totalTargets}
                   </p>
                 </div>
               </div>
@@ -4794,14 +4794,14 @@ function App() {
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
                         <span className="text-text-main font-medium">{scanProgress.currentAd}</span> of {scanProgress.totalAds} ads
-                        <span className="ml-1.5">· {scanPercentage}%</span>
+                        <span className="ml-1.5">Â· {scanPercentage}%</span>
                       </span>
                       <span className="tabular-nums flex-shrink-0">{scanProgress.timeRemaining}</span>
                     </div>
 
                     <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
                       <span className="material-symbols-outlined text-[14px] flex-shrink-0">terminal</span>
-                      <span className="truncate">{scanProgress.logs[scanProgress.logs.length - 1] || "Preparing scan…"}</span>
+                      <span className="truncate">{scanProgress.logs[scanProgress.logs.length - 1] || "Preparing scanâ€¦"}</span>
                     </div>
                   </div>
                 </motion.div>

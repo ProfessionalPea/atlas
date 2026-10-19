@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-const NGROK_URL = 'https://skeptic-resample-caution.ngrok-free.dev';
+const NGROK_URL = 'https://motors-caused-cameron-wrist.trycloudflare.com';
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
   ? 'http://localhost:3000'
   : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
@@ -230,7 +230,7 @@ function VideoMetadataPanel({ asset, onClose, onSaved }) {
         <div className="rounded-2xl border border-border-subtle bg-input-bg/60 px-3.5 py-3">
           <div className="text-[11px] text-text-muted">Automatic attribution</div>
           <div className="mt-1 text-[13px] font-medium break-words">
-            {automaticGame?.title || (asset.associationState === 'ambiguous' ? 'Unresolved — multiple package signals' : 'Unassigned')}
+            {automaticGame?.title || (asset.associationState === 'ambiguous' ? 'Unresolved â€” multiple package signals' : 'Unassigned')}
           </div>
           {automaticGame?.packageName && (
             <div className="mt-0.5 text-[11px] font-mono text-text-muted break-all">{automaticGame.packageName}</div>
@@ -341,7 +341,7 @@ function VideoMetadataPanel({ asset, onClose, onSaved }) {
             className="h-9 min-w-[84px] px-3.5 rounded-xl bg-electric-blue text-white text-[12px] font-semibold hover:brightness-95 disabled:opacity-60 flex items-center justify-center gap-1.5"
           >
             {saving && <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>}
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Savingâ€¦' : 'Save'}
           </button>
         </div>
       </div>
