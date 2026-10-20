@@ -91,6 +91,7 @@ async function fetchJson(url, options = {}) {
   const headers = {
     ...options.headers,
     "ngrok-skip-browser-warning": "69420",
+    "Bypass-Tunnel-Reminder": "true",
     ...(token ? { "x-atlas-token": token } : {})
   };
 
@@ -4929,5 +4930,6 @@ function App() {
 }
 
 export default App;
+
 
 
