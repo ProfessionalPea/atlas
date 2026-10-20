@@ -5,7 +5,7 @@ import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 
 // NGROK URL
-const NGROK_URL = "https://motors-caused-cameron-wrist.trycloudflare.com";
+const NGROK_URL = "https://breezy-owls-serve.loca.lt";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 const AUTH_USER_KEY = "atlas_auth_user";
@@ -4929,3 +4929,4 @@ function App() {
 }
 
 export default App;
+
