@@ -5,7 +5,7 @@ import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 
 // NGROK URL
-const NGROK_URL = "<PASTE_YOUR_NGROK_URL_HERE>";
+const NGROK_URL = "<PASTE_YOUR_URL_HERE>";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 const AUTH_USER_KEY = "atlas_auth_user";
@@ -4930,6 +4930,7 @@ function App() {
 }
 
 export default App;
+
 
 
 
