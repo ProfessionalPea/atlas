@@ -396,7 +396,7 @@ async function scanCompetitor(
     if (assessment && assessment.blocked && !detectedBlock) {
       detectedBlock = { reason: assessment.reason || 'Google response guard stopped the scan.', url: label };
       console.error('[Broad Scanner] Stopping after a block/challenge signal from ' + label + ': ' + detectedBlock.reason);
-      emitProgress(0, maxAdsToTest, '> STOP: Google returned a block/challenge signal. This scan was stopped to avoid incomplete results.');
+      emitProgress(0, maxAdsToInspect, '> STOP: Google returned a block/challenge signal. This scan was stopped to avoid incomplete results.');
     } else if (assessment && assessment.suspicious) {
       suspiciousResponseCount += 1;
       if (suspiciousResponseCount <= 5) {
@@ -471,11 +471,12 @@ async function scanCompetitor(
         }
       }
     };
+    const handleFailedDiscoveryRequest = request => finishDiscoveryRequest(request, true);
 
     emitProgress(0, maxAdsToInspect, '> Booting scanner for "' + query + '". Target: ' + targetUniqueGames + ' unique games; safety cap: ' + maxAdsToInspect + ' inspected ads.');
     searchPage.on('request', trackDiscoveryRequest);
     searchPage.on('requestfinished', finishDiscoveryRequest);
-    searchPage.on('requestfailed', request => finishDiscoveryRequest(request, true));
+    searchPage.on('requestfailed', handleFailedDiscoveryRequest);
     searchPage.on('response', async response => {
       const request = response.request();
       const resourceType = request.resourceType();
@@ -656,7 +657,6 @@ async function scanCompetitor(
     emitProgress(0, maxAdsToInspect, '> Collected ' + idArray.length + ' ad creatives. Searching for up to ' + targetUniqueGames + ' unique games.');
 
     const results = [];
-    const globallyDiscovered = new Set();
     let queuedVideoPersistenceTasks = 0;
     const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
 
@@ -960,7 +960,7 @@ async function scanCompetitor(
   } finally {
     searchPage.off('request', trackDiscoveryRequest);
     searchPage.off('requestfinished', finishDiscoveryRequest);
-    searchPage.off('requestfailed', finishDiscoveryRequest);
+    searchPage.off('requestfailed', handleFailedDiscoveryRequest);
     await browser.close().catch(() => {});
   }
 
