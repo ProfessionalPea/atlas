@@ -13,6 +13,7 @@ const SESSION_EXPIRATION_DAYS = 30;
 
 const { generateAndSendReport } = require("./AutomatedReport");
 const { scanCompetitor, isValidPackage } = require("./GoogleAdsScannerBroad");
+const { resolveMaxAdsToInspect } = require("./ScanAccounting");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const { runFullTelemetryForPackage } = require("./PlayStoreTelemetry");
@@ -455,13 +456,13 @@ function createIdleScanStatus() {
     targetIndex: 0,
     totalTargets: 0,
     currentAd: 0,
-    totalAds: 500,
+    totalAds: resolveMaxAdsToInspect(),
     targetUniqueGames: 0,
     uniqueGamesFound: 0,
     adsInspected: 0,
     duplicateAds: 0,
     adsWithoutPackages: 0,
-    maxAdsToInspect: 500,
+    maxAdsToInspect: resolveMaxAdsToInspect(),
     scanStopReason: null,
     timeRemaining: "00:00",
     logs: [],
