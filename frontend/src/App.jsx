@@ -4713,7 +4713,6 @@ function App() {
                         <span className="text-text-main font-medium">{countryScanJob?.checked || 0}</span> of {countryScanJob?.total || 0} countries checked
                         <span className="ml-1.5">Â· {countryScanPercentage}%</span>
                       </span>
-                      <span className="tabular-nums flex-shrink-0">{countryScanJob?.timeRemaining || "Calculating..."}</span>
                     </div>
 
                     <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
