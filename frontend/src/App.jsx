@@ -672,7 +672,20 @@ function App() {
   const [activeStatPanel, setActiveStatPanel] = useState(null);
   const [statPanelSearch, setStatPanelSearch] = useState("");
   const deferredStatPanelSearch = useDeferredValue(statPanelSearch);
-  const [scanProgress, setScanProgress] = useState({ target: "", currentAd: 0, totalAds: 0, timeRemaining: "Calculating...", logs: [] });
+  const [scanProgress, setScanProgress] = useState({
+    target: "",
+    currentAd: 0,
+    totalAds: 500,
+    targetUniqueGames: 0,
+    uniqueGamesFound: 0,
+    adsInspected: 0,
+    duplicateAds: 0,
+    adsWithoutPackages: 0,
+    maxAdsToInspect: 500,
+    scanStopReason: null,
+    timeRemaining: "Calculating...",
+    logs: []
+  });
   const countryScanDetailCacheRef = useRef(new Map());
   const selectedGameVideosCacheRef = useRef(new Map());
   const telemetryCacheRef = useRef(new Map());
@@ -818,6 +831,13 @@ function App() {
       totalTargets: status.totalTargets ?? prev.totalTargets,
       currentAd: status.currentAd ?? prev.currentAd,
       totalAds: status.totalAds ?? prev.totalAds,
+      targetUniqueGames: status.targetUniqueGames ?? prev.targetUniqueGames,
+      uniqueGamesFound: status.uniqueGamesFound ?? prev.uniqueGamesFound,
+      adsInspected: status.adsInspected ?? prev.adsInspected,
+      duplicateAds: status.duplicateAds ?? prev.duplicateAds,
+      adsWithoutPackages: status.adsWithoutPackages ?? prev.adsWithoutPackages,
+      maxAdsToInspect: status.maxAdsToInspect ?? prev.maxAdsToInspect,
+      scanStopReason: status.scanStopReason ?? prev.scanStopReason,
       timeRemaining: status.timeRemaining || prev.timeRemaining,
       logs: Array.isArray(status.logs) ? status.logs.slice(-5) : prev.logs
     }));
@@ -1600,15 +1620,22 @@ function App() {
     setIsScanning(true);
     setIsScanMinimized(false);
 
-    const finalLimit = isMaxAds ? 999999 : Math.max(1, Number(scanLimit) || 1);
+    const finalLimit = isMaxAds ? 500 : Math.max(1, Number(scanLimit) || 1);
     setScanProgress({
       target: "Initializing...",
       targetIndex: 1,
       totalTargets: 1,
       currentAd: 0,
-      totalAds: finalLimit,
+      totalAds: 500,
+      targetUniqueGames: finalLimit,
+      uniqueGamesFound: 0,
+      adsInspected: 0,
+      duplicateAds: 0,
+      adsWithoutPackages: 0,
+      maxAdsToInspect: 500,
+      scanStopReason: null,
       timeRemaining: "Calculating...",
-      logs: ["> Booting Intelligence Node..."]
+      logs: ["> Starting scan with a unique-game target..."]
     });
 
     let scanType = "manual";
@@ -2220,7 +2247,10 @@ function App() {
   };
 
   const dropDownAnim = { hidden: { opacity: 0, y: -10, scale: 0.95 }, show: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.15, ease: "easeOut" } }, exit: { opacity: 0, y: -10, scale: 0.95, transition: { duration: 0.1, ease: "easeIn" } } };
-  const scanPercentage = Math.min(100, (scanProgress.currentAd / Math.max(1, scanProgress.totalAds)) * 100).toFixed(0);
+  const scanPercentage = Math.min(
+    100,
+    ((Number(scanProgress.uniqueGamesFound) || 0) / Math.max(1, Number(scanProgress.targetUniqueGames) || 1)) * 100
+  ).toFixed(0);
   const isCountryScanRunning = ["starting", "running"].includes(countryScanJob?.state);
   const countryScanPercentage = Math.min(
     100,
@@ -2815,10 +2845,10 @@ function App() {
                   </div>
                   
                   <div className="flex-1 min-w-full md:min-w-[120px] space-y-1.5 md:space-y-2 relative">
-                    <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Ad limit</label>
+                    <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Unique games</label>
                     <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-full transition-all h-[48px]", (!isAdmin || isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
                       <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit(Math.max(1, scanLimit - 10))} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">remove</span></button>
-                      <input disabled={!isAdmin || isMaxAds || isScanning} value={isMaxAds ? "ALL" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-medium tabular-nums outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
+                      <input disabled={!isAdmin || isMaxAds || isScanning} value={isMaxAds ? "500" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-medium tabular-nums outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
                       <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit((scanLimit || 0) + 10)} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">add</span></button>
                       <div className="w-px h-full bg-border-subtle"></div>
                       <button disabled={!isAdmin || isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(isAdmin && !isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-full transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
@@ -2835,7 +2865,7 @@ function App() {
                   <div className="flex gap-2 items-center flex-shrink-0 w-full xl:w-auto mt-2 xl:mt-0">
                     {isAdmin ? (
                       <>
-                        <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[48px] px-4 rounded-full font-medium text-sm transition-all flex items-center justify-center gap-2 border border-border-subtle disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-primary-container text-on-primary-container border-transparent' : 'bg-surface-solid text-text-main')} title="Scan every single ad. No limits."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> Max</button>
+                        <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[48px] px-4 rounded-full font-medium text-sm transition-all flex items-center justify-center gap-2 border border-border-subtle disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-primary-container text-on-primary-container border-transparent' : 'bg-surface-solid text-text-main')} title="Aim for up to 500 unique games. Atlas still stops at its configurable ad-inspection safety cap."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> Max</button>
                         
                         {isScanning ? (
                           <button onClick={handleCancelScan} className="h-[48px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-medium px-6 rounded-full border border-urgent-red/20 flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
@@ -4680,13 +4710,24 @@ function App() {
 
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
-                        <span className="text-text-main font-medium">{countryScanJob?.checked || 0}</span>
-                        {" "}of {countryScanJob?.total || "â€”"} countries
-                        {countryScanJob?.total ? <span className="ml-1.5">Â· {countryScanPercentage}%</span> : null}
+                        <span className="text-text-main font-medium">{scanProgress.uniqueGamesFound || 0}</span> / {scanProgress.targetUniqueGames || 0} unique games
+                        <span className="ml-1.5">Â· {scanPercentage}%</span>
                       </span>
-                      <span className="tabular-nums flex-shrink-0">
-                        {countryScanJob?.currentCountry || (countryScanJob?.state === "starting" ? "Startingâ€¦" : "")}
+                      <span className="tabular-nums flex-shrink-0">{scanProgress.timeRemaining}</span>
+                    </div>
+
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
+                      <span>
+                        <span className="text-text-main font-medium">{scanProgress.adsInspected || 0}</span> / {scanProgress.maxAdsToInspect || 500} ads inspected
                       </span>
+                      <span>
+                        <span className="text-text-main font-medium">{scanProgress.duplicateAds || 0}</span> duplicate ads
+                      </span>
+                      {(scanProgress.adsWithoutPackages || 0) > 0 && (
+                        <span>
+                          <span className="text-text-main font-medium">{scanProgress.adsWithoutPackages}</span> with no valid package
+                        </span>
+                      )}
                     </div>
 
                     <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
