@@ -610,11 +610,12 @@ async function scanCompetitor(
       if (!arId) throw new Error('Failed to resolve advertiser ID.');
     }
 
-    emitProgress(0, maxAdsToInspect, '> Scrolling to collect ad creatives while protecting the ' + maxAdsToInspect + '-ad inspection cap...');
+    const initialBatchSize = Math.min(10, maxAdsToInspect);
     let strikes = 0;
-    let previousSize = adIds.size;
-    while (adIds.size < maxAdsToInspect && strikes < 3) {
+
+    const collectMoreAds = async () => {
       throwIfStopped();
+      const sizeBefore = adIds.size;
       await searchPage.mouse.wheel(0, 3000);
       await waitForStableSignal({
         inspect: async () => {},
@@ -630,37 +631,67 @@ async function scanCompetitor(
         slowMaxWaitMs: 3000
       });
       throwIfStopped();
-      if (adIds.size === previousSize) strikes += 1;
-      else {
+
+      if (adIds.size === sizeBefore) {
+        strikes += 1;
+      } else {
         strikes = 0;
-        previousSize = adIds.size;
-        emitProgress(0, maxAdsToInspect, '> Intercepted ' + adIds.size + ' ad creatives so far; inspection has not started yet.');
+        discoveryNetworkFailure = false;
+      }
+
+      if (adIds.size >= maxAdsToInspect) discoveryStopReason = 'safety_limit';
+      else if (strikes >= 3) {
+        discoveryStopReason = discoveryNetworkFailure ? 'discovery_error' : 'ads_exhausted';
+      } else {
+        discoveryStopReason = null;
+      }
+
+      return adIds.size > sizeBefore;
+    };
+
+    emitProgress(0, maxAdsToInspect, '> Loading an initial batch of ad creatives. Target: ' + targetUniqueGames + ' unique games; safety cap: ' + maxAdsToInspect + ' inspected ads.');
+    while (adIds.size < initialBatchSize && strikes < 3) {
+      const addedAds = await collectMoreAds();
+      if (addedAds) {
+        emitProgress(0, maxAdsToInspect, '> Intercepted ' + adIds.size + ' ad creatives; preparing to inspect them.');
       }
     }
 
-    if (discoveryNetworkFailure) discoveryStopReason = 'discovery_error';
-    else if (adIds.size >= maxAdsToInspect) discoveryStopReason = 'safety_limit';
-    else if (strikes >= 3) discoveryStopReason = 'ads_exhausted';
-    else discoveryStopReason = 'discovery_error';
+    if (adIds.size >= maxAdsToInspect) discoveryStopReason = 'safety_limit';
+    else if (strikes >= 3 && !discoveryStopReason) {
+      discoveryStopReason = discoveryNetworkFailure ? 'discovery_error' : 'ads_exhausted';
+    }
 
-    await searchPage.close();
-    const idArray = [...adIds].slice(0, maxAdsToInspect);
+    let idArray = [...adIds].slice(0, maxAdsToInspect);
     if (!idArray.length) {
       scanStopReason = discoveryStopReason === 'discovery_error' ? 'discovery_error' : 'ads_exhausted';
       const emptyMessage = scanStopReason === 'discovery_error'
         ? '> Discovery ended with network errors before any ad creatives could be collected; results may be incomplete.'
         : '> No ad creatives were available for this advertiser.';
+      await searchPage.close().catch(() => {});
       emitProgress(0, maxAdsToInspect, emptyMessage);
       return [];
     }
 
-    emitProgress(0, maxAdsToInspect, '> Collected ' + idArray.length + ' ad creatives. Searching for up to ' + targetUniqueGames + ' unique games.');
+    emitProgress(0, maxAdsToInspect, '> Intercepted an initial batch of ' + idArray.length + ' ads. Continuing discovery only if more unique games are needed.');
 
     const results = [];
     let queuedVideoPersistenceTasks = 0;
     const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
 
-    for (let i = 0; i < idArray.length; i += 1) {
+    for (let i = 0; i < maxAdsToInspect; i += 1) {
+      while (i >= idArray.length && !discoveryStopReason && !accounting.hasReachedTarget()) {
+        const previousSize = adIds.size;
+        const addedAds = await collectMoreAds();
+        if (addedAds || adIds.size > previousSize) {
+          idArray = [...adIds].slice(0, maxAdsToInspect);
+          emitProgress( accounting.getSnapshot().adsInspected, maxAdsToInspect,
+            '> Intercepted ' + idArray.length + ' ad creatives so far; ' +
+            accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found.'
+          );
+        }
+      }
+      if (i >= idArray.length || accounting.hasReachedTarget()) break;
       if (isCancelled()) {
         scanStopReason = 'cancelled';
         const cancelError = new Error('Scan aborted by user.');
@@ -911,6 +942,8 @@ async function scanCompetitor(
         break;
       }
     }
+
+    await searchPage.close().catch(() => {});
 
     if (!scanStopReason) {
       if (accounting.hasReachedTarget()) scanStopReason = 'target_reached';
