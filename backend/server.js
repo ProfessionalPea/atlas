@@ -12,7 +12,7 @@ const SESSION_SECRET = getSessionSecret();
 const SESSION_EXPIRATION_DAYS = 30;
 
 const { generateAndSendReport } = require("./AutomatedReport");
-const { scanCompetitor, isValidPackage } = require("./GoogleAdsScanner");
+const { scanCompetitor, isValidPackage } = require("./GoogleAdsScannerBroad");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const { runFullTelemetryForPackage } = require("./PlayStoreTelemetry");
@@ -455,7 +455,14 @@ function createIdleScanStatus() {
     targetIndex: 0,
     totalTargets: 0,
     currentAd: 0,
-    totalAds: 0,
+    totalAds: 500,
+    targetUniqueGames: 0,
+    uniqueGamesFound: 0,
+    adsInspected: 0,
+    duplicateAds: 0,
+    adsWithoutPackages: 0,
+    maxAdsToInspect: 500,
+    scanStopReason: null,
     timeRemaining: "00:00",
     logs: [],
     packages: [],
@@ -503,7 +510,14 @@ function beginScanStatus(limit) {
     targetIndex: 1,
     totalTargets: 1,
     currentAd: 0,
-    totalAds: Math.max(1, Number(limit) || 1),
+    totalAds: 500,
+    targetUniqueGames: Math.max(1, Number(limit) || 1),
+    uniqueGamesFound: 0,
+    adsInspected: 0,
+    duplicateAds: 0,
+    adsWithoutPackages: 0,
+    maxAdsToInspect: 500,
+    scanStopReason: null,
     timeRemaining: "Calculating...",
     logs: ["> Booting Intelligence Node..."],
     startedAt: new Date().toISOString(),
@@ -1755,9 +1769,16 @@ app.post("/api/scan", async (req, res) => {
           targetIndex: tIndex + 1,
           totalTargets: targets.length,
           currentAd: 0,
-          totalAds: Math.max(1, Number(limit) || 1),
+          totalAds: 500,
+          targetUniqueGames: Math.max(1, Number(limit) || 1),
+          uniqueGamesFound: 0,
+          adsInspected: 0,
+          duplicateAds: 0,
+          adsWithoutPackages: 0,
+          maxAdsToInspect: 500,
+          scanStopReason: null,
           timeRemaining: "Calculating...",
-          log: `> 🎯 Starting target ${tIndex + 1}/${targets.length}: ${targetDisplayName}`
+          log: `> Starting target ${tIndex + 1}/${targets.length}: ${targetDisplayName}; goal ${Math.max(1, Number(limit) || 1)} unique games.`
         });
 
         const scanResults = await scanCompetitor(
@@ -1790,14 +1811,21 @@ app.post("/api/scan", async (req, res) => {
         // Early exit: Target produced 0 Play Store packages/ads
         if (!results || results.length === 0) {
           console.log(`⚠️ [SCAN] No valid Play Store packages found for target: "${targetDisplayName}". Skipping downstream sync.`);
+          const stopReason = scanStatus.scanStopReason;
+          const emptyScanMessage = stopReason === "no_matching_advertiser"
+            ? `> No registered advertiser matching "${targetDisplayName}" was found.`
+            : stopReason === "discovery_error"
+              ? `> Discovery encountered network errors for "${targetDisplayName}". Results may be incomplete; retry the scan.`
+              : stopReason === "scan_error" || stopReason === "blocked"
+                ? `> Scan could not complete for "${targetDisplayName}". Check the scan log and retry later.`
+                : `> No valid mobile game packages were found for "${targetDisplayName}".`;
           updateScanStatus({
             target: targetDisplayName,
             targetIndex: tIndex + 1,
             totalTargets: targets.length,
-            currentAd: 0,
-            totalAds: 0,
-            timeRemaining: "00:00",
-            log: `> ⚠️ No active mobile game campaigns found for "${targetDisplayName}".`
+            currentAd: scanStatus.adsInspected || 0,
+            totalAds: scanStatus.maxAdsToInspect || 500,
+            log: emptyScanMessage
           });
           continue;
         }
