@@ -4710,24 +4710,10 @@ function App() {
 
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
-                        <span className="text-text-main font-medium">{scanProgress.uniqueGamesFound || 0}</span> / {scanProgress.targetUniqueGames || 0} unique games
-                        <span className="ml-1.5">Â· {scanPercentage}%</span>
+                        <span className="text-text-main font-medium">{countryScanJob?.checked || 0}</span> of {countryScanJob?.total || 0} countries checked
+                        <span className="ml-1.5">Â· {countryScanPercentage}%</span>
                       </span>
-                      <span className="tabular-nums flex-shrink-0">{scanProgress.timeRemaining}</span>
-                    </div>
-
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
-                      <span>
-                        <span className="text-text-main font-medium">{scanProgress.adsInspected || 0}</span> / {scanProgress.maxAdsToInspect || 500} ads inspected
-                      </span>
-                      <span>
-                        <span className="text-text-main font-medium">{scanProgress.duplicateAds || 0}</span> duplicate ads
-                      </span>
-                      {(scanProgress.adsWithoutPackages || 0) > 0 && (
-                        <span>
-                          <span className="text-text-main font-medium">{scanProgress.adsWithoutPackages}</span> with no valid package
-                        </span>
-                      )}
+                      <span className="tabular-nums flex-shrink-0">{countryScanJob?.timeRemaining || "Calculating..."}</span>
                     </div>
 
                     <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
@@ -4835,10 +4821,24 @@ function App() {
 
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
-                        <span className="text-text-main font-medium">{scanProgress.currentAd}</span> of {scanProgress.totalAds} ads
+                        <span className="text-text-main font-medium">{scanProgress.uniqueGamesFound || 0}</span> / {scanProgress.targetUniqueGames || 0} unique games
                         <span className="ml-1.5">Â· {scanPercentage}%</span>
                       </span>
                       <span className="tabular-nums flex-shrink-0">{scanProgress.timeRemaining}</span>
+                    </div>
+
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
+                      <span>
+                        <span className="text-text-main font-medium">{scanProgress.adsInspected || 0}</span> / {scanProgress.maxAdsToInspect || 500} ads inspected
+                      </span>
+                      <span>
+                        <span className="text-text-main font-medium">{scanProgress.duplicateAds || 0}</span> duplicate ads
+                      </span>
+                      {(scanProgress.adsWithoutPackages || 0) > 0 && (
+                        <span>
+                          <span className="text-text-main font-medium">{scanProgress.adsWithoutPackages}</span> with no valid package
+                        </span>
+                      )}
                     </div>
 
                     <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
