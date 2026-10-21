@@ -6,6 +6,7 @@ const {
 } = require('./IntelligenceFeatures');
 const { extractVideoAssets } = require('./GoogleAdsScannerV2');
 const { isGoogleHost, classifyGoogleResponse, createBoundedQueue, waitForStableSignal } = require('./ScannerResilience');
+const { createScanAccounting, resolveTargetUniqueGames, resolveMaxAdsToInspect } = require('./ScanAccounting');
 
 const videoPool = getDatabasePool();
 let videoDbReady = false;
@@ -354,7 +355,14 @@ async function scanCompetitor(
   isCancelled = () => false
 ) {
   const query = String(searchQuery || '').trim();
+  const targetUniqueGames = resolveTargetUniqueGames(maxAdsToTest);
+  const maxAdsToInspect = resolveMaxAdsToInspect();
+  const accounting = createScanAccounting(targetUniqueGames, maxAdsToInspect);
+  const globallyDiscovered = new Set();
   const startTime = Date.now();
+  let scanStopReason = null;
+  let discoveryNetworkFailure = false;
+  let discoveryStopReason = null;
 
   const emitProgress = (current, total, log) => {
     let timeRemaining = 'Calculating...';
@@ -365,7 +373,14 @@ async function scanCompetitor(
       const secs = (remainingSeconds % 60).toString().padStart(2, '0');
       timeRemaining = `${mins}:${secs}`;
     }
-    onProgress({ currentAd: current, totalAds: total, timeRemaining, log });
+    onProgress({
+      ...accounting.getSnapshot(),
+      currentAd: current,
+      totalAds: total,
+      timeRemaining,
+      log,
+      scanStopReason
+    });
   };
 
   let detectedBlock = null;
@@ -446,14 +461,21 @@ async function scanCompetitor(
       activeDiscoveryRequests.add(request);
       lastDiscoveryActivityAt = Date.now();
     };
-    const finishDiscoveryRequest = request => {
+    const finishDiscoveryRequest = (request, failed = false) => {
       if (activeDiscoveryRequests.delete(request)) lastDiscoveryActivityAt = Date.now();
+      if (failed) {
+        const failure = request.failure();
+        const failureText = typeof failure === 'string' ? failure : String(failure?.errorText || '');
+        if (/net::ERR_/i.test(failureText) && !/ERR_ABORTED/i.test(failureText)) {
+          discoveryNetworkFailure = true;
+        }
+      }
     };
 
-    emitProgress(0, maxAdsToTest, '> Booting broad discovery scanner for "' + query + '"');
+    emitProgress(0, maxAdsToInspect, '> Booting scanner for "' + query + '". Target: ' + targetUniqueGames + ' unique games; safety cap: ' + maxAdsToInspect + ' inspected ads.');
     searchPage.on('request', trackDiscoveryRequest);
     searchPage.on('requestfinished', finishDiscoveryRequest);
-    searchPage.on('requestfailed', finishDiscoveryRequest);
+    searchPage.on('requestfailed', request => finishDiscoveryRequest(request, true));
     searchPage.on('response', async response => {
       const request = response.request();
       const resourceType = request.resourceType();
@@ -570,7 +592,8 @@ async function scanCompetitor(
         }
       }
       if (!matchedOption) {
-        emitProgress(0, maxAdsToTest, `> ❌ No registered advertiser matching "${query}" found.`);
+        scanStopReason = 'no_matching_advertiser';
+        emitProgress(0, maxAdsToInspect, `> No registered advertiser matching "${query}" was found.`);
         return [];
       }
 
@@ -586,10 +609,10 @@ async function scanCompetitor(
       if (!arId) throw new Error('Failed to resolve advertiser ID.');
     }
 
-    emitProgress(0, maxAdsToTest, `> 🎧 Scrolling to intercept ${maxAdsToTest} ads...`);
+    emitProgress(0, maxAdsToInspect, '> Scrolling to collect ad creatives while protecting the ' + maxAdsToInspect + '-ad inspection cap...');
     let strikes = 0;
     let previousSize = adIds.size;
-    while (adIds.size < maxAdsToTest && strikes < 3) {
+    while (adIds.size < maxAdsToInspect && strikes < 3) {
       throwIfStopped();
       await searchPage.mouse.wheel(0, 3000);
       await waitForStableSignal({
@@ -610,20 +633,27 @@ async function scanCompetitor(
       else {
         strikes = 0;
         previousSize = adIds.size;
-        emitProgress(0, maxAdsToTest, '> ... intercepted ' + adIds.size + ' ads so far...');
+        emitProgress(0, maxAdsToInspect, '> Intercepted ' + adIds.size + ' ad creatives so far; inspection has not started yet.');
       }
     }
 
-
+    if (discoveryNetworkFailure) discoveryStopReason = 'discovery_error';
+    else if (adIds.size >= maxAdsToInspect) discoveryStopReason = 'safety_limit';
+    else if (strikes >= 3) discoveryStopReason = 'ads_exhausted';
+    else discoveryStopReason = 'discovery_error';
 
     await searchPage.close();
-    const idArray = [...adIds].slice(0, Math.max(0, Number(maxAdsToTest) || 0));
+    const idArray = [...adIds].slice(0, maxAdsToInspect);
     if (!idArray.length) {
-      emitProgress(0, 0, '> ℹ️ No active ads found for this target.');
+      scanStopReason = discoveryStopReason === 'discovery_error' ? 'discovery_error' : 'ads_exhausted';
+      const emptyMessage = scanStopReason === 'discovery_error'
+        ? '> Discovery ended with network errors before any ad creatives could be collected; results may be incomplete.'
+        : '> No ad creatives were available for this advertiser.';
+      emitProgress(0, maxAdsToInspect, emptyMessage);
       return [];
     }
 
-    emitProgress(0, idArray.length, `> ✅ Intercepted ${idArray.length} ads. Running September-style broad extraction...`);
+    emitProgress(0, maxAdsToInspect, '> Collected ' + idArray.length + ' ad creatives. Searching for up to ' + targetUniqueGames + ' unique games.');
 
     const results = [];
     const globallyDiscovered = new Set();
@@ -631,8 +661,14 @@ async function scanCompetitor(
     const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
 
     for (let i = 0; i < idArray.length; i += 1) {
-      if (isCancelled()) throw new Error('Scan aborted by user.');
+      if (isCancelled()) {
+        scanStopReason = 'cancelled';
+        const cancelError = new Error('Scan aborted by user.');
+        cancelError.code = 'ATLAS_SCAN_CANCELLED';
+        throw cancelError;
+      }
       const adId = idArray[i];
+      accounting.markInspected();
       const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
       const adPage = await context.newPage();
       const discovered = new Set();
@@ -811,11 +847,12 @@ async function scanCompetitor(
 
 
         const uniqueInAd = [...discovered];
+        const packageAccounting = accounting.recordPackages(uniqueInAd);
         sourceDiscoveryTotals.requestUrl += packageSources.requestUrl.size;
         sourceDiscoveryTotals.responseBody += packageSources.responseBody.size;
         sourceDiscoveryTotals.frameHtml += packageSources.frameHtml.size;
 
-        for (const pkg of uniqueInAd) globallyDiscovered.add(pkg);
+        for (const pkg of uniqueInAd) globallyDiscovered.add(String(pkg).trim().toLowerCase());
 
         const attribution = buildSafeVideoAttribution(frameEvidence, videoMap);
         const videoAssets = [...videoMap.values()];
@@ -840,17 +877,27 @@ async function scanCompetitor(
             await onPackageFound(pkg);
           }
           emitProgress(
-            i + 1,
-            idArray.length,
-            `> ✅ Ad ${i + 1}: discovered ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}` +
-            `${videoAssets.length ? ` · ${videoAssets.length} video${videoAssets.length === 1 ? '' : 's'}` : ''}`
+            accounting.getSnapshot().adsInspected,
+            maxAdsToInspect,
+            `> Ad ${i + 1}: discovered ${uniqueInAd.length} valid package${uniqueInAd.length === 1 ? '' : 's'}; ` +
+            accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found' +
+            (packageAccounting.isDuplicateAd ? ' (duplicate creative)' : '') +
+            (videoAssets.length ? ` · ${videoAssets.length} video${videoAssets.length === 1 ? '' : 's'}` : '')
           );
         } else {
-          emitProgress(i + 1, idArray.length, `> ❌ Ad ${i + 1}: no valid package found.`);
+          emitProgress(
+            accounting.getSnapshot().adsInspected,
+            maxAdsToInspect,
+            `> Ad ${i + 1}: no valid package found.`
+          );
         }
       } catch (error) {
-        if (error && error.code === 'ATLAS_SCAN_BLOCKED') throw error;
-        emitProgress(i + 1, idArray.length, `> ⚠️ Ad ${i + 1}: ${error.message || 'error'}; continuing.`);
+        if (error && (error.code === 'ATLAS_SCAN_BLOCKED' || error.code === 'ATLAS_SCAN_CANCELLED')) throw error;
+        emitProgress(
+          accounting.getSnapshot().adsInspected,
+          maxAdsToInspect,
+          `> Ad ${i + 1}: ${error.message || 'error'}; continuing.`
+        );
       } finally {
         adPage.off('request', requestHandler);
         adPage.off('requestfinished', finishCreativeRequest);
@@ -858,6 +905,18 @@ async function scanCompetitor(
         adPage.off('response', responseHandler);
         await adPage.close().catch(() => {});
       }
+
+      if (accounting.hasReachedTarget()) {
+        scanStopReason = 'target_reached';
+        break;
+      }
+    }
+
+    if (!scanStopReason) {
+      if (accounting.hasReachedTarget()) scanStopReason = 'target_reached';
+      else if (discoveryNetworkFailure || discoveryStopReason === 'discovery_error') scanStopReason = 'discovery_error';
+      else if (discoveryStopReason === 'safety_limit' || accounting.getSnapshot().adsInspected >= maxAdsToInspect) scanStopReason = 'safety_limit';
+      else scanStopReason = 'ads_exhausted';
     }
 
     console.log('[Broad Scanner] Package evidence source hits (overlap between sources is expected): ' +
@@ -865,19 +924,37 @@ async function scanCompetitor(
       sourceDiscoveryTotals.responseBody + ', frame/DOM=' + sourceDiscoveryTotals.frameHtml + '.');
 
     const queueSnapshot = videoPersistenceQueue.snapshot();
+    const snapshot = accounting.getSnapshot();
+    let completionMessage;
+    if (scanStopReason === 'target_reached') {
+      completionMessage = '> Target reached: found ' + snapshot.uniqueGamesFound + ' unique games after inspecting ' + snapshot.adsInspected + ' ads.';
+    } else if (scanStopReason === 'safety_limit') {
+      completionMessage = '> Safety cap reached after inspecting ' + snapshot.adsInspected + ' ads; found ' + snapshot.uniqueGamesFound + '/' + targetUniqueGames + ' unique games. Results may be incomplete.';
+    } else if (scanStopReason === 'discovery_error') {
+      completionMessage = '> Discovery encountered network errors. Found ' + snapshot.uniqueGamesFound + '/' + targetUniqueGames + ' unique games after inspecting ' + snapshot.adsInspected + ' ads; results may be incomplete.';
+    } else if (scanStopReason === 'cancelled') {
+      completionMessage = '> Scan cancelled after inspecting ' + snapshot.adsInspected + ' ads.';
+    } else {
+      completionMessage = '> Advertiser feed exhausted after inspecting ' + snapshot.adsInspected + ' ads; found ' + snapshot.uniqueGamesFound + '/' + targetUniqueGames + ' unique games.';
+    }
     emitProgress(
-      idArray.length,
-      idArray.length,
-      '> Finished! ' + globallyDiscovered.size + ' unique package' + (globallyDiscovered.size === 1 ? '' : 's') +
-        ' discovered from ' + idArray.length + ' ads.' +
-        (queuedVideoPersistenceTasks ? ' Video metadata persistence is queued separately (' + queueSnapshot.pending + ' total queued/in progress).' : '')
+      snapshot.adsInspected,
+      maxAdsToInspect,
+      completionMessage + (queuedVideoPersistenceTasks ? ' Video metadata persistence is queued separately (' + queueSnapshot.pending + ' total queued/in progress).' : '')
     );
     console.log('[Broad Scanner] Async video persistence queue: ' + JSON.stringify(queueSnapshot));
-    console.log('[Broad Scanner] ' + idArray.length + ' ads -> ' + globallyDiscovered.size + ' unique packages (' + results.length + ' creative/package mappings).');
+    console.log('[Broad Scanner] ' + snapshot.adsInspected + ' ads inspected -> ' + snapshot.uniqueGamesFound + ' unique packages (' + results.length + ' creative/package mappings), stop reason: ' + scanStopReason + '.');
     return results;
   } catch (error) {
     console.error('Broad scanner ended:', error.message);
-    emitProgress(0, maxAdsToTest, '> SCAN ENDED: ' + error.message);
+    if (error && error.code === 'ATLAS_SCAN_BLOCKED') scanStopReason = 'blocked';
+    else if ((error && error.code === 'ATLAS_SCAN_CANCELLED') || isCancelled()) scanStopReason = 'cancelled';
+    else scanStopReason = 'scan_error';
+    emitProgress(
+      accounting.getSnapshot().adsInspected,
+      maxAdsToInspect,
+      '> Scan ended (' + scanStopReason + '): ' + error.message
+    );
     if (error && error.code === 'ATLAS_SCAN_BLOCKED') throw error;
     return [];
   } finally {
