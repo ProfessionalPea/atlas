@@ -366,15 +366,21 @@ async function scanCompetitor(
 
   const emitProgress = (current, total, log) => {
     let timeRemaining = 'Calculating...';
-    if (current > 0 && total > 0) {
+    const progressSnapshot = accounting.getSnapshot();
+    if (progressSnapshot.uniqueGamesFound > 0 && progressSnapshot.uniqueGamesFound < targetUniqueGames) {
       const elapsedSeconds = (Date.now() - startTime) / 1000;
-      const remainingSeconds = Math.max(0, Math.round((total - current) * (elapsedSeconds / current)));
+      const secondsPerUniqueGame = elapsedSeconds / progressSnapshot.uniqueGamesFound;
+      const remainingSeconds = Math.max(0, Math.round(
+        (targetUniqueGames - progressSnapshot.uniqueGamesFound) * secondsPerUniqueGame
+      ));
       const mins = Math.floor(remainingSeconds / 60).toString().padStart(2, '0');
       const secs = (remainingSeconds % 60).toString().padStart(2, '0');
       timeRemaining = `${mins}:${secs}`;
+    } else if (progressSnapshot.uniqueGamesFound >= targetUniqueGames) {
+      timeRemaining = '00:00';
     }
     onProgress({
-      ...accounting.getSnapshot(),
+      ...progressSnapshot,
       currentAd: current,
       totalAds: total,
       timeRemaining,
@@ -636,7 +642,6 @@ async function scanCompetitor(
         strikes += 1;
       } else {
         strikes = 0;
-        discoveryNetworkFailure = false;
       }
 
       if (adIds.size >= maxAdsToInspect) discoveryStopReason = 'safety_limit';
