@@ -10,6 +10,8 @@ Research often means moving between Google Ads Transparency Center, Google Play 
 
 ## What it does
 - Scans Google Ads Transparency Center to discover advertised games and publishers.
+- Scan targets count **unique package names found within the current scan**; repeat creatives for the same game do not consume the game target.
+- The scanner expands discovery in small batches and stops when it reaches the unique-game target, exhausts the advertiser feed, encounters a discovery error, or reaches the configured ads-inspected safety cap.
 - Collects Google Play listing information and presents a searchable directory.
 - Tracks ad creatives and scan history for competitive research.
 - Checks a package's country availability, including live, pre-registration, early access, unavailable and unknown classifications.
@@ -43,6 +45,8 @@ flowchart TD
 ```
 
 The API coordinates scans and persists research data. The frontend polls for scan progress. Country scan results survive a page reload; a server restart can interrupt an active scan, which is recorded as an error rather than automatically resumed.
+
+Competitor scan limits are unique games per target. The scanner counts package IDs case-insensitively within each individual scan, but it still preserves all creative-to-package mappings returned by inspected ads. Progress reports unique games found, ads inspected, duplicate ads and why discovery stopped. By default, at most 500 ads are inspected per target; configure `ATLAS_MAX_ADS_PER_SCAN` to change this safety cap (hard maximum 5000). A feed that stops growing after stable scroll attempts is treated as exhausted only when tracked network requests have not reported a network failure; failed discovery is reported separately as incomplete.
 
 ## Repository guide
 | Path | Purpose |
