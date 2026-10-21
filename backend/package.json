@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test:security": "node --test Security.test.js"
+    "test:security": "node --test Security.test.js",
+    "test:scan": "node --test ScanAccounting.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
