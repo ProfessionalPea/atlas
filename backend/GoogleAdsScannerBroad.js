@@ -23,9 +23,32 @@ async function ensureVideoDb() {
 }
 
 const PACKAGE_BLACKLIST = [
+  // Common non-app/system identifiers that can appear in Google page payloads.
   'com.google.',
   'com.android.',
-  'com.apple.'
+  'com.apple.',
+  'org.chromium.',
+  'www.',
+  'm.',
+  'accounts.',
+  'support.',
+  'developers.',
+  'play.',
+  'store.',
+  'google.',
+  'youtube.',
+  'facebook.',
+  'instagram.',
+  'schema.',
+  'w3.',
+  'gstatic.',
+  'googleapis.',
+  'googlesyndication.',
+  'doubleclick.',
+  'adservice.',
+  'cloudflare.',
+  'microsoft.',
+  'apple.'
 ];
 
 function isValidPackage(pkg) {
@@ -34,14 +57,16 @@ function isValidPackage(pkg) {
   if (!value || value.length > 255) return false;
 
   const lower = value.toLowerCase();
-  // Atlas intentionally ingests Android package IDs in the com.* namespace only.
-  if (!lower.startsWith('com.')) return false;
+  // Android application IDs are not required to use the com.* namespace.
+  // Some legitimate apps use org.*, net.*, io.*, or other reverse-DNS prefixes.
   if (PACKAGE_BLACKLIST.some(prefix => lower.startsWith(prefix))) return false;
   if (value.includes('_KNOWN_') || /\.(?:js|json|png|css|html?)$/i.test(lower)) return false;
 
   const segments = value.split('.');
   if (segments.length < 2) return false;
-  if (!segments.every(segment => /^[A-Za-z_][A-Za-z0-9_]*$/.test(segment))) return false;
+  // Allow numeric-leading segments: package IDs can contain digits after a dot.
+  if (!segments.every(segment => /^[A-Za-z0-9_]+$/.test(segment))) return false;
+  if (!segments.some(segment => /[A-Za-z]/.test(segment))) return false;
 
   return true;
 }
