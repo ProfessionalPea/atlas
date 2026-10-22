@@ -346,7 +346,7 @@ const TrendingTargets = memo(function TrendingTargets({
             <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Trending Targets</h2>
           </div>
           <p className="text-[10px] md:text-xs text-text-muted mt-1 md:ml-[29px]">
-            {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">â— Latest</span>}
+            {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold"><span className="inline-block w-1.5 h-1.5 rounded-full bg-current align-middle mr-1.5" aria-hidden="true" />Latest</span>}
             Ranked by activity
           </p>
         </div>
@@ -460,7 +460,7 @@ const LiveDirectory = memo(function LiveDirectory({
           <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Live Directory</h2>
         </div>
         <p className="text-[10px] md:text-xs text-text-muted mt-1 md:ml-[29px]">
-          {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold">â— Latest</span>}
+          {viewMode === 'latest' && <span className="text-emerald-metric mr-2 font-semibold"><span className="inline-block w-1.5 h-1.5 rounded-full bg-current align-middle mr-1.5" aria-hidden="true" />Latest</span>}
           Hierarchy view
         </p>
       </div>
@@ -861,10 +861,27 @@ function App() {
     const isNewTerminalState = lastHandledTerminalRef.current !== terminalKey;
 
     if (state === "complete" || status.isComplete) {
-      if (Array.isArray(status.packages)) {
-        setLatestScanPackages(status.packages);
-        localStorage.setItem("atlas_latest_packages", JSON.stringify(status.packages));
-      }
+      const completedPackages = Array.isArray(status.packages)
+        ? [...new Set(status.packages
+            .filter(pkg => typeof pkg === "string")
+            .map(pkg => pkg.trim().toLowerCase())
+            .filter(Boolean))]
+        : [];
+      const completedAdCounts = status.adCounts && typeof status.adCounts === "object"
+        ? status.adCounts
+        : {};
+      const completedAdCountsByCompetitor = status.adCountsByCompetitor && typeof status.adCountsByCompetitor === "object"
+        ? status.adCountsByCompetitor
+        : {};
+
+      // Always replace the previous snapshot, even when this scan found zero
+      // packages or the server omitted a result field.
+      setLatestScanPackages(completedPackages);
+      localStorage.setItem("atlas_latest_packages", JSON.stringify(completedPackages));
+      setLatestScanAdCounts(completedAdCounts);
+      localStorage.setItem("atlas_latest_ad_counts", JSON.stringify(completedAdCounts));
+      setLatestScanAdCountsByCompetitor(completedAdCountsByCompetitor);
+      localStorage.setItem("atlas_latest_ad_counts_by_competitor", JSON.stringify(completedAdCountsByCompetitor));
 
       if (status.competitorId) {
         setLatestScanCompId(status.competitorId);
@@ -1171,36 +1188,29 @@ function App() {
 
   const isFromLatestScan = (game) => {
     if (viewMode === "all") return true;
-    if (!hasLatestScan) return false;
+    if (!hasLatestScan || !game?.package_name) return false;
 
+    const packageName = String(game.package_name).trim().toLowerCase();
     const competitorKey = game?.competitor_id !== undefined && game?.competitor_id !== null
       ? String(game.competitor_id)
       : null;
+    const countsByCompetitor = latestScanAdCountsByCompetitor || {};
+    const hasCompetitorCounts = Object.keys(countsByCompetitor).length > 0;
 
-    if (competitorKey && latestScanAdCountsByCompetitor?.[competitorKey]) {
-      return Number(latestScanAdCountsByCompetitor[competitorKey]?.[game.package_name]) > 0;
+    // When the scan returned per-competitor counts, use them to avoid showing
+    // a historical game just because its package also exists elsewhere.
+    if (competitorKey && Object.prototype.hasOwnProperty.call(countsByCompetitor, competitorKey)) {
+      const competitorCounts = countsByCompetitor[competitorKey] || {};
+      return Number(competitorCounts[packageName]) > 0;
     }
 
-    if (latestScanPackages && latestScanPackages.length > 0) {
-      return latestScanPackages.includes(game.package_name);
-    }
+    if (competitorKey && hasCompetitorCounts) return false;
 
-    if (latestScanCompId) {
-      const comp = competitorTree.find(c => c.id.toString() === latestScanCompId.toString());
-      if (comp && comp.accounts) {
-        return comp.accounts.some(acc => (acc.games || []).some(g => g.package_name === game.package_name));
-      }
-    }
-
-    if (latestScanTargetName) {
-      const targetLower = latestScanTargetName.toLowerCase();
-      const pubMatch = (game.publisher_name || "").toLowerCase().includes(targetLower);
-      const compMatch = (game.competitor_name || "").toLowerCase().includes(targetLower);
-      const pkgMatch = (game.package_name || "").toLowerCase().includes(targetLower);
-      return pubMatch || compMatch || pkgMatch;
-    }
-
-    return false;
+    // The completed scan's package list is authoritative, including an empty
+    // list. Never fall back to the database's historical competitor tree.
+    return Array.isArray(latestScanPackages) && latestScanPackages.some(
+      pkg => typeof pkg === "string" && pkg.trim().toLowerCase() === packageName
+    );
   };
 
   const visibleTrending = useMemo(() => {
@@ -1215,10 +1225,6 @@ function App() {
     return competitorTree.map(comp => {
       if (viewMode === "all") return comp;
 
-      const isTargetComp = latestScanCompId
-        ? comp.id.toString() === latestScanCompId.toString()
-        : (latestScanTargetName ? comp.name.toLowerCase().includes(latestScanTargetName.toLowerCase()) : false);
-
       const visibleAccounts = (comp.accounts || []).map(acc => {
         const taggedGames = (acc.games || []).map(game => ({
           ...game,
@@ -1231,21 +1237,11 @@ function App() {
           .map(withLatestScanAdCount);
 
         return { ...acc, games: visibleGames };
-      }).filter(acc => acc.games.length > 0 || isTargetComp);
+      }).filter(acc => acc.games.length > 0);
 
       return { ...comp, accounts: visibleAccounts };
-    }).filter(comp => {
-      if (viewMode === "all") return true;
-
-      if (latestScanAdCountsByCompetitor?.[String(comp.id)]) {
-        return Object.keys(latestScanAdCountsByCompetitor[String(comp.id)] || {}).length > 0;
-      }
-
-      if (latestScanCompId) return comp.id.toString() === latestScanCompId.toString();
-      if (latestScanTargetName) return comp.name.toLowerCase().includes(latestScanTargetName.toLowerCase());
-      return comp.accounts.length > 0;
-    });
-  }, [competitorTree, viewMode, latestScanCompId, latestScanTargetName, hasLatestScan, latestScanPackages, latestScanAdCountsByCompetitor, withLatestScanAdCount]);
+    }).filter(comp => viewMode === "all" || comp.accounts.length > 0);
+  }, [competitorTree, viewMode, hasLatestScan, latestScanPackages, latestScanAdCountsByCompetitor, withLatestScanAdCount]);
 
   const displayStats = useMemo(() => {
     return viewMode === "all" ? stats : {
@@ -3019,7 +3015,7 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-6 md:gap-8">
               <div>
                 <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
-                  Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15">â— Latest</span>}
+                  Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15"><span className="inline-block w-1.5 h-1.5 rounded-full bg-current align-middle mr-1.5" aria-hidden="true" />Latest</span>}
                 </h1>
                 <p className="font-body-sm md:font-body-md text-text-muted mt-1">
                   Full database index of all intercepted competitors, publishers, and games.
@@ -3860,7 +3856,7 @@ function App() {
                           <span className={cn("text-[10px] md:text-xs font-medium px-2 py-0.5 rounded-md bg-input-bg border border-border-subtle", meta.color)}>{meta.total}</span>
                         </div>
                         <p className="font-body-xs md:font-body-sm text-text-muted mt-1 truncate">
-                          {viewMode === "latest" && <span className="text-emerald-metric font-bold mr-2">â— Latest</span>}
+                          {viewMode === "latest" && <span className="text-emerald-metric font-bold mr-2"><span className="inline-block w-1.5 h-1.5 rounded-full bg-current align-middle mr-1.5" aria-hidden="true" />Latest</span>}
                           {meta.subtitle}
                         </p>
                       </div>
