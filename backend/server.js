@@ -2142,7 +2142,7 @@ app.post("/api/scan", async (req, res) => {
         );
 
         updateScanStatus({
-          log: `> 📊 Syncing ${Object.keys(creativeIdsByPackage).length} com.* packages to Google Sheets (with a 12-second limit per sync)...`
+          log: `> 📊 Syncing ${Object.keys(creativeIdsByPackage).length} Android packages to Google Sheets (with a 12-second limit per sync)...`
         });
 
         const sheetSyncResults = await Promise.allSettled([
