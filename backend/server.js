@@ -1801,7 +1801,7 @@ app.post("/api/scan", async (req, res) => {
 
         if (activeScanCancelled) break;
 
-        // Defence in depth: only validated com.* package IDs may enter ingestion.
+        // Defence in depth: only syntactically valid Android package IDs may enter ingestion.
         const results = (Array.isArray(scanResults) ? scanResults : [])
           .filter(entry => isValidPackage(entry?.package))
           .map(entry => ({
@@ -1886,7 +1886,7 @@ app.post("/api/scan", async (req, res) => {
         let metadataCompleted = 0;
 
         updateScanStatus({
-          log: `> 🗄️ Ingesting ${packageEntries.length} com.* packages; fetching Play Store metadata with bounded concurrency...`
+          log: `> 🗄️ Ingesting ${packageEntries.length} Android packages; fetching Play Store metadata with bounded concurrency...`
         });
 
         await mapWithConcurrency(
