@@ -1,0 +1,26 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+coverage/
+.vite/
+
+# Local environment configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Credentials and runtime data
+**/google-credentials.json
+**/credentials.json
+*.pem
+*.key
+backend/uploads/
+backend/atlas.db*
+backend/playmax_ads.json
+backend/extracted_packages.json
+
+# Logs and local machine files
+*.log
+.DS_Store
+Thumbs.db

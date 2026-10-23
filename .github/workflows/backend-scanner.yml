@@ -1,0 +1,45 @@
+name: Backend scanner checks
+
+on:
+  pull_request:
+    paths:
+      - 'backend/GoogleAdsScanner.js'
+      - 'backend/GoogleAdsScannerBroad.js'
+      - 'backend/ScannerResilience.js'
+      - 'backend/scanner-resilience.test.js'
+      - 'backend/GoogleAdsScannerV5.js'
+      - 'backend/GoogleAdsScannerV6.js'
+      - 'backend/AtlasExtensions.js'
+      - 'backend/ScanDiscoveryRegistry.js'
+      - 'backend/server.js'
+      - 'backend/GoogleSheetsSync.js'
+      - 'backend/scanner-broad.test.js'
+      - 'backend/scanner-v5.test.js'
+      - 'backend/scanner-v6.test.js'
+      - 'backend/scan-discovery-registry.test.js'
+      - '.github/workflows/backend-scanner.yml'
+
+jobs:
+  scanner:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: node --check GoogleAdsScannerBroad.js
+      - run: node --check ScannerResilience.js
+      - run: node --check GoogleAdsScanner.js
+      - run: node --check AtlasExtensions.js
+      - run: node --check ScanDiscoveryRegistry.js
+      - run: node --check server.js
+      - run: node --check GoogleSheetsSync.js
+      - run: node scanner-broad.test.js
+      - run: node scanner-resilience.test.js
+      - run: node scan-discovery-registry.test.js

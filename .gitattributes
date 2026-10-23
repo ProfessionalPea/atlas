@@ -1,0 +1,15 @@
+# Consistent source and configuration line endings.
+* text=auto
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Keep the legacy API file's existing CRLF format for this security-only change.
+# It can be normalized separately so its functional diff remains reviewable.
+/backend/server.js text eol=crlf

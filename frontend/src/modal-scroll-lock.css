@@ -1,0 +1,31 @@
+/* Modal / drawer scroll containment -----------------------------------------
+   When Atlas opens a full-screen overlay, the document underneath must stop
+   scrolling. Scroll momentum stays inside the overlay's own scrollable region
+   instead of chaining into the dashboard when the modal hits its top/bottom. */
+
+html:has(#root .fixed.inset-0),
+body:has(#root .fixed.inset-0) {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+#root .fixed.inset-0 :is(
+  .overflow-y-auto,
+  .overflow-auto,
+  [class*="overflow-y-auto"],
+  [class*="overflow-auto"]
+) {
+  overscroll-behavior-y: contain;
+  overscroll-behavior-x: contain;
+}
+
+/* Touch devices can otherwise hand momentum back to the page at the edge of a
+   drawer/modal. Keep panning owned by the active scroll surface. */
+#root .fixed.inset-0 :is(
+  .overflow-y-auto,
+  .overflow-auto,
+  [class*="overflow-y-auto"],
+  [class*="overflow-auto"]
+) {
+  touch-action: pan-y;
+}

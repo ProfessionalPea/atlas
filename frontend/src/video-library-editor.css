@@ -1,0 +1,19 @@
+/* Small compatibility helpers for the additive Video Library editor. */
+.px-4\.5 {
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.bg-electric-blue\/8 {
+  background-color: rgb(26 115 232 / 0.08);
+}
+
+[data-atlas-video-editor-panel="1"] {
+  contain: layout paint;
+}
+
+[data-atlas-video-edit="1"]:focus-visible,
+[data-atlas-unassigned-filter="1"]:focus-visible {
+  outline: 2px solid rgb(26 115 232 / 0.55);
+  outline-offset: 2px;
+}
