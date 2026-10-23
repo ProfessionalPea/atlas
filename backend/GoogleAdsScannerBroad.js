@@ -487,33 +487,34 @@ async function scanCompetitor(
     else route.continue();
   });
 
+  let lastDiscoveryActivityAt = Date.now();
+  let pendingDiscoveryResponses = 0;
+  const activeDiscoveryRequests = new Set();
+  const trackedRequestTypes = new Set(['document', 'xhr', 'fetch', 'script']);
+
+  const trackDiscoveryRequest = request => {
+    if (!trackedRequestTypes.has(request.resourceType()) || !isGoogleHost(request.url())) return;
+    activeDiscoveryRequests.add(request);
+    lastDiscoveryActivityAt = Date.now();
+  };
+  const finishDiscoveryRequest = (request, failed = false) => {
+    if (activeDiscoveryRequests.delete(request)) lastDiscoveryActivityAt = Date.now();
+    if (failed) {
+      const failure = request.failure();
+      const failureText = typeof failure === 'string' ? failure : String(failure?.errorText || '');
+      if (/net::ERR_/i.test(failureText) && !/ERR_ABORTED/i.test(failureText)) {
+        discoveryNetworkFailure = true;
+      }
+    }
+  };
+  const handleFailedDiscoveryRequest = request => finishDiscoveryRequest(request, true);
+
   try {
     searchPage.setDefaultTimeout(120000);
     searchPage.setDefaultNavigationTimeout(120000);
 
     let arId = null;
     let hasClicked = false;
-    let lastDiscoveryActivityAt = Date.now();
-    let pendingDiscoveryResponses = 0;
-    const activeDiscoveryRequests = new Set();
-    const trackedRequestTypes = new Set(['document', 'xhr', 'fetch', 'script']);
-
-    const trackDiscoveryRequest = request => {
-      if (!trackedRequestTypes.has(request.resourceType()) || !isGoogleHost(request.url())) return;
-      activeDiscoveryRequests.add(request);
-      lastDiscoveryActivityAt = Date.now();
-    };
-    const finishDiscoveryRequest = (request, failed = false) => {
-      if (activeDiscoveryRequests.delete(request)) lastDiscoveryActivityAt = Date.now();
-      if (failed) {
-        const failure = request.failure();
-        const failureText = typeof failure === 'string' ? failure : String(failure?.errorText || '');
-        if (/net::ERR_/i.test(failureText) && !/ERR_ABORTED/i.test(failureText)) {
-          discoveryNetworkFailure = true;
-        }
-      }
-    };
-    const handleFailedDiscoveryRequest = request => finishDiscoveryRequest(request, true);
 
     emitProgress(0, maxAdsToInspect, '> Booting scanner for "' + query + '". Target: ' + targetUniqueGames + ' unique games; safety cap: ' + maxAdsToInspect + ' inspected ads.');
     searchPage.on('request', trackDiscoveryRequest);
@@ -820,10 +821,16 @@ async function scanCompetitor(
             slowRendererDetected = true;
           }
 
+          const status = response.status();
           const headers = response.headers();
+          if (headers['location']) {
+            recordPackages(headers['location'], 'requestUrl');
+          }
+          if (status >= 300 && status < 400) return;
+
           const contentType = String(headers['content-type'] || '').toLowerCase();
           const headerAssessment = recordResponseAssessment(
-            classifyGoogleResponse({ status: response.status(), contentType, resourceType, url: responseUrl }),
+            classifyGoogleResponse({ status, contentType, resourceType, url: responseUrl }),
             responseUrl
           );
           if (headerAssessment.blocked) return;
@@ -835,7 +842,7 @@ async function scanCompetitor(
           const body = await response.text();
           if (!body || body.length > 5000000) return;
           const assessment = recordResponseAssessment(
-            classifyGoogleResponse({ status: response.status(), contentType, body, resourceType, url: responseUrl }),
+            classifyGoogleResponse({ status, contentType, body, resourceType, url: responseUrl }),
             responseUrl
           );
           if (assessment.blocked) return;
@@ -851,7 +858,10 @@ async function scanCompetitor(
             }
           }
         } catch (error) {
-          console.warn('[Broad Scanner] Could not inspect creative response: ' + error.message);
+          const msg = String(error?.message || '');
+          if (!/No data found for resource|navigated away|redirect responses|Target closed/i.test(msg)) {
+            console.warn('[Broad Scanner] Could not inspect creative response: ' + msg);
+          }
         } finally {
           pendingResponseBodies = Math.max(0, pendingResponseBodies - 1);
           lastRelevantSignalAt = Date.now();
@@ -948,6 +958,9 @@ async function scanCompetitor(
             });
             await onPackageFound(pkg);
           }
+          console.log(
+            `🟢 [Broad Scanner] [Ad #${i + 1} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] Discovered ${uniqueInAd.length} package(s): ${uniqueInAd.slice(0, 5).join(', ')}`
+          );
           emitProgress(
             accounting.getSnapshot().adsInspected,
             maxAdsToInspect,
@@ -957,6 +970,9 @@ async function scanCompetitor(
             (videoAssets.length ? ` · ${videoAssets.length} video${videoAssets.length === 1 ? '' : 's'}` : '')
           );
         } else {
+          console.log(
+            `🟡 [Broad Scanner] [Ad #${i + 1} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] No valid package found.`
+          );
           emitProgress(
             accounting.getSnapshot().adsInspected,
             maxAdsToInspect,
@@ -1032,9 +1048,11 @@ async function scanCompetitor(
     if (error && error.code === 'ATLAS_SCAN_BLOCKED') throw error;
     return [];
   } finally {
-    searchPage.off('request', trackDiscoveryRequest);
-    searchPage.off('requestfinished', finishDiscoveryRequest);
-    searchPage.off('requestfailed', handleFailedDiscoveryRequest);
+    try {
+      searchPage.off('request', trackDiscoveryRequest);
+      searchPage.off('requestfinished', finishDiscoveryRequest);
+      searchPage.off('requestfailed', handleFailedDiscoveryRequest);
+    } catch {}
     await browser.close().catch(() => {});
   }
 
