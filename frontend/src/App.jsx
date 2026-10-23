@@ -89,18 +89,15 @@ function parseInstalls(installStr) {
 // Every API request supplies the session auth token
 async function fetchJson(url, options = {}) {
   const token = localStorage.getItem(AUTH_TOKEN_KEY);
-  
-  // Append ngrok warning bypass as a query param so preflight is never blocked
-  const separator = url.includes("?") ? "&" : "?";
-  const targetUrl = `${url}${separator}ngrok-skip-browser-warning=true`;
 
   const headers = {
     "Content-Type": "application/json",
+    "ngrok-skip-browser-warning": "true",
     ...(token ? { "x-atlas-token": token } : {}),
     ...options.headers,
   };
 
-  const response = await fetch(targetUrl, { ...options, headers });
+  const response = await fetch(url, { ...options, headers });
 
   if (response.status === 401) {
     localStorage.removeItem(AUTH_TOKEN_KEY);
