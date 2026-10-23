@@ -10,6 +10,8 @@ const SCAN_DEBUG = process.env.ATLAS_SCAN_DEBUG === "1" || process.env.ATLAS_SCA
 const BLOCKED_PACKAGE_PREFIXES = [
   "com.google.",
   "com.android.",
+  "com.youtube.",
+  "com.widevine.",
   "com.facebook.",
   "com.unity3d.",
   "com.applovin.",

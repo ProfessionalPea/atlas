@@ -30,7 +30,19 @@ function isValidPackage(pkg) {
   const lower = pkg.toLowerCase();
   const validPrefixes = ['com.', 'io.', 'net.', 'org.', 'games.'];
   if (!validPrefixes.some(prefix => lower.startsWith(prefix))) return false;
-  const blacklist = ['goog.', 'com.google.', 'com.android.', 'com.apple.', 'org.w3c.', 'org.apache.', 'io.github.'];
+  const blacklist = [
+    'goog.',
+    'com.google.',
+    'com.android.',
+    'com.apple.',
+    'com.youtube.',
+    'com.widevine.',
+    'com.microsoft.playready',
+    'com.adobe.primetime',
+    'org.w3c.',
+    'org.apache.',
+    'io.github.'
+  ];
   if (blacklist.some(bad => lower.startsWith(bad))) return false;
   if (pkg.includes('_KNOWN_') || lower.endsWith('.js') || lower.endsWith('.json') || lower.endsWith('.png')) return false;
   return pkg.split('.').length >= 2;
@@ -49,13 +61,15 @@ function decodeForInspection(value) {
     .replace(/\\u002f/gi, '/');
 
   for (let i = 0; i < 2; i += 1) {
-    try {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) break;
-      decoded = next;
-    } catch {
-      break;
-    }
+    const before = decoded;
+    decoded = decoded.replace(/(?:%[0-9A-Fa-f]{2})+/g, (seq) => {
+      try {
+        return decodeURIComponent(seq);
+      } catch {
+        return seq;
+      }
+    });
+    if (decoded === before) break;
   }
   return decoded;
 }

@@ -23,10 +23,18 @@ async function ensureVideoDb() {
 }
 
 const PACKAGE_BLACKLIST = [
-  // Common non-app/system identifiers that can appear in Google page payloads.
+  // Common non-app/system identifiers and DRM key systems that appear in Google/YouTube payloads.
   'com.google.',
   'com.android.',
   'com.apple.',
+  'com.youtube.',
+  'com.widevine.',
+  'com.microsoft.playready',
+  'com.adobe.primetime',
+  'com.intertrust.',
+  'com.facebook.',
+  'com.instagram.',
+  'com.cloudflare.',
   'org.chromium.',
   'www.',
   'm.',
@@ -343,7 +351,7 @@ async function inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPack
 async function hasSlowAdRenderer(adPage, videoMap, sawVideoRendererSignal) {
   if (sawVideoRendererSignal || videoMap.size > 0) return true;
 
-  const rendererPattern = /boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render(?:ing)?|single-ad-canvas|googlevideo\.com|youtube\.com/i;
+  const rendererPattern = /boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render(?:ing)?|single-ad-canvas|GetCreativeById|ads\/preview\/content\.js|googlevideo\.com|youtube\.com/i;
   for (const frame of adPage.frames()) {
     if (rendererPattern.test(frame.url() || '')) return true;
 
@@ -537,6 +545,9 @@ async function scanCompetitor(
         );
         if (headerAssessment.blocked) return;
 
+        const status = response.status();
+        if (status >= 300 && status < 400) return;
+
         const shouldReadBody = resourceType === 'document' ||
           /text\/html|application\/xhtml\+xml/i.test(contentType) ||
           (hasClicked && ['xhr', 'fetch'].includes(resourceType));
@@ -544,7 +555,7 @@ async function scanCompetitor(
 
         const body = await response.text();
         const assessment = recordResponseAssessment(
-          classifyGoogleResponse({ status: response.status(), contentType, body, resourceType, url }),
+          classifyGoogleResponse({ status, contentType, body, resourceType, url }),
           url
         );
         if (assessment.blocked || assessment.suspicious) return;
@@ -559,7 +570,10 @@ async function scanCompetitor(
         if (!arId) arId = body.match(/(AR[0-9]{15,})/)?.[1] || null;
         for (const match of body.matchAll(/"(CR[0-9]+)"/g)) adIds.add(match[1]);
       } catch (error) {
-        console.warn('[Broad Scanner] Could not inspect discovery response: ' + error.message);
+        const msg = String(error?.message || '');
+        if (!/No data found for resource|navigated away|redirect responses|Target closed|closed/i.test(msg)) {
+          console.warn('[Broad Scanner] Could not inspect discovery response: ' + msg);
+        }
       } finally {
         pendingDiscoveryResponses = Math.max(0, pendingDiscoveryResponses - 1);
         lastDiscoveryActivityAt = Date.now();
@@ -773,6 +787,9 @@ async function scanCompetitor(
         return candidates.length;
       };
 
+      const isBackgroundTelemetryUrl = urlStr =>
+        /youtube\.com\/(?:s\/player|youtubei|ptracking|api\/stats)|play\.google\.com\/log|feedback-pa\.clients6\.google\.com|google\.com\/js\/th\/|doubleclick\.net\/pagead\/id/i.test(urlStr);
+
       const requestHandler = req => {
         const reqUrl = req.url();
         const resourceType = req.resourceType();
@@ -780,11 +797,11 @@ async function scanCompetitor(
         try { frame = req.frame(); } catch {}
         const frameUrl = frame ? frame.url() || '' : '';
 
-        if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|googlevideo\.com|youtube\.com/i.test(reqUrl + ' ' + frameUrl)) {
+        if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|GetCreativeById|ads\/preview\/content\.js|googlevideo\.com|youtube\.com/i.test(reqUrl + ' ' + frameUrl)) {
           sawVideoRendererSignal = true;
           slowRendererDetected = true;
         }
-        if (trackedCreativeRequestTypes.has(resourceType)) {
+        if (trackedCreativeRequestTypes.has(resourceType) && !isBackgroundTelemetryUrl(reqUrl)) {
           activeRelevantRequests.add(req);
           lastRelevantSignalAt = Date.now();
         }
@@ -795,6 +812,18 @@ async function scanCompetitor(
         if (isCreativeFrame) {
           const evidence = getFrameEvidence(frameEvidence, frame);
           for (const pkg of extractExplicitStorePackages(reqUrl)) evidence.packages.add(pkg);
+        }
+
+        if (/youtube\.com\/embed\/|youtu\.be\/|youtube\.com\/watch/i.test(reqUrl)) {
+          const urlAssets = extractVideoAssets(reqUrl);
+          for (const asset of urlAssets) {
+            sawVideoRendererSignal = true;
+            slowRendererDetected = true;
+            mergeVideoAsset(videoMap, asset);
+            if (isCreativeFrame) {
+              mergeVideoAsset(getFrameEvidence(frameEvidence, frame).videos, asset);
+            }
+          }
         }
 
         const media = parseMediaRequest(reqUrl);
@@ -811,12 +840,12 @@ async function scanCompetitor(
       const responseHandler = async response => {
         const request = response.request();
         const resourceType = request.resourceType();
-        if (!trackedCreativeRequestTypes.has(resourceType)) return;
+        const responseUrl = response.url() || '';
+        if (!trackedCreativeRequestTypes.has(resourceType) || isBackgroundTelemetryUrl(responseUrl)) return;
         pendingResponseBodies += 1;
 
         try {
-          const responseUrl = response.url() || '';
-          if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|googlevideo\.com|youtube\.com/i.test(responseUrl)) {
+          if (/boq-ads-ui|SearchAdsViewerRenderingUi|single-ad-render|GetCreativeById|ads\/preview\/content\.js|googlevideo\.com|youtube\.com/i.test(responseUrl)) {
             sawVideoRendererSignal = true;
             slowRendererDetected = true;
           }
@@ -879,9 +908,19 @@ async function scanCompetitor(
       adPage.on('requestfailed', finishCreativeRequest);
       adPage.on('response', responseHandler);
       await adPage.route('**/*', route => {
+        const reqUrl = route.request().url();
         const type = route.request().resourceType();
-        if (['image', 'media', 'font', 'stylesheet'].includes(type)) route.abort();
-        else route.continue();
+        // Block SearchCreatives on the single-ad page so it doesn't load 20 extra
+        // "More ads by this advertiser" iframes, and skip heavy YouTube player JS/telemetry.
+        if (
+          ['image', 'media', 'font', 'stylesheet'].includes(type) ||
+          reqUrl.includes('SearchCreatives') ||
+          isBackgroundTelemetryUrl(reqUrl)
+        ) {
+          route.abort();
+        } else {
+          route.continue();
+        }
       });
 
       try {

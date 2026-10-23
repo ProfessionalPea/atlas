@@ -1861,26 +1861,35 @@ app.post("/api/scan", async (req, res) => {
 
         if (activeScanCancelled) break;
 
+        const allScanCreativeIds = [
+          ...new Set(
+            packageEntries.flatMap(([, set]) => [...set]).filter(Boolean)
+          )
+        ];
+        const alreadySeenBeforeScan = new Set();
+        if (allScanCreativeIds.length > 0) {
+          try {
+            const { rows: alreadySeenRows } = await pool.query(
+              "SELECT creative_id FROM ad_creatives WHERE creative_id = ANY($1::text[])",
+              [allScanCreativeIds]
+            );
+            for (const row of alreadySeenRows) {
+              alreadySeenBeforeScan.add(row.creative_id);
+            }
+          } catch (e) {
+            console.error("ad_creatives lookup failed, counting all as new:", e.message);
+          }
+        }
+
         let savedPackages = 0;
         for (const [pkg, creativeIdsSet] of packageEntries) {
           if (activeScanCancelled) break;
           updateScanStatus({
-            log: `> 🗄️ Saving package ${savedPackages + 1}/${packageEntries.length}: ${pkg}`
+            log: `> Saving package ${savedPackages + 1}/${packageEntries.length}: ${pkg}`
           });
           const creativeIds = [...creativeIdsSet];
           const scanAdCount = Math.max(1, creativeIds.length);
-
-          let newAdCount = scanAdCount;
-          try {
-            const { rows: alreadySeen } = await pool.query(
-              "SELECT creative_id FROM ad_creatives WHERE creative_id = ANY($1)",
-              [creativeIds]
-            );
-            const alreadySeenSet = new Set(alreadySeen.map(r => r.creative_id));
-            newAdCount = creativeIds.filter(id => !alreadySeenSet.has(id)).length;
-          } catch (e) {
-            console.error("ad_creatives lookup failed, counting all as new:", e.message);
-          }
+          const newAdCount = creativeIds.filter(id => !alreadySeenBeforeScan.has(id)).length;
 
           const enrichment = enrichmentByPackage.get(pkg) || {};
           const appData = enrichment.appData || createFallbackPlayAppData(pkg, targetDisplayName);
@@ -2030,16 +2039,6 @@ app.post("/api/scan", async (req, res) => {
             [gameId, newAdCount]
           );
 
-          try {
-            await runWithTimeout(
-              () => runFullTelemetryForPackage(pool, pkg),
-              25000,
-              `Play Store telemetry for ${pkg}`
-            );
-          } catch (telemetryErr) {
-            console.warn(`Play telemetry warning for ${pkg}:`, telemetryErr.message);
-          }
-
           isolatedScanData.push({
             title: appData.title,
             publisher_name: pubName,
@@ -2057,6 +2056,32 @@ app.post("/api/scan", async (req, res) => {
             competitor_id: competitorId
           });
           savedPackages += 1;
+        }
+
+        if (!activeScanCancelled && packageEntries.length > 0) {
+          let telemetryDone = 0;
+          await mapWithConcurrency(
+            packageEntries,
+            INGESTION_METADATA_CONCURRENCY,
+            async ([pkg]) => {
+              if (activeScanCancelled) return;
+              try {
+                await runWithTimeout(
+                  () => runFullTelemetryForPackage(pool, pkg, { allowRemoteSellersFetch: false }),
+                  8000,
+                  `Play Store telemetry for ${pkg}`
+                );
+              } catch (telemetryErr) {
+                console.warn(`Play telemetry warning for ${pkg}:`, telemetryErr.message);
+              } finally {
+                telemetryDone += 1;
+                updateScanStatus({
+                  log: `> Enriching Play Store telemetry ${telemetryDone}/${packageEntries.length}: ${pkg}`
+                });
+              }
+            },
+            () => activeScanCancelled
+          );
         }
 
         if (activeScanCancelled) break;

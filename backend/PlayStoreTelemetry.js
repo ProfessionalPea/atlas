@@ -820,10 +820,13 @@ async function queryAdsTransparencySuggestions(queryText, timeoutMs = 8000) {
   return null;
 }
 
-async function resolveAdvertiserLegalName(pool, { packageName, developerName, googleDirectPubIds = [] }) {
+async function resolveAdvertiserLegalName(pool, { packageName, developerName, googleDirectPubIds = [], allowRemoteSellersFetch = false }) {
   let candidateFromSellers = null;
   if (googleDirectPubIds.length > 0) {
-    const sellers = await lookupGoogleSellersJson(pool, googleDirectPubIds);
+    const sellers = await lookupGoogleSellersJson(pool, googleDirectPubIds, {
+      allowRemoteFetch: Boolean(allowRemoteSellersFetch),
+      timeoutMs: 8000
+    });
     const chosen = selectPrimaryStudioSeller(sellers, developerName);
     if (chosen?.name) {
       candidateFromSellers = chosen.name.trim();
@@ -907,7 +910,7 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
     } catch {}
   }
 
-  const adsTxtResult = await fetchAndParseAppAdsTxt(developerWebsite);
+  const adsTxtResult = await fetchAndParseAppAdsTxt(developerWebsite, 4500);
   let adNetworks = adsTxtResult?.adNetworks || {};
   let adNetworksAll = adsTxtResult?.adNetworksAll || {};
   const googleDirectPubIds = adsTxtResult?.googleDirectPubIds || [];
@@ -926,7 +929,8 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
   const advertiserLegalName = await resolveAdvertiserLegalName(pool, {
     packageName,
     developerName,
-    googleDirectPubIds
+    googleDirectPubIds,
+    allowRemoteSellersFetch: Boolean(options.allowRemoteSellersFetch)
   });
 
   const networkData = {
