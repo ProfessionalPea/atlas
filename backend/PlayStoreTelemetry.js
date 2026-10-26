@@ -820,7 +820,7 @@ async function queryAdsTransparencySuggestions(queryText, timeoutMs = 8000) {
   return null;
 }
 
-async function resolveAdvertiserLegalName(pool, { packageName, developerName, googleDirectPubIds = [], allowRemoteSellersFetch = false }) {
+async function resolveAdvertiserLegalName(pool, { packageName, developerName, googleDirectPubIds = [], allowRemoteSellersFetch = false, skipSuggestionsRpc = false }) {
   let candidateFromSellers = null;
   if (googleDirectPubIds.length > 0) {
     const sellers = await lookupGoogleSellersJson(pool, googleDirectPubIds, {
@@ -833,17 +833,19 @@ async function resolveAdvertiserLegalName(pool, { packageName, developerName, go
     }
   }
 
-  const rpcQueries = [
-    packageName,
-    candidateFromSellers,
-    candidateFromSellers ? candidateFromSellers.replace(/\b(pvt|ltd|limited|private|inc|llc)\b\.?/gi, '').trim() : null,
-    developerName
-  ].filter(Boolean);
+  if (!skipSuggestionsRpc) {
+    const rpcQueries = [
+      packageName,
+      candidateFromSellers,
+      candidateFromSellers ? candidateFromSellers.replace(/\b(pvt|ltd|limited|private|inc|llc)\b\.?/gi, '').trim() : null,
+      developerName
+    ].filter(Boolean);
 
-  for (const q of rpcQueries) {
-    const suggestion = await queryAdsTransparencySuggestions(q);
-    if (suggestion?.legalName) {
-      return suggestion.legalName;
+    for (const q of rpcQueries) {
+      const suggestion = await queryAdsTransparencySuggestions(q);
+      if (suggestion?.legalName) {
+        return suggestion.legalName;
+      }
     }
   }
 
@@ -930,7 +932,8 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
     packageName,
     developerName,
     googleDirectPubIds,
-    allowRemoteSellersFetch: Boolean(options.allowRemoteSellersFetch)
+    allowRemoteSellersFetch: Boolean(options.allowRemoteSellersFetch),
+    skipSuggestionsRpc: Boolean(options.skipSuggestionsRpc)
   });
 
   const networkData = {
@@ -1335,7 +1338,9 @@ async function runFullTelemetryForPackage(pool, packageName, options = {}) {
       : runNetworkAdvertiserPipeline(pool, pkg, {
           developerWebsite: ds5?.developerWebsite || null,
           developerName: ds5?.developerName || null,
-          forceRefresh: Boolean(options.forceRefresh)
+          forceRefresh: Boolean(options.forceRefresh),
+          allowRemoteSellersFetch: Boolean(options.allowRemoteSellersFetch),
+          skipSuggestionsRpc: Boolean(options.skipSuggestionsRpc)
         }),
     options.skipCard
       ? Promise.resolve(null)

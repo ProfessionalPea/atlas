@@ -523,6 +523,38 @@ async function scanCompetitor(
 
     let arId = null;
     let hasClicked = false;
+    const previewUrlsByCreative = new Map();
+    const seenCreativeIds = new Set();
+
+    const extractPreviewUrlsFromJsonText = (rawText, targetCreativeId = null) => {
+      if (!rawText || !rawText.includes('ads/preview/content.js')) return;
+      const decoded = decodeForInspection(rawText);
+      // Pair each CR... id with nearby content.js URLs, and also collect any standalone content.js URLs for targetCreativeId
+      const urlRegex = /https:\/\/displayads-formats\.googleusercontent\.com\/ads\/preview\/content\.js\?[^"'\s<>\\]+/g;
+      if (targetCreativeId) {
+        for (const match of decoded.matchAll(urlRegex)) {
+          if (!previewUrlsByCreative.has(targetCreativeId)) previewUrlsByCreative.set(targetCreativeId, new Set());
+          previewUrlsByCreative.get(targetCreativeId).add(match[0]);
+        }
+      }
+      const itemRegex = /"(CR[0-9]{10,})"[\s\S]{0,600}?(https:\/\/displayads-formats\.googleusercontent\.com\/ads\/preview\/content\.js\?[^"'\s<>\\]+)/g;
+      for (const match of decoded.matchAll(itemRegex)) {
+        const crId = match[1];
+        const previewUrl = match[2];
+        if (!previewUrlsByCreative.has(crId)) previewUrlsByCreative.set(crId, new Set());
+        previewUrlsByCreative.get(crId).add(previewUrl);
+      }
+    };
+
+    const prioritizeUnseenCreatives = ids => {
+      const unseen = [];
+      const seen = [];
+      for (const id of ids) {
+        if (seenCreativeIds.has(id)) seen.push(id);
+        else unseen.push(id);
+      }
+      return [...unseen, ...seen];
+    };
 
     emitProgress(0, maxAdsToInspect, '> Booting scanner for "' + query + '". Target: ' + targetUniqueGames + ' unique games; safety cap: ' + maxAdsToInspect + ' inspected ads.');
     searchPage.on('request', trackDiscoveryRequest);
@@ -569,6 +601,7 @@ async function scanCompetitor(
         }
         if (!arId) arId = body.match(/(AR[0-9]{15,})/)?.[1] || null;
         for (const match of body.matchAll(/"(CR[0-9]+)"/g)) adIds.add(match[1]);
+        extractPreviewUrlsFromJsonText(body);
       } catch (error) {
         const msg = String(error?.message || '');
         if (!/No data found for resource|navigated away|redirect responses|Target closed|closed/i.test(msg)) {
@@ -718,7 +751,22 @@ async function scanCompetitor(
       discoveryStopReason = discoveryNetworkFailure ? 'discovery_error' : 'ads_exhausted';
     }
 
-    let idArray = [...adIds].slice(0, maxAdsToInspect);
+    try {
+      const { rows: seenRows } = await videoPool.query(
+        `SELECT ac.creative_id
+         FROM ad_creatives ac
+         LEFT JOIN competitors c ON c.id = ac.competitor_id
+         WHERE ac.creative_id LIKE 'CR%'
+           AND ($1::text IS NULL OR c.ads_id = $1 OR ac.creative_id = ANY($2::text[]))`,
+        [arId || null, [...adIds]]
+      );
+      for (const row of seenRows) {
+        if (row.creative_id) seenCreativeIds.add(row.creative_id);
+      }
+    } catch {}
+
+    const inspectedCreativeIds = new Set();
+    let idArray = prioritizeUnseenCreatives([...adIds]).slice(0, maxAdsToInspect);
     if (!idArray.length) {
       scanStopReason = discoveryStopReason === 'discovery_error' ? 'discovery_error' : 'ads_exhausted';
       const emptyMessage = scanStopReason === 'discovery_error'
@@ -727,6 +775,18 @@ async function scanCompetitor(
       await searchPage.close().catch(() => {});
       emitProgress(0, maxAdsToInspect, emptyMessage);
       return [];
+    }
+
+    // If all initial creatives were already seen in previous scans, scroll a couple more times up front to surface fresh creatives.
+    while (
+      idArray.every(id => seenCreativeIds.has(id)) &&
+      adIds.size < Math.min(120, maxAdsToInspect) &&
+      !discoveryStopReason &&
+      strikes < 3
+    ) {
+      const added = await collectMoreAds();
+      if (!added) break;
+      idArray = prioritizeUnseenCreatives([...adIds]).slice(0, maxAdsToInspect);
     }
 
     emitProgress(0, maxAdsToInspect, '> Intercepted an initial batch of ' + idArray.length + ' ads. Continuing discovery only if more unique games are needed.');
@@ -740,7 +800,10 @@ async function scanCompetitor(
         const previousSize = adIds.size;
         const addedAds = await collectMoreAds();
         if (addedAds || adIds.size > previousSize) {
-          idArray = [...adIds].slice(0, maxAdsToInspect);
+          const remaining = prioritizeUnseenCreatives(
+            [...adIds].filter(id => !inspectedCreativeIds.has(id))
+          );
+          idArray = [...inspectedCreativeIds, ...remaining].slice(0, maxAdsToInspect);
           emitProgress( accounting.getSnapshot().adsInspected, maxAdsToInspect,
             '> Intercepted ' + idArray.length + ' ad creatives so far; ' +
             accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found.'
@@ -755,6 +818,7 @@ async function scanCompetitor(
         throw cancelError;
       }
       const adId = idArray[i];
+      inspectedCreativeIds.add(adId);
       accounting.markInspected();
       const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
       const adPage = await context.newPage();
@@ -875,6 +939,9 @@ async function scanCompetitor(
             responseUrl
           );
           if (assessment.blocked) return;
+          if (responseUrl.includes('GetCreativeById') || responseUrl.includes('SearchCreatives')) {
+            extractPreviewUrlsFromJsonText(body, responseUrl.includes('GetCreativeById') ? adId : null);
+          }
           if (!assessment.suspicious) recordPackages(body, 'responseBody');
 
           // Response payloads can discover assets, but cannot establish ownership.
@@ -910,11 +977,8 @@ async function scanCompetitor(
       await adPage.route('**/*', route => {
         const reqUrl = route.request().url();
         const type = route.request().resourceType();
-        // Block SearchCreatives on the single-ad page so it doesn't load 20 extra
-        // "More ads by this advertiser" iframes, and skip heavy YouTube player JS/telemetry.
         if (
           ['image', 'media', 'font', 'stylesheet'].includes(type) ||
-          reqUrl.includes('SearchCreatives') ||
           isBackgroundTelemetryUrl(reqUrl)
         ) {
           route.abort();
@@ -964,6 +1028,21 @@ async function scanCompetitor(
           console.log('[Broad Scanner] Ad ' + (i + 1) + ' reached its bounded ' + readiness.maxWaitMs + 'ms inspection budget; preserving all evidence collected.');
         }
         throwIfStopped();
+
+        if (discovered.size === 0 && previewUrlsByCreative.has(adId)) {
+          for (const previewUrl of previewUrlsByCreative.get(adId)) {
+            try {
+              const previewRes = await fetch(previewUrl, { signal: AbortSignal.timeout(4500) });
+              if (previewRes.ok) {
+                const previewBody = await previewRes.text();
+                recordPackages(previewBody, 'responseBody');
+                if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(previewBody)) {
+                  for (const asset of extractVideoAssets(previewBody)) mergeVideoAsset(videoMap, asset);
+                }
+              }
+            } catch {}
+          }
+        }
 
 
 

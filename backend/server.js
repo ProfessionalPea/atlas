@@ -42,6 +42,7 @@ const authInitialization = initializeAuthStorage(pool);
 
       CREATE INDEX IF NOT EXISTS idx_ad_creatives_game_id ON ad_creatives(game_id);
       CREATE INDEX IF NOT EXISTS idx_ad_creatives_competitor_id ON ad_creatives(competitor_id);
+      CREATE INDEX IF NOT EXISTS idx_ad_creatives_package_name ON ad_creatives(package_name);
       CREATE INDEX IF NOT EXISTS idx_account_games_account_id ON account_games(account_id);
       CREATE INDEX IF NOT EXISTS idx_account_games_game_id ON account_games(game_id);
       CREATE INDEX IF NOT EXISTS idx_accounts_competitor_id ON accounts(competitor_id);
@@ -2067,7 +2068,7 @@ app.post("/api/scan", async (req, res) => {
               if (activeScanCancelled) return;
               try {
                 await runWithTimeout(
-                  () => runFullTelemetryForPackage(pool, pkg, { allowRemoteSellersFetch: false }),
+                  () => runFullTelemetryForPackage(pool, pkg, { allowRemoteSellersFetch: false, skipSuggestionsRpc: true }),
                   8000,
                   `Play Store telemetry for ${pkg}`
                 );
