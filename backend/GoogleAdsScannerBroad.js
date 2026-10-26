@@ -473,7 +473,8 @@ async function scanCompetitor(
     throw error;
   };
 
-  const browser = await chromium.launch({
+  const proxyServer = process.env.ATLAS_SCANNER_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null;
+  const launchOptions = {
     headless: true,
     args: [
       '--no-sandbox',
@@ -483,15 +484,42 @@ async function scanCompetitor(
       '--no-zygote',
       '--disable-site-isolation-trials'
     ]
-  });
+  };
+  if (proxyServer) {
+    try {
+      const parsedProxy = new URL(proxyServer.includes('://') ? proxyServer : `http://${proxyServer}`);
+      launchOptions.proxy = {
+        server: `${parsedProxy.protocol}//${parsedProxy.host}`
+      };
+      if (parsedProxy.username) {
+        launchOptions.proxy.username = decodeURIComponent(parsedProxy.username);
+        launchOptions.proxy.password = decodeURIComponent(parsedProxy.password || '');
+      }
+      console.log(`[Broad Scanner] Routing scanner traffic via proxy: ${launchOptions.proxy.server}`);
+    } catch {
+      launchOptions.proxy = { server: proxyServer };
+      console.log(`[Broad Scanner] Routing scanner traffic via proxy: ${proxyServer}`);
+    }
+  }
+
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1920, height: 1080 }
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    viewport: { width: 1920, height: 1080 },
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
+    extraHTTPHeaders: {
+      'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'accept-language': 'en-US,en;q=0.9'
+    }
   });
   const searchPage = await context.newPage();
   await searchPage.route('**/*', route => {
     const type = route.request().resourceType();
-    if (['image', 'media', 'font', 'stylesheet'].includes(type)) route.abort();
+    // Only abort images, media, and fonts; let stylesheets load so Google's web components render properly
+    if (['image', 'media', 'font'].includes(type)) route.abort();
     else route.continue();
   });
 
