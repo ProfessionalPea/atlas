@@ -2,10 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
 
-const NGROK_URL = "https://skeptic-resample-caution.ngrok-free.dev";
-const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-  ? "http://localhost:3000"
-  : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
+import { API_BASE } from "./apiConfig.js";
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 
 async function fetchJson(url, options = {}) {

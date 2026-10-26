@@ -438,6 +438,16 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
          installs_total_7d = $6,
          subcategories = CASE WHEN jsonb_array_length($7::jsonb) > 0 THEN $7::jsonb ELSE COALESCE(subcategories, '[]'::jsonb) END,
          release_date = COALESCE($8::date, release_date),
+         released = CASE
+           WHEN (released IS NULL OR released = '' OR released = 'Unknown') AND $11::text IS NOT NULL THEN $11::text
+           ELSE released
+         END,
+         short_description = COALESCE(NULLIF(short_description, ''), NULLIF($12::text, '')),
+         description = CASE
+           WHEN (description IS NULL OR description = '' OR description = 'Captured directly via ad stream')
+             AND NULLIF($13::text, '') IS NOT NULL THEN $13::text
+           ELSE description
+         END,
          developer_name = COALESCE($9, developer_name),
          developer_website = COALESCE($10, developer_website),
          store_scanned_at = now(),
@@ -453,7 +463,10 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
       JSON.stringify(ds5.subcategories || []),
       effectiveReleaseDate,
       ds5.developerName,
-      ds5.developerWebsite
+      ds5.developerWebsite,
+      ds5.rawReleaseDate || effectiveReleaseDate || null,
+      ds5.shortDescription || null,
+      ds5.longDescription || null
     ]
   );
 
@@ -639,7 +652,7 @@ async function inferNetworksFromCreativeLinks(pool, packageName) {
     const { rows } = await pool.query(
       `SELECT va.source, va.media_url, va.youtube_url, avl.creative_url
        FROM ad_video_links avl
-       LEFT JOIN video_assets va ON va.id = avl.video_asset_id
+       LEFT JOIN video_assets va ON va.id = avl.asset_id
        WHERE avl.package_name = $1
        LIMIT 50`,
       [packageName]

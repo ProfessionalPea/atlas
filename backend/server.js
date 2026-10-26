@@ -16,7 +16,7 @@ const { scanCompetitor, isValidPackage } = require("./GoogleAdsScannerBroad");
 const { resolveMaxAdsToInspect } = require("./ScanAccounting");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
-const { runFullTelemetryForPackage } = require("./PlayStoreTelemetry");
+const { runFullTelemetryForPackage, fetchPlayStoreDs5 } = require("./PlayStoreTelemetry");
 const express = require("express");
 require("./AtlasExtensions");
 const cors = require("cors");
@@ -266,6 +266,27 @@ async function fetchPackageEnrichment(pkg, targetDisplayName) {
   const hasPlayData = Boolean(appData);
   if (!appData) appData = createFallbackPlayAppData(pkg, targetDisplayName);
 
+  // google-play-scraper only reads the legacy ds:5[1][2][10] release-date path, which
+  // Google no longer populates for newer listings. Fall back to Atlas's own ds:5 parser.
+  if (!appData.released || appData.released === "Unknown" || !appData.summary) {
+    try {
+      const ds5 = await runWithTimeout(
+        () => fetchPlayStoreDs5(pkg, { timeoutMs: 7000 }),
+        7500,
+        `Google Play ds:5 lookup for ${pkg}`
+      );
+      appData = { ...appData };
+      if ((!appData.released || appData.released === "Unknown") && (ds5?.rawReleaseDate || ds5?.releaseDate)) {
+        appData.released = ds5.rawReleaseDate || ds5.releaseDate;
+      }
+      if (ds5?.releaseDate) appData.releaseDateIso = ds5.releaseDate;
+      if (!appData.summary && ds5?.shortDescription) appData.summary = ds5.shortDescription;
+      if ((!appData.description || appData.description === "Captured directly via ad stream") && ds5?.longDescription) {
+        appData.description = ds5.longDescription;
+      }
+    } catch {}
+  }
+
   let similarApps = [];
   if (hasPlayData) {
     try {
@@ -279,6 +300,16 @@ async function fetchPackageEnrichment(pkg, targetDisplayName) {
   }
 
   return { appData, similarApps };
+}
+
+function parseReleaseDateIso(value) {
+  if (!value || value === "Unknown") return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const y = parsed.getFullYear();
+  const m = String(parsed.getMonth() + 1).padStart(2, "0");
+  const d = String(parsed.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 async function mapWithConcurrency(items, concurrency, worker, shouldStop = () => false) {
@@ -1934,12 +1965,13 @@ app.post("/api/scan", async (req, res) => {
               package_name, title, category, rating, ratings_count, icon,
               screenshots, description, installs, min_installs, released,
               updated, similar_apps, ad_count, header_image, video, video_image,
-              developer_id, developer_url, is_paid, price, currency, price_text
+              developer_id, developer_url, is_paid, price, currency, price_text,
+              short_description, release_date
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
               $10, $11, $12, $13, $14, $15, $16, $17,
-              $18, $19, $20, $21, $22, $23
+              $18, $19, $20, $21, $22, $23, $24, $25::date
             )
             ON CONFLICT (package_name) DO UPDATE SET
               title = EXCLUDED.title,
@@ -1948,10 +1980,21 @@ app.post("/api/scan", async (req, res) => {
               ratings_count = EXCLUDED.ratings_count,
               icon = EXCLUDED.icon,
               screenshots = EXCLUDED.screenshots,
-              description = EXCLUDED.description,
+              description = CASE
+                WHEN EXCLUDED.description IS NULL OR EXCLUDED.description = '' OR EXCLUDED.description = 'Captured directly via ad stream'
+                  THEN COALESCE(NULLIF(games.description, ''), EXCLUDED.description)
+                ELSE EXCLUDED.description
+              END,
               installs = EXCLUDED.installs,
               min_installs = EXCLUDED.min_installs,
-              released = EXCLUDED.released,
+              -- Never overwrite a known release date with "Unknown"
+              released = CASE
+                WHEN EXCLUDED.released IS NULL OR EXCLUDED.released = '' OR EXCLUDED.released = 'Unknown'
+                  THEN games.released
+                ELSE EXCLUDED.released
+              END,
+              short_description = COALESCE(NULLIF(EXCLUDED.short_description, ''), games.short_description),
+              release_date = COALESCE(EXCLUDED.release_date, games.release_date),
               updated = EXCLUDED.updated,
               similar_apps = EXCLUDED.similar_apps,
               ad_count = games.ad_count + EXCLUDED.ad_count,
@@ -1990,7 +2033,9 @@ app.post("/api/scan", async (req, res) => {
             appData.free === false && Number(appData.price) > 0,
             appData.free === false && Number(appData.price) > 0 ? Number(appData.price) : null,
             appData.free === false && Number(appData.price) > 0 ? (appData.currency || null) : null,
-            appData.free === false && Number(appData.price) > 0 ? (appData.priceText || null) : null
+            appData.free === false && Number(appData.price) > 0 ? (appData.priceText || null) : null,
+            appData.summary || null,
+            appData.releaseDateIso || parseReleaseDateIso(appData.released)
           ]);
 
           const gameId = gameRes.rows[0].id;

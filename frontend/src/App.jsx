@@ -4,16 +4,13 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 
-// NGROK URL
-const NGROK_URL = "https://studio-bouncing-applicant.ngrok-free.dev";
+// NGROK URL / API base live in apiConfig.js (shared by all modules)
+import { API_BASE } from "./apiConfig.js";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 const AUTH_USER_KEY = "atlas_auth_user";
 const COUNTRY_SCAN_JOB_KEY = "atlas_country_scan_job";
-
-const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" 
-  ? "http://localhost:3000" 
-  : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
+const COUNTRY_SCAN_ANNOUNCED_KEY = "atlas_country_scan_announced";
 
 const CHART_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6"];
 const FADE_UP = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } };
@@ -176,15 +173,30 @@ function dedupeGames(games = []) {
   return Array.from(uniqueGames.values());
 }
 
+// Google Play moved the release date in its ds:5 payload, so `released` (from
+// google-play-scraper) is often "Unknown" while `release_date` (parsed from ds:5 by
+// PlayStoreTelemetry) is correct. Always prefer release_date.
+function getGameReleaseValue(game) {
+  if (!game) return null;
+  if (game.release_date) return game.release_date;
+  if (game.released && game.released !== "Unknown") return game.released;
+  return null;
+}
+
+function getGameReleaseTime(game) {
+  const value = getGameReleaseValue(game);
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 function hasRecentGame(games) {
   if (!games || games.length === 0) return false;
   const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
   return games.some(g => {
     let isRecentRelease = false; let isRecentUpdate = false;
-    if (g.released && g.released !== "Unknown") {
-      const releaseTime = new Date(g.released).getTime();
-      if (!isNaN(releaseTime) && releaseTime > sevenDaysAgo) isRecentRelease = true;
-    }
+    const releaseTime = getGameReleaseTime(g);
+    if (releaseTime && releaseTime > sevenDaysAgo) isRecentRelease = true;
     if (g.updated && g.updated !== 0) {
       const updateTime = typeof g.updated === 'number' ? g.updated : new Date(g.updated).getTime();
       if (!isNaN(updateTime) && updateTime > sevenDaysAgo) isRecentUpdate = true;
@@ -425,8 +437,8 @@ const TrendingTargets = memo(function TrendingTargets({
                       {game.installs && game.installs !== "0+" && (
                         <span className="text-[9px] md:text-[10px] font-semibold text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{game.installs}</span>
                       )}
-                      {game.released && game.released !== "Unknown" && (
-                        <span className="text-[9px] md:text-[10px] text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{getAgeText(game.released)}</span>
+                      {getAgeText(getGameReleaseValue(game)) && (
+                        <span className="text-[9px] md:text-[10px] text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{getAgeText(getGameReleaseValue(game))}</span>
                       )}
                     </div>
                   </div>
@@ -690,6 +702,21 @@ function App() {
     logs: []
   });
   const countryScanDetailCacheRef = useRef(new Map());
+  // Scan IDs whose completion popup has already been shown. Persisted so the popup
+  // never re-opens on its own after the user closes it (navigation, drawer, reload).
+  const announcedCountryScanIdsRef = useRef(null);
+  if (announcedCountryScanIdsRef.current === null) {
+    let initial = [];
+    try { initial = JSON.parse(localStorage.getItem(COUNTRY_SCAN_ANNOUNCED_KEY) || "[]"); } catch {}
+    announcedCountryScanIdsRef.current = new Set(Array.isArray(initial) ? initial.map(String) : []);
+  }
+  const markCountryScanAnnounced = useCallback((scanId) => {
+    if (!scanId) return;
+    const set = announcedCountryScanIdsRef.current;
+    set.add(String(scanId));
+    try { localStorage.setItem(COUNTRY_SCAN_ANNOUNCED_KEY, JSON.stringify([...set].slice(-50))); } catch {}
+  }, []);
+  const selectedGamePackageRef = useRef(null);
   const selectedGameVideosCacheRef = useRef(new Map());
   const telemetryCacheRef = useRef(new Map());
   const [telemetryRefreshingPkg, setTelemetryRefreshingPkg] = useState(null);
@@ -1361,11 +1388,7 @@ function App() {
       if (trendingSort === "ads") {
         difference = (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0);
       } else if (trendingSort === "newest") {
-        const parsedA = a.released && a.released !== "Unknown" ? new Date(a.released).getTime() : 0;
-        const parsedB = b.released && b.released !== "Unknown" ? new Date(b.released).getTime() : 0;
-        const timeA = Number.isFinite(parsedA) ? parsedA : 0;
-        const timeB = Number.isFinite(parsedB) ? parsedB : 0;
-        difference = timeB - timeA;
+        difference = getGameReleaseTime(b) - getGameReleaseTime(a);
       } else {
         difference = getInstallCount(b) - getInstallCount(a);
       }
@@ -1387,11 +1410,7 @@ function App() {
   const sortedDirectoryGames = useMemo(() => {
     const games = [...filteredGames];
 
-    const getReleaseTime = (game) => {
-      if (!game?.released || game.released === "Unknown") return 0;
-      const parsed = new Date(game.released).getTime();
-      return Number.isFinite(parsed) ? parsed : 0;
-    };
+    const getReleaseTime = getGameReleaseTime;
 
     games.sort((a, b) => {
       let difference = 0;
@@ -1853,7 +1872,10 @@ function App() {
           return;
         }
 
-        if (["starting", "running", "complete", "error"].includes(recovered.state)) {
+        const alreadyAnnounced = announcedCountryScanIdsRef.current.has(String(recovered.scanId));
+        const isRunning = ["starting", "running"].includes(recovered.state);
+        const isFinished = ["complete", "error"].includes(recovered.state);
+        if (isRunning || (isFinished && !alreadyAnnounced)) {
           setCountryPackage(recovered.packageName || savedJob?.packageName || "");
           setCountryScanJob(recovered);
           localStorage.setItem(COUNTRY_SCAN_JOB_KEY, JSON.stringify({
@@ -2006,8 +2028,14 @@ function App() {
   }, [isDrawerOpen, selectedGame?.package_name, selectedGame?.real_installs, selectedGame?.store_scanned_at, applyTelemetryToState]);
 
   useEffect(() => {
+    selectedGamePackageRef.current = selectedGame?.package_name || null;
+  }, [selectedGame?.package_name]);
+
+  useEffect(() => {
     const scanId = countryScanJob?.scanId;
     if (!scanId) return undefined;
+    // Already finished and shown once: never poll/re-open again on its own.
+    if (announcedCountryScanIdsRef.current.has(String(scanId))) return undefined;
 
     let cancelled = false;
     let timer = null;
@@ -2023,6 +2051,7 @@ function App() {
           const payload = await fetchLatestCountryScan(status.packageName);
           if (cancelled) return;
           shouldContinue = false;
+          markCountryScanAnnounced(scanId);
 
           setCountryScanData(payload);
           setCountryScanLoading(false);
@@ -2036,12 +2065,13 @@ function App() {
           void refreshCountryScanLibrary();
           void loadAllData();
 
-          if (selectedGame?.package_name === status.packageName) {
+          if (selectedGamePackageRef.current === status.packageName) {
             setSelectedGameCountryScan(payload);
             setSelectedGameCountryLoading(false);
           }
         } else if (status.state === "error") {
           shouldContinue = false;
+          markCountryScanAnnounced(scanId);
           setCountryScanJob(status);
           setCountryScanLoading(false);
           setCountryScanError(status.error || "Country scan failed.");
@@ -2067,7 +2097,8 @@ function App() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [countryScanJob?.scanId, fetchLatestCountryScan, refreshCountryScanLibrary, loadAllData, selectedGame?.package_name]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [countryScanJob?.scanId]);
 
   const countryChangesByCode = useMemo(() => {
     const map = new Map();
@@ -3961,7 +3992,7 @@ function App() {
                             {Number(game.ad_count) > 0 && <span className="text-[9px] md:text-[10px] font-bold text-electric-blue bg-electric-blue/10 border border-electric-blue/20 rounded-md px-2 py-0.5">{viewMode === "latest" ? `+${game.ad_count} Ads` : `${game.ad_count} Detections`}</span>}
                             <div className="flex items-center gap-1.5">
                               {getInstallCount(game) > 0 && <span className="text-[9px] md:text-[10px] font-medium text-text-muted bg-input-bg border border-border-subtle rounded-md px-1.5 py-0.5">{game.installs || formatInstalls(getInstallCount(game))}</span>}
-                              {getAgeText(game.released) && <span className="text-[9px] md:text-[10px] text-text-muted bg-surface-solid border border-border-subtle rounded-md px-1.5 py-0.5">{getAgeText(game.released)}</span>}
+                              {getAgeText(getGameReleaseValue(game)) && <span className="text-[9px] md:text-[10px] text-text-muted bg-surface-solid border border-border-subtle rounded-md px-1.5 py-0.5">{getAgeText(getGameReleaseValue(game))}</span>}
                             </div>
                           </div>
                         </button>

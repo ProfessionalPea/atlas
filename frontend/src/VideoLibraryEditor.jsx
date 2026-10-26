@@ -1,10 +1,7 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
-const NGROK_URL = 'https://motors-caused-cameron-wrist.trycloudflare.com';
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? 'http://localhost:3000'
-  : (import.meta.env?.VITE_API_BASE_URL || NGROK_URL);
+import { API_BASE } from './apiConfig.js';
 const AUTH_TOKEN_KEY = 'atlas_auth_token';
 
 // Client-side cache for package autocomplete suggestions
