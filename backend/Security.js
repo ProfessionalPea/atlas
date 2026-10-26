@@ -34,6 +34,11 @@ function sanitizeConnectionString(rawConnectionString) {
     for (const key of ["sslmode", "sslcert", "sslkey", "sslrootcert"]) {
       url.searchParams.delete(key);
     }
+    // Supabase Pooler on port 5432 is Session Mode (hard capped to 15 connections).
+    // Automatically use port 6543 (Transaction Mode) to prevent EMAXCONNSESSION errors.
+    if (url.hostname.includes("pooler.supabase.com") && (!url.port || url.port === "5432")) {
+      url.port = "6543";
+    }
     return url.toString();
   } catch {
     return raw;

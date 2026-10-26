@@ -203,7 +203,7 @@ function verifySessionToken(token) {
 const gplayRaw = require("google-play-scraper");
 const gplay = gplayRaw.default || gplayRaw;
 
-const INGESTION_METADATA_CONCURRENCY = 6;
+const INGESTION_METADATA_CONCURRENCY = 4;
 
 function runWithTimeout(operation, timeoutMs, label) {
   let timeoutId;
@@ -2113,8 +2113,8 @@ app.post("/api/scan", async (req, res) => {
               if (activeScanCancelled) return;
               try {
                 await runWithTimeout(
-                  () => runFullTelemetryForPackage(pool, pkg, { allowRemoteSellersFetch: false, skipSuggestionsRpc: true }),
-                  8000,
+                  () => runFullTelemetryForPackage(pool, pkg, { allowRemoteSellersFetch: false, skipSuggestionsRpc: true, skipNetworks: true }),
+                  10000,
                   `Play Store telemetry for ${pkg}`
                 );
               } catch (telemetryErr) {
@@ -2132,22 +2132,26 @@ app.post("/api/scan", async (req, res) => {
 
         if (activeScanCancelled) break;
 
-        const compGamesCountRes = await pool.query(
-          `SELECT COUNT(DISTINCT ag.game_id) as count 
-           FROM account_games ag 
-           JOIN accounts a ON ag.account_id = a.id 
-           WHERE a.competitor_id = $1`,
-          [competitorId]
-        );
-        const totalGamesForCompetitor = parseInt(compGamesCountRes.rows[0]?.count || 0, 10);
+        try {
+          const compGamesCountRes = await pool.query(
+            `SELECT COUNT(DISTINCT ag.game_id) as count 
+             FROM account_games ag 
+             JOIN accounts a ON ag.account_id = a.id 
+             WHERE a.competitor_id = $1`,
+            [competitorId]
+          );
+          const totalGamesForCompetitor = parseInt(compGamesCountRes.rows[0]?.count || 0, 10);
 
-        await pool.query(
-          `INSERT INTO competitor_history (competitor_id, total_ads, scan_date) 
-           VALUES ($1, $2, CURRENT_DATE) 
-           ON CONFLICT (competitor_id, scan_date) 
-           DO UPDATE SET total_ads = EXCLUDED.total_ads`, 
-          [competitorId, totalGamesForCompetitor]
-        );
+          await pool.query(
+            `INSERT INTO competitor_history (competitor_id, total_ads, scan_date) 
+             VALUES ($1, $2, CURRENT_DATE) 
+             ON CONFLICT (competitor_id, scan_date) 
+             DO UPDATE SET total_ads = EXCLUDED.total_ads`, 
+            [competitorId, totalGamesForCompetitor]
+          );
+        } catch (compHistErr) {
+          console.warn("Competitor history count warning:", compHistErr.message);
+        }
 
         updateScanStatus({
           log: `> 📊 Syncing ${Object.keys(creativeIdsByPackage).length} Android packages to Google Sheets (with a 12-second limit per sync)...`
