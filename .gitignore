@@ -19,6 +19,7 @@ backend/uploads/
 backend/atlas.db*
 backend/playmax_ads.json
 backend/extracted_packages.json
+**/browser-profile/
 
 # Logs and local machine files
 *.log
