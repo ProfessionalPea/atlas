@@ -662,14 +662,14 @@ async function inferNetworksFromCreativeLinks(pool, packageName) {
     const counts = {};
     for (const row of rows) {
       const blob = `${row.source || ''} ${row.media_url || ''} ${row.youtube_url || ''} ${row.creative_url || ''}`.toLowerCase();
-      if (blob.includes('applovin')) counts.AppLovin = (counts.AppLovin || 0) + 1;
-      else if (blob.includes('unity')) counts['Unity Ads'] = (counts['Unity Ads'] || 0) + 1;
-      else if (blob.includes('ironsrc') || blob.includes('supersonic')) counts.ironSource = (counts.ironSource || 0) + 1;
-      else if (blob.includes('vungle') || blob.includes('liftoff')) counts.Liftoff = (counts.Liftoff || 0) + 1;
+      if (blob.includes('applovin') || blob.includes('applvn')) counts.AppLovin = (counts.AppLovin || 0) + 1;
+      else if (blob.includes('unity3d.com') || blob.includes('unityads')) counts['Unity Ads'] = (counts['Unity Ads'] || 0) + 1;
+      else if (blob.includes('ironsrc') || blob.includes('supersonicads')) counts.ironSource = (counts.ironSource || 0) + 1;
+      else if (blob.includes('vungle') || blob.includes('liftoff.io')) counts.Liftoff = (counts.Liftoff || 0) + 1;
       else if (blob.includes('mintegral')) counts.Mintegral = (counts.Mintegral || 0) + 1;
       else if (blob.includes('inmobi')) counts.InMobi = (counts.InMobi || 0) + 1;
-      else if (blob.includes('facebook') || blob.includes('fbcdn')) counts.Meta = (counts.Meta || 0) + 1;
-      else if (blob.includes('adstransparency.google.com') || blob.includes('googlesyndication') || blob.includes('doubleclick') || blob.includes('youtube')) {
+      else if (blob.includes('facebook.com/audiencenetwork') || blob.includes('an.facebook.com')) counts.Meta = (counts.Meta || 0) + 1;
+      else if (blob.includes('google.com/admob') || blob.includes('admob.com') || blob.includes('/pagead/mads') || blob.includes('googleads.g.doubleclick.net/mads')) {
         counts.Admob = (counts.Admob || 0) + 1;
       }
     }

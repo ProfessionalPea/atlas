@@ -398,6 +398,7 @@ async function scanCompetitor(
   let discoveryNetworkFailure = false;
   let discoveryStopReason = null;
   const adIds = new Set();
+  const results = [];
 
   const emitProgress = (current, total, log) => {
     let timeRemaining = 'Calculating...';
@@ -819,14 +820,27 @@ async function scanCompetitor(
 
     emitProgress(0, maxAdsToInspect, '> Intercepted an initial batch of ' + idArray.length + ' ads. Continuing discovery only if more unique games are needed.');
 
-    const results = [];
+    results.length = 0;
     let queuedVideoPersistenceTasks = 0;
     const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
 
     for (let i = 0; i < maxAdsToInspect; i += 1) {
       while (i >= idArray.length && !discoveryStopReason && !accounting.hasReachedTarget()) {
         const previousSize = adIds.size;
-        const addedAds = await collectMoreAds();
+        let addedAds = false;
+        try {
+          addedAds = await collectMoreAds();
+        } catch (scrollError) {
+          if (scrollError && scrollError.code === 'ATLAS_SCAN_BLOCKED' && results.length > 0) {
+            scanStopReason = 'rate_limited';
+            console.warn(
+              `⚠️ [Broad Scanner] Rate limited during feed scroll after finding ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} games). Preserving results.`
+            );
+            break;
+          }
+          throw scrollError;
+        }
+        if (scanStopReason) break;
         if (addedAds || adIds.size > previousSize) {
           const remaining = prioritizeUnseenCreatives(
             [...adIds].filter(id => !inspectedCreativeIds.has(id))
@@ -838,6 +852,7 @@ async function scanCompetitor(
           );
         }
       }
+      if (scanStopReason) break;
       if (i >= idArray.length || accounting.hasReachedTarget()) break;
       if (isCancelled()) {
         scanStopReason = 'cancelled';
@@ -1126,7 +1141,22 @@ async function scanCompetitor(
           );
         }
       } catch (error) {
-        if (error && (error.code === 'ATLAS_SCAN_BLOCKED' || error.code === 'ATLAS_SCAN_CANCELLED')) throw error;
+        if (error && error.code === 'ATLAS_SCAN_CANCELLED') throw error;
+        if (error && error.code === 'ATLAS_SCAN_BLOCKED') {
+          if (results.length > 0) {
+            scanStopReason = 'rate_limited';
+            console.warn(
+              `⚠️ [Broad Scanner] Rate limited by Google after inspecting ${accounting.getSnapshot().adsInspected} ads. Gracefully preserving ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} unique games) found so far.`
+            );
+            emitProgress(
+              accounting.getSnapshot().adsInspected,
+              maxAdsToInspect,
+              `> Scan paused by Google rate limit. Preserving all ${accounting.getSnapshot().uniqueGamesFound} games discovered.`
+            );
+            break;
+          }
+          throw error;
+        }
         emitProgress(
           accounting.getSnapshot().adsInspected,
           maxAdsToInspect,
@@ -1140,9 +1170,16 @@ async function scanCompetitor(
         await adPage.close().catch(() => {});
       }
 
+      if (scanStopReason) break;
       if (accounting.hasReachedTarget()) {
         scanStopReason = 'target_reached';
         break;
+      }
+
+      // Natural pacing / jitter between inspecting consecutive ad creatives to avoid burst rate-limiting
+      if (i + 1 < idArray.length && !isCancelled()) {
+        const jitter = Math.floor(Math.random() * 450) + 350; // 350ms - 800ms
+        await new Promise(resolve => setTimeout(resolve, jitter));
       }
     }
 
@@ -1164,6 +1201,8 @@ async function scanCompetitor(
     let completionMessage;
     if (scanStopReason === 'target_reached') {
       completionMessage = '> Target reached: found ' + snapshot.uniqueGamesFound + ' unique games after inspecting ' + snapshot.adsInspected + ' ads.';
+    } else if (scanStopReason === 'rate_limited') {
+      completionMessage = '> Scan stopped early due to Google rate limit after inspecting ' + snapshot.adsInspected + ' ads. Successfully preserved ' + snapshot.uniqueGamesFound + ' unique games found so far.';
     } else if (scanStopReason === 'safety_limit') {
       completionMessage = '> Safety cap reached after inspecting ' + snapshot.adsInspected + ' ads; found ' + snapshot.uniqueGamesFound + '/' + targetUniqueGames + ' unique games. Results may be incomplete.';
     } else if (scanStopReason === 'discovery_error') {
@@ -1191,8 +1230,14 @@ async function scanCompetitor(
       maxAdsToInspect,
       '> Scan ended (' + scanStopReason + '): ' + error.message
     );
-    if (error && error.code === 'ATLAS_SCAN_BLOCKED') throw error;
-    return [];
+    if (error && error.code === 'ATLAS_SCAN_BLOCKED') {
+      if (results && results.length > 0) {
+        console.warn(`[Broad Scanner] ATLAS_SCAN_BLOCKED caught at top level, but ${results.length} results were preserved. Returning them.`);
+        return results;
+      }
+      throw error;
+    }
+    return results && results.length > 0 ? results : [];
   } finally {
     try {
       searchPage.off('request', trackDiscoveryRequest);

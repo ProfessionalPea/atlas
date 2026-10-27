@@ -284,6 +284,12 @@ test('Task 1 & 2 Verification across 3 Distinct Game Scenarios (Active <48h, Sta
   // (com.res.happy.days.adventure has Admob, Mintegral, AppLovin, Unity Ads, Liftoff, Chartboost, InMobi, Meta, ironSource)
   // -------------------------------------------------------------------------
   const pkgActiveMulti = 'com.res.happy.days.adventure';
+  pool.games.set(pkgActiveMulti, {
+    id: 1,
+    package_name: pkgActiveMulti,
+    developer_website: 'https://thegamestormstudios.com',
+    developer_name: 'The Game Storm Studios'
+  });
   const fortyEightHoursAgoIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
   pool.adCreatives.push({
     creative_id: 'CR-ACTIVE-001',
