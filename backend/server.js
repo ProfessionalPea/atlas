@@ -541,7 +541,7 @@ app.post("/api/cancel-scan", (_req, res) => {
   activeScanCancelled = true;
   updateScanStatus({
     state: "cancelling",
-    log: "> 🛑 Abort requested. Finishing the current scanner step..."
+    log: "> 🛑 Abort requested. Finishing the current step, then saving everything collected so far..."
   });
 
   res.json({ status: "success", message: "Abort signal sent." });
@@ -1781,7 +1781,7 @@ app.post("/api/scan", async (req, res) => {
           () => activeScanCancelled
         );
 
-        if (activeScanCancelled) break;
+        // Abort keeps everything collected so far: fall through and ingest it.
 
         // Normalize return shape and validate Android package IDs
         const rawList = Array.isArray(scanResults)
@@ -1879,7 +1879,7 @@ app.post("/api/scan", async (req, res) => {
           packageEntries,
           INGESTION_METADATA_CONCURRENCY,
           async ([pkg]) => {
-            if (activeScanCancelled) return null;
+            // Metadata fetch continues after abort so collected games are saved.
             const enrichment = await fetchPackageEnrichment(pkg, targetDisplayName);
             enrichmentByPackage.set(pkg, enrichment);
             metadataCompleted += 1;
@@ -1888,10 +1888,10 @@ app.post("/api/scan", async (req, res) => {
             });
             return enrichment;
           },
-          () => activeScanCancelled
+          () => false
         );
 
-        if (activeScanCancelled) break;
+        
 
         const allScanCreativeIds = [
           ...new Set(
@@ -1915,7 +1915,7 @@ app.post("/api/scan", async (req, res) => {
 
         let savedPackages = 0;
         for (const [pkg, creativeIdsSet] of packageEntries) {
-          if (activeScanCancelled) break;
+          
           updateScanStatus({
             log: `> Saving package ${savedPackages + 1}/${packageEntries.length}: ${pkg}`
           });
@@ -2130,7 +2130,7 @@ app.post("/api/scan", async (req, res) => {
           );
         }
 
-        if (activeScanCancelled) break;
+        
 
         try {
           const compGamesCountRes = await pool.query(
@@ -2191,7 +2191,12 @@ app.post("/api/scan", async (req, res) => {
           isCancelled: true,
           timeRemaining: "00:00",
           finishedAt: new Date().toISOString(),
-          log: `> 🛑 Process cleanly terminated by user.`
+          uniqueGamesFound: interceptedPackageSet.size,
+          packages: Array.from(interceptedPackageSet),
+          competitorId: lastResolvedCompetitorId,
+          log: interceptedPackageSet.size > 0
+            ? `> 🛑 Scan stopped by user. Saved ${interceptedPackageSet.size} games collected so far into Atlas.`
+            : `> 🛑 Process cleanly terminated by user. No games had been collected yet.`
         });
         return;
       }

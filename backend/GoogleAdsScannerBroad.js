@@ -855,10 +855,9 @@ async function scanCompetitor(
       if (scanStopReason) break;
       if (i >= idArray.length || accounting.hasReachedTarget()) break;
       if (isCancelled()) {
+        // User abort: stop inspecting but keep (and return) everything collected so far.
         scanStopReason = 'cancelled';
-        const cancelError = new Error('Scan aborted by user.');
-        cancelError.code = 'ATLAS_SCAN_CANCELLED';
-        throw cancelError;
+        break;
       }
       const adId = idArray[i];
       inspectedCreativeIds.add(adId);
@@ -1141,7 +1140,11 @@ async function scanCompetitor(
           );
         }
       } catch (error) {
-        if (error && error.code === 'ATLAS_SCAN_CANCELLED') throw error;
+        if (error && error.code === 'ATLAS_SCAN_CANCELLED') {
+          scanStopReason = 'cancelled';
+          console.warn(`🛑 [Broad Scanner] Aborted by user. Preserving ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} unique games) found so far.`);
+          break;
+        }
         if (error && error.code === 'ATLAS_SCAN_BLOCKED') {
           if (results.length > 0) {
             scanStopReason = 'rate_limited';
