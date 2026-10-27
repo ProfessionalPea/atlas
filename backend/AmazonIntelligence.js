@@ -189,8 +189,7 @@ async function savePublisherScanResult(pool, r) {
          asin, title, url, icon, price_text, price, currency, pricing,
          rating, review_count, review_count_approx, release_date
        )
-       ON CONFLICT (asin) DO UPDATE SET
-         publisher_id = EXCLUDED.publisher_id,
+       ON CONFLICT (asin, publisher_id) DO UPDATE SET
          publisher_name = EXCLUDED.publisher_name,
          title = EXCLUDED.title,
          url = EXCLUDED.url,
@@ -309,8 +308,8 @@ async function initializeAmazonStorage(pool) {
     CREATE INDEX IF NOT EXISTS idx_amazon_list_publishers_pub ON amazon_list_publishers(publisher_id);
 
     CREATE TABLE IF NOT EXISTS amazon_games (
-      asin TEXT PRIMARY KEY,
-      publisher_id INTEGER REFERENCES amazon_publishers(id) ON DELETE CASCADE,
+      asin TEXT NOT NULL,
+      publisher_id INTEGER NOT NULL REFERENCES amazon_publishers(id) ON DELETE CASCADE,
       publisher_name TEXT NOT NULL,
       title TEXT NOT NULL,
       url TEXT NOT NULL,
@@ -324,11 +323,26 @@ async function initializeAmazonStorage(pool) {
       review_count_approx BOOLEAN DEFAULT false,
       release_date DATE,
       first_seen_at TIMESTAMPTZ DEFAULT now(),
-      last_seen_at TIMESTAMPTZ DEFAULT now()
+      last_seen_at TIMESTAMPTZ DEFAULT now(),
+      PRIMARY KEY (asin, publisher_id)
     );
+
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.table_name = 'amazon_games' AND tc.constraint_type = 'PRIMARY KEY'
+        GROUP BY tc.constraint_name HAVING COUNT(*) = 1
+      ) THEN
+        ALTER TABLE amazon_games DROP CONSTRAINT amazon_games_pkey;
+        ALTER TABLE amazon_games ADD PRIMARY KEY (asin, publisher_id);
+      END IF;
+    END $$;
 
     CREATE INDEX IF NOT EXISTS idx_amazon_games_publisher_id ON amazon_games(publisher_id);
     CREATE INDEX IF NOT EXISTS idx_amazon_games_pricing ON amazon_games(pricing);
+    CREATE INDEX IF NOT EXISTS idx_amazon_games_asin ON amazon_games(asin);
 
     CREATE TABLE IF NOT EXISTS amazon_scan_snapshots (
       id SERIAL PRIMARY KEY,
@@ -465,34 +479,83 @@ function registerAmazonRoutes({ app, pool }) {
       });
 
       const pubById = new Map(publishers.map((p) => [p.id, p]));
+
+      // Track shared ASINs across publishers for honest unique-game vs. total-listing counts
+      const publishersByAsin = new Map();
+      const gamesByPubId = new Map();
+      for (const g of gamesRes.rows) {
+        if (!publishersByAsin.has(g.asin)) publishersByAsin.set(g.asin, []);
+        const pubList = publishersByAsin.get(g.asin);
+        if (!pubList.includes(g.publisher_name)) pubList.push(g.publisher_name);
+
+        if (!gamesByPubId.has(g.publisher_id)) gamesByPubId.set(g.publisher_id, []);
+        gamesByPubId.get(g.publisher_id).push(g);
+      }
+
+      const games = gamesRes.rows.map((g) => {
+        const sharedPubs = publishersByAsin.get(g.asin) || [g.publisher_name];
+        return {
+          ...g,
+          shared_publisher_count: sharedPubs.length,
+          shared_publishers: sharedPubs
+        };
+      });
+
       const lists = [...listsById.values()].map((l) => {
         const memberPubs = l.publisher_ids.map((id) => pubById.get(id)).filter(Boolean);
+        const totalListings = memberPubs.reduce((s, p) => s + (Number(p.total_games) || 0), 0);
+        const seenAsins = new Map();
+        for (const pubId of l.publisher_ids) {
+          const pGames = gamesByPubId.get(pubId) || [];
+          for (const g of pGames) {
+            if (!seenAsins.has(g.asin)) seenAsins.set(g.asin, g);
+          }
+        }
+        const uniqueListGames = [...seenAsins.values()];
+        const uniqueGamesCount = uniqueListGames.length || totalListings;
+        const uniqueFree = uniqueListGames.length
+          ? uniqueListGames.filter((g) => g.pricing === 'free').length
+          : memberPubs.reduce((s, p) => s + (Number(p.free_games) || 0), 0);
+        const uniquePaid = uniqueListGames.length
+          ? uniqueListGames.filter((g) => g.pricing === 'paid').length
+          : memberPubs.reduce((s, p) => s + (Number(p.paid_games) || 0), 0);
+
         return {
           ...l,
           account_count: memberPubs.length,
-          total_games: memberPubs.reduce((s, p) => s + (Number(p.total_games) || 0), 0),
-          free_games: memberPubs.reduce((s, p) => s + (Number(p.free_games) || 0), 0),
-          paid_games: memberPubs.reduce((s, p) => s + (Number(p.paid_games) || 0), 0),
+          unique_games: uniqueGamesCount,
+          total_listings: totalListings,
+          total_games: uniqueGamesCount,
+          free_games: uniqueFree,
+          paid_games: uniquePaid,
           total_reviews: memberPubs.reduce((s, p) => s + (Number(p.total_reviews) || 0), 0)
         };
       });
 
-      const games = gamesRes.rows;
-      const totalGames = games.length;
-      const freeGames = games.filter((g) => g.pricing === 'free').length;
-      const paidGames = games.filter((g) => g.pricing === 'paid').length;
-      const unknownGames = games.filter((g) => g.pricing === 'unknown').length;
-      const totalReviews = games.reduce((s, g) => s + (Number(g.review_count) || 0), 0);
+      // Deduplicate portfolio-wide summary by ASIN while also reporting totalListings
+      const uniqueByAsin = new Map();
+      for (const g of games) {
+        if (!uniqueByAsin.has(g.asin)) uniqueByAsin.set(g.asin, g);
+      }
+      const uniqueGamesArr = [...uniqueByAsin.values()];
+      const uniqueGames = uniqueGamesArr.length;
+      const totalListings = games.length;
+      const freeGames = uniqueGamesArr.filter((g) => g.pricing === 'free').length;
+      const paidGames = uniqueGamesArr.filter((g) => g.pricing === 'paid').length;
+      const unknownGames = uniqueGamesArr.filter((g) => g.pricing === 'unknown').length;
+      const totalReviews = uniqueGamesArr.reduce((s, g) => s + (Number(g.review_count) || 0), 0);
 
       res.json({
         summary: {
           publisherCount: publishers.length,
           listCount: lists.length,
-          totalGames,
+          uniqueGames,
+          totalListings,
+          totalGames: uniqueGames,
           freeGames,
           paidGames,
           unknownGames,
-          freeShare: totalGames ? freeGames / totalGames : 0,
+          freeShare: uniqueGames ? freeGames / uniqueGames : 0,
           totalReviews
         },
         lists,

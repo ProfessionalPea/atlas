@@ -34,6 +34,35 @@ function classifyStrategy(pub) {
   return { label: "Paid-Heavy Catalogue", tone: "bg-purple-500/15 text-purple-400 border-purple-500/30" };
 }
 
+function getScanStatusMeta(status) {
+  const s = String(status || "unscanned").toLowerCase();
+  if (s === "complete") {
+    return { label: "Synced", tone: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", dot: "bg-emerald-400" };
+  }
+  if (s === "partial") {
+    return { label: "Partial", tone: "bg-amber-500/15 text-amber-400 border-amber-500/30", dot: "bg-amber-400" };
+  }
+  if (s === "blocked" || s === "error") {
+    return { label: s === "blocked" ? "Blocked" : "Error", tone: "bg-urgent-red/15 text-urgent-red border-urgent-red/30", dot: "bg-urgent-red" };
+  }
+  return { label: "Unscanned", tone: "bg-input-bg text-text-muted border-border-subtle", dot: "bg-text-muted" };
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return "Never";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (diffSec < 60) return "Just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  if (diffDays < 30) return `${diffDays}d ago`;
+  return d.toISOString().slice(0, 10);
+}
+
 export default function AmazonIntelligenceView() {
   const fetcher = useCallback((url, options = {}) => {
     const token = localStorage.getItem("atlas_auth_token");
@@ -162,22 +191,38 @@ export default function AmazonIntelligenceView() {
     [visiblePublishers]
   );
 
-  // Scoped KPI summary for the currently selected Competitor List
+  // Scoped KPI summary for the currently selected Competitor List (deduplicated by ASIN)
   const scopedSummary = useMemo(() => {
     const pubs = visiblePublishers;
-    const totalGames = pubs.reduce((s, p) => s + (Number(p.total_games) || 0), 0);
-    const freeGames = pubs.reduce((s, p) => s + (Number(p.free_games) || 0), 0);
-    const paidGames = pubs.reduce((s, p) => s + (Number(p.paid_games) || 0), 0);
-    const totalReviews = pubs.reduce((s, p) => s + (Number(p.total_reviews) || 0), 0);
+    const totalListings = pubs.reduce((s, p) => s + (Number(p.total_games) || 0), 0);
+    const seenAsins = new Map();
+    for (const g of overview.games || []) {
+      if (visiblePublisherNames.has(g.publisher_name) && !seenAsins.has(g.asin)) {
+        seenAsins.set(g.asin, g);
+      }
+    }
+    const uniqueGamesList = [...seenAsins.values()];
+    const uniqueGames = uniqueGamesList.length || totalListings;
+    const freeGames = uniqueGamesList.length
+      ? uniqueGamesList.filter((g) => g.pricing === "free").length
+      : pubs.reduce((s, p) => s + (Number(p.free_games) || 0), 0);
+    const paidGames = uniqueGamesList.length
+      ? uniqueGamesList.filter((g) => g.pricing === "paid").length
+      : pubs.reduce((s, p) => s + (Number(p.paid_games) || 0), 0);
+    const totalReviews = uniqueGamesList.length
+      ? uniqueGamesList.reduce((s, g) => s + (Number(g.review_count) || 0), 0)
+      : pubs.reduce((s, p) => s + (Number(p.total_reviews) || 0), 0);
     return {
       publisherCount: pubs.length,
-      totalGames,
+      uniqueGames,
+      totalListings,
+      totalGames: uniqueGames,
       freeGames,
       paidGames,
-      freeShare: totalGames ? freeGames / totalGames : 0,
+      freeShare: uniqueGames ? freeGames / uniqueGames : 0,
       totalReviews
     };
-  }, [visiblePublishers]);
+  }, [visiblePublishers, overview.games, visiblePublisherNames]);
 
   const activeListObj = useMemo(() => {
     if (selectedListId === "all" || selectedListId === "ungrouped") return null;
@@ -261,6 +306,59 @@ export default function AmazonIntelligenceView() {
       links: urls,
       listIds: [listObj.id]
     });
+  };
+
+  const handleRescanPublisher = async (pub) => {
+    if (!pub || !pub.source_url || scanStatus.running) return;
+    await handleStartScan({
+      links: [pub.source_url],
+      listIds: Array.isArray(pub.list_ids) ? pub.list_ids : []
+    });
+  };
+
+  const handleRemoveFromCurrentList = async (pubId, listId = activeListObj?.id) => {
+    if (!pubId || !listId) return;
+    try {
+      const res = await fetcher(`${API_BASE}/api/amazon/lists/${listId}/publishers`, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "remove",
+          publisherIds: [pubId]
+        })
+      });
+      if (res.ok) {
+        if (editingPublisher && editingPublisher.id === pubId) {
+          setEditingPublisher((prev) =>
+            prev ? { ...prev, list_ids: (prev.list_ids || []).filter((id) => Number(id) !== Number(listId)) } : null
+          );
+        }
+        await loadOverview();
+      }
+    } catch (err) {
+      console.error("Remove from list failed:", err);
+    }
+  };
+
+  const handleDeletePublisherFromAtlas = async (pub) => {
+    if (!pub || !pub.id) return;
+    const disp = getDisplayName(pub.publisher_name);
+    if (
+      !window.confirm(
+        `Delete "${disp}" (${pub.publisher_name}) and its extracted games from Atlas entirely?\n\nTip: If you only want to remove it from the current Competitor List while keeping its games in Atlas, use "Remove from List" instead.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetcher(`${API_BASE}/api/amazon/publishers/${pub.id}`, { method: "DELETE" });
+      if (res.ok) {
+        if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
+        setEditingPublisher(null);
+        await loadOverview();
+      }
+    } catch (err) {
+      console.error("Delete publisher failed:", err);
+    }
   };
 
   const handleCancelScan = async () => {
@@ -541,12 +639,14 @@ export default function AmazonIntelligenceView() {
           >
             <span>All Accounts</span>
             <span className="px-1.5 py-0.5 rounded-md bg-black/20 text-[10px] font-mono">
-              {overview.publishers.length} acc · {overview.summary.totalGames} games
+              {overview.publishers.length} acc · {overview.summary.uniqueGames ?? overview.summary.totalGames} unique
             </span>
           </button>
 
           {(overview.lists || []).map((list) => {
             const isActive = Number(selectedListId) === Number(list.id);
+            const uniqueCnt = list.unique_games ?? list.total_games;
+            const totalListCnt = list.total_listings ?? list.total_games;
             return (
               <button
                 key={list.id}
@@ -568,7 +668,7 @@ export default function AmazonIntelligenceView() {
                     isActive ? "bg-black/15 text-slate-950" : "bg-bg-base text-text-muted"
                   }`}
                 >
-                  {list.account_count} acc · {list.total_games} games
+                  {list.account_count} acc · {uniqueCnt} unique{totalListCnt > uniqueCnt ? ` (${totalListCnt} listings)` : ""}
                 </span>
               </button>
             );
@@ -784,8 +884,12 @@ export default function AmazonIntelligenceView() {
         </div>
         <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
           <div className="text-[11px] text-text-muted">Total Unique Games</div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.totalGames.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">Distinct Amazon ASINs</div>
+          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.uniqueGames.toLocaleString()}</div>
+          <div className="text-[10px] text-text-muted mt-1">
+            {scopedSummary.totalListings > scopedSummary.uniqueGames
+              ? `Distinct ASINs (${scopedSummary.totalListings.toLocaleString()} total listings)`
+              : "Distinct Amazon ASINs"}
+          </div>
         </div>
         <div
           onClick={() => setSelectedPricing(selectedPricing === "free" ? "all" : "free")}
@@ -883,6 +987,7 @@ export default function AmazonIntelligenceView() {
                 const paidWidthPct = (paid / maxPublisherGames) * 100;
                 const isSelected = selectedPublisher === pub.publisher_name;
                 const strat = classifyStrategy(pub);
+                const statusMeta = getScanStatusMeta(pub.last_scan_status);
                 const dispName = getDisplayName(pub.publisher_name);
                 const hasCustomName = dispName !== pub.publisher_name;
 
@@ -896,7 +1001,7 @@ export default function AmazonIntelligenceView() {
                     }`}
                   >
                     <div className="flex flex-col md:flex-row md:items-center gap-2.5">
-                      <div className="md:w-64 shrink-0 flex items-center justify-between gap-2">
+                      <div className="md:w-72 shrink-0 flex items-center justify-between gap-2">
                         <button
                           type="button"
                           onClick={() => {
@@ -908,15 +1013,32 @@ export default function AmazonIntelligenceView() {
                           <div className="text-xs font-semibold text-text-main hover:text-electric-blue truncate">
                             {dispName}
                           </div>
-                          {hasCustomName && (
-                            <div className="text-[10px] text-text-muted truncate">Amazon: {pub.publisher_name}</div>
-                          )}
+                          <div className="flex items-center gap-1.5 text-[10px] text-text-muted truncate mt-0.5">
+                            <span
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full border text-[9px] font-semibold ${statusMeta.tone}`}
+                              title={pub.last_scan_detail || `Scan status: ${pub.last_scan_status || "unscanned"}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${statusMeta.dot}`} />
+                              {statusMeta.label}
+                            </span>
+                            <span>· {formatRelativeTime(pub.last_scanned_at)}</span>
+                            {hasCustomName && <span className="truncate">· {pub.publisher_name}</span>}
+                          </div>
                         </button>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1 shrink-0">
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${strat.tone}`}>
                             {strat.label}
                           </span>
+                          <button
+                            type="button"
+                            disabled={scanStatus.running}
+                            onClick={() => handleRescanPublisher(pub)}
+                            title={`Re-scan ${dispName}`}
+                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">refresh</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() =>
@@ -932,6 +1054,16 @@ export default function AmazonIntelligenceView() {
                           >
                             <span className="material-symbols-outlined text-[15px]">edit</span>
                           </button>
+                          {activeListObj && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
+                              title={`Remove "${dispName}" from list "${activeListObj.name}" (keeps account & games in Atlas)`}
+                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                            >
+                              <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -1025,6 +1157,7 @@ export default function AmazonIntelligenceView() {
                   const freeList = pGames.filter((g) => g.pricing === "free");
                   const paidList = pGames.filter((g) => g.pricing === "paid");
                   const strat = classifyStrategy(pub);
+                  const statusMeta = getScanStatusMeta(pub.last_scan_status);
                   const dispName = getDisplayName(pub.publisher_name);
 
                   const calcTileSize = (g) => {
@@ -1054,10 +1187,24 @@ export default function AmazonIntelligenceView() {
                             <div className="text-sm font-semibold text-text-main group-hover:text-electric-blue truncate">
                               {dispName}
                             </div>
-                            <div className="text-[11px] text-text-muted">
-                              {pub.total_games} games · {pub.free_games} Free ({Math.round((pub.free_share || 0) * 100)}%) ·{" "}
-                              {pub.paid_games} Paid (Med ${Number(pub.median_paid_price || 0).toFixed(2)})
+                            <div className="text-[11px] text-text-muted flex flex-wrap items-center gap-1.5">
+                              <span>
+                                {pub.total_games} games · {pub.free_games} Free ({Math.round((pub.free_share || 0) * 100)}%) ·{" "}
+                                {pub.paid_games} Paid (Med ${Number(pub.median_paid_price || 0).toFixed(2)})
+                              </span>
+                              <span className={`px-1.5 py-0.2 rounded-full border text-[9px] font-semibold ${statusMeta.tone}`}>
+                                {statusMeta.label} · {formatRelativeTime(pub.last_scanned_at)}
+                              </span>
                             </div>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={scanStatus.running}
+                            onClick={() => handleRescanPublisher(pub)}
+                            title={`Re-scan ${dispName}`}
+                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 disabled:opacity-40"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">refresh</span>
                           </button>
                           <button
                             type="button"
@@ -1224,6 +1371,7 @@ export default function AmazonIntelligenceView() {
                 <thead className="bg-input-bg text-text-muted uppercase text-[10px]">
                   <tr>
                     <th className="py-3 px-4">Publisher Account</th>
+                    <th className="py-3 px-3">Scan Status</th>
                     <th className="py-3 px-3">Model Pattern</th>
                     <th className="py-3 px-3 text-right">Total</th>
                     <th className="py-3 px-3 text-right">Free / Paid</th>
@@ -1237,6 +1385,7 @@ export default function AmazonIntelligenceView() {
                 <tbody className="divide-y divide-border-subtle">
                   {visiblePublishers.map((pub) => {
                     const strat = classifyStrategy(pub);
+                    const statusMeta = getScanStatusMeta(pub.last_scan_status);
                     const paidReviews = Math.round(
                       (Number(pub.total_reviews) || 0) * (1 - (Number(pub.free_review_share) || 0))
                     );
@@ -1250,6 +1399,18 @@ export default function AmazonIntelligenceView() {
                         <td className="py-2.5 px-4 font-semibold text-text-main">
                           <div className="flex items-center gap-2">
                             <span>{dispName}</span>
+                            <button
+                              type="button"
+                              disabled={scanStatus.running}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRescanPublisher(pub);
+                              }}
+                              className="text-text-muted hover:text-amber-400 disabled:opacity-40"
+                              title={`Re-scan ${dispName}`}
+                            >
+                              <span className="material-symbols-outlined text-[14px]">refresh</span>
+                            </button>
                             <button
                               type="button"
                               onClick={(e) => {
@@ -1266,6 +1427,14 @@ export default function AmazonIntelligenceView() {
                             >
                               <span className="material-symbols-outlined text-[14px]">edit</span>
                             </button>
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${statusMeta.tone}`}>
+                              {statusMeta.label}
+                            </span>
+                            <span className="text-[10px] text-text-muted">{formatRelativeTime(pub.last_scanned_at)}</span>
                           </div>
                         </td>
                         <td className="py-2.5 px-3">
@@ -1309,11 +1478,27 @@ export default function AmazonIntelligenceView() {
       {selectedPublisherObj && (
         <div className="bg-electric-blue/10 border border-electric-blue/30 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-text-main flex items-center gap-2">
+            <div className="text-sm font-semibold text-text-main flex flex-wrap items-center gap-2">
               <span>Inspecting: {getDisplayName(selectedPublisherObj.publisher_name)}</span>
               {selectedPublisherObj.display_name && (
                 <span className="text-xs text-text-muted">(Amazon: {selectedPublisherObj.publisher_name})</span>
               )}
+              {(() => {
+                const st = getScanStatusMeta(selectedPublisherObj.last_scan_status);
+                return (
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${st.tone}`}>
+                    {st.label} · {formatRelativeTime(selectedPublisherObj.last_scanned_at)}
+                  </span>
+                );
+              })()}
+              <button
+                type="button"
+                disabled={scanStatus.running}
+                onClick={() => handleRescanPublisher(selectedPublisherObj)}
+                className="text-xs text-amber-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[14px]">refresh</span> Re-scan Account
+              </button>
               <button
                 type="button"
                 onClick={() =>
@@ -1442,7 +1627,7 @@ export default function AmazonIntelligenceView() {
               <tbody className="divide-y divide-border-subtle">
                 {filteredGames.slice(0, 300).map((g) => (
                   <tr
-                    key={g.asin}
+                    key={`${g.asin}-${g.publisher_id || g.publisher_name}`}
                     onClick={() => setActiveGameDrawer(g)}
                     className="hover:bg-input-bg/60 cursor-pointer transition"
                   >
@@ -1458,7 +1643,17 @@ export default function AmazonIntelligenceView() {
                         )}
                         <div className="min-w-0">
                           <div className="font-semibold text-text-main truncate max-w-xs">{g.title}</div>
-                          <div className="text-[10px] font-mono text-text-muted">{g.asin}</div>
+                          <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
+                            <span>{g.asin}</span>
+                            {Number(g.shared_publisher_count) > 1 && (
+                              <span
+                                className="px-1.5 py-0.2 rounded bg-electric-blue/15 text-electric-blue font-sans font-semibold"
+                                title={`Published under ${g.shared_publisher_count} accounts: ${(g.shared_publishers || []).join(", ")}`}
+                              >
+                                Shared ({g.shared_publisher_count} accounts)
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -1707,21 +1902,49 @@ export default function AmazonIntelligenceView() {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setEditingPublisher(null)}
-                className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isSavingPublisher}
-                className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-              >
-                {isSavingPublisher ? "Saving..." : "Save Changes"}
-              </button>
+            <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
+                      title="Removes account from the currently selected list while keeping all its games and history in Atlas"
+                    >
+                      Remove from "{activeListObj.name}"
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleDeletePublisherFromAtlas(editingPublisher)}
+                    className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
+                    title="Permanently deletes this account and its games from Atlas"
+                  >
+                    Delete Account from Atlas
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setEditingPublisher(null)}
+                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingPublisher}
+                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+                  >
+                    {isSavingPublisher ? "Saving..." : "Save Changes"}
+                  </button>
+                </div>
+              </div>
+              <p className="text-[10px] text-text-muted">
+                Unchecking a list (or clicking "Remove from list") keeps the account and its games in Atlas. "Delete Account from Atlas" removes it completely.
+              </p>
             </div>
           </form>
         </div>
