@@ -3,6 +3,7 @@ import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
+import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 
 // NGROK URL / API base live in apiConfig.js (shared by all modules)
 import { API_BASE } from "./apiConfig.js";
@@ -2594,6 +2595,7 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "amazon", icon: "storefront", label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
@@ -3810,6 +3812,11 @@ function App() {
             </motion.div>
           )}
 
+          {/* AMAZON APPSTORE INTELLIGENCE TAB */}
+          {activeTab === "amazon" && (
+            <AmazonIntelligenceView authFetch={authFetch} />
+          )}
+
         </main>
       </div>
 {/* MOBILE MATERIAL NAVIGATION BAR */}
@@ -3818,6 +3825,7 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "directory", icon: "dataset", label: "Directory" },
+            { id: "amazon", icon: "storefront", label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])

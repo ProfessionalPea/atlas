@@ -22,6 +22,10 @@ const {
   initializePlayTelemetryStorage,
   registerPlayTelemetryRoutes
 } = require('./PlayStoreTelemetry');
+const {
+  initializeAmazonStorage,
+  registerAmazonRoutes
+} = require('./AmazonIntelligence');
 
 const extensionPool = getDatabasePool();
 
@@ -84,7 +88,8 @@ async function initialize() {
     await initializeVideoLifecycle(extensionPool);
     await initializeVideoMetadata(extensionPool);
     await initializePlayTelemetryStorage(extensionPool);
-    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry storage ready.');
+    await initializeAmazonStorage(extensionPool);
+    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry + Amazon storage ready.');
   } catch (error) {
     initialized = false;
     console.error('⚠️ [Atlas Intelligence] Initialization failed:', error.message);
@@ -99,6 +104,7 @@ express.application.listen = function atlasExtensionListen(...args) {
     registerIntelligenceRoutes({ app: this, pool: extensionPool, gplay });
     registerVideoLifecycleRoutes({ app: this, pool: extensionPool });
     registerPlayTelemetryRoutes({ app: this, pool: extensionPool });
+    registerAmazonRoutes({ app: this, pool: extensionPool });
   }
   void initialize();
   return originalListen.apply(this, args);
