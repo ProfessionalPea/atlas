@@ -34,21 +34,19 @@ function classifyStrategy(pub) {
   return { label: "Paid-Heavy Catalogue", tone: "bg-purple-500/15 text-purple-400 border-purple-500/30" };
 }
 
-export default function AmazonIntelligenceView({ authFetch }) {
-  const fetcher = useCallback(
-    (url, options = {}) => {
-      if (typeof authFetch === "function") return authFetch(url, options);
-      return fetch(url, {
-        ...options,
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "true",
-          ...(options.headers || {})
-        }
-      });
-    },
-    [authFetch]
-  );
+export default function AmazonIntelligenceView() {
+  const fetcher = useCallback((url, options = {}) => {
+    const token = localStorage.getItem("atlas_auth_token");
+    return fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+        ...(token ? { "x-atlas-token": token } : {}),
+        ...(options.headers || {})
+      }
+    });
+  }, []);
 
   const [overview, setOverview] = useState({
     summary: { publisherCount: 0, totalGames: 0, freeGames: 0, paidGames: 0, unknownGames: 0, freeShare: 0, totalReviews: 0 },

@@ -3814,7 +3814,7 @@ function App() {
 
           {/* AMAZON APPSTORE INTELLIGENCE TAB */}
           {activeTab === "amazon" && (
-            <AmazonIntelligenceView authFetch={authFetch} />
+            <AmazonIntelligenceView />
           )}
 
         </main>
