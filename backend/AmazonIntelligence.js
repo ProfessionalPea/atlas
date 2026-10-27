@@ -285,8 +285,28 @@ async function initializeAmazonStorage(pool) {
       last_scan_status TEXT DEFAULT 'unscanned',
       last_scan_detail TEXT,
       last_scanned_at TIMESTAMPTZ DEFAULT now(),
+      display_name TEXT,
       UNIQUE (host, normalized_name)
     );
+
+    ALTER TABLE amazon_publishers ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+    CREATE TABLE IF NOT EXISTS amazon_lists (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS amazon_list_publishers (
+      list_id INTEGER NOT NULL REFERENCES amazon_lists(id) ON DELETE CASCADE,
+      publisher_id INTEGER NOT NULL REFERENCES amazon_publishers(id) ON DELETE CASCADE,
+      added_at TIMESTAMPTZ DEFAULT now(),
+      PRIMARY KEY (list_id, publisher_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_amazon_list_publishers_pub ON amazon_list_publishers(publisher_id);
 
     CREATE TABLE IF NOT EXISTS amazon_games (
       asin TEXT PRIMARY KEY,
@@ -350,6 +370,25 @@ async function initializeAmazonStorage(pool) {
       }
     }
   }
+
+  // Seed default list containing existing publishers if no lists exist yet
+  const { rows: listRows } = await pool.query(`SELECT COUNT(*)::int AS cnt FROM amazon_lists`);
+  if ((listRows[0]?.cnt || 0) === 0) {
+    const { rows: allPubs } = await pool.query(`SELECT id FROM amazon_publishers ORDER BY id ASC`);
+    if (allPubs.length > 0) {
+      const listRes = await pool.query(
+        `INSERT INTO amazon_lists (name, description) VALUES ($1, $2) RETURNING id`,
+        ['Initial 16 Amazon Accounts', 'Default competitor group seeded from initial 16 Amazon Appstore accounts']
+      );
+      const defaultListId = listRes.rows[0].id;
+      await pool.query(
+        `INSERT INTO amazon_list_publishers (list_id, publisher_id)
+         SELECT $1::int, unnest($2::int[])
+         ON CONFLICT DO NOTHING`,
+        [defaultListId, allPubs.map((p) => p.id)]
+      );
+    }
+  }
 }
 
 function parseInputLinks(raw) {
@@ -377,7 +416,7 @@ function registerAmazonRoutes({ app, pool }) {
 
   app.get('/api/amazon/overview', async (_req, res) => {
     try {
-      const [pubsRes, gamesRes, snapsRes] = await Promise.all([
+      const [pubsRes, gamesRes, snapsRes, listsRes, membershipsRes] = await Promise.all([
         pool.query(`
           SELECT *
           FROM amazon_publishers
@@ -393,10 +432,51 @@ function registerAmazonRoutes({ app, pool }) {
           FROM amazon_scan_snapshots
           ORDER BY scanned_at DESC
           LIMIT 50
+        `),
+        pool.query(`
+          SELECT *
+          FROM amazon_lists
+          ORDER BY id ASC
+        `),
+        pool.query(`
+          SELECT list_id, publisher_id
+          FROM amazon_list_publishers
         `)
       ]);
 
-      const publishers = pubsRes.rows;
+      const listsById = new Map(listsRes.rows.map((l) => [l.id, { ...l, publisher_ids: [] }]));
+      const listIdsByPub = new Map();
+
+      for (const m of membershipsRes.rows) {
+        if (listsById.has(m.list_id)) {
+          listsById.get(m.list_id).publisher_ids.push(m.publisher_id);
+        }
+        if (!listIdsByPub.has(m.publisher_id)) listIdsByPub.set(m.publisher_id, []);
+        listIdsByPub.get(m.publisher_id).push(m.list_id);
+      }
+
+      const publishers = pubsRes.rows.map((p) => {
+        const lIds = listIdsByPub.get(p.id) || [];
+        return {
+          ...p,
+          effective_name: (p.display_name && p.display_name.trim()) ? p.display_name.trim() : p.publisher_name,
+          list_ids: lIds
+        };
+      });
+
+      const pubById = new Map(publishers.map((p) => [p.id, p]));
+      const lists = [...listsById.values()].map((l) => {
+        const memberPubs = l.publisher_ids.map((id) => pubById.get(id)).filter(Boolean);
+        return {
+          ...l,
+          account_count: memberPubs.length,
+          total_games: memberPubs.reduce((s, p) => s + (Number(p.total_games) || 0), 0),
+          free_games: memberPubs.reduce((s, p) => s + (Number(p.free_games) || 0), 0),
+          paid_games: memberPubs.reduce((s, p) => s + (Number(p.paid_games) || 0), 0),
+          total_reviews: memberPubs.reduce((s, p) => s + (Number(p.total_reviews) || 0), 0)
+        };
+      });
+
       const games = gamesRes.rows;
       const totalGames = games.length;
       const freeGames = games.filter((g) => g.pricing === 'free').length;
@@ -407,6 +487,7 @@ function registerAmazonRoutes({ app, pool }) {
       res.json({
         summary: {
           publisherCount: publishers.length,
+          listCount: lists.length,
           totalGames,
           freeGames,
           paidGames,
@@ -414,6 +495,7 @@ function registerAmazonRoutes({ app, pool }) {
           freeShare: totalGames ? freeGames / totalGames : 0,
           totalReviews
         },
+        lists,
         publishers,
         games,
         snapshots: snapsRes.rows
@@ -458,6 +540,27 @@ function registerAmazonRoutes({ app, pool }) {
       });
     }
 
+    // Resolve target list(s) if requested (existing list IDs and/or creating a new list on the fly)
+    const targetListIds = new Set(
+      (Array.isArray(req.body?.listIds) ? req.body.listIds : req.body?.listId ? [req.body.listId] : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    );
+    const newListName = String(req.body?.newListName || '').trim();
+    let createdList = null;
+    if (newListName) {
+      try {
+        const listRes = await pool.query(
+          `INSERT INTO amazon_lists (name, description) VALUES ($1, $2) RETURNING *`,
+          [newListName, req.body?.newListDescription || null]
+        );
+        createdList = listRes.rows[0];
+        if (createdList?.id) targetListIds.add(createdList.id);
+      } catch (err) {
+        console.error('[Amazon Scan Create List Error]:', err.message);
+      }
+    }
+
     activeAmazonScanCancelled = false;
     amazonScanStatus = {
       running: true,
@@ -479,6 +582,8 @@ function registerAmazonRoutes({ app, pool }) {
     res.json({
       status: 'initiated',
       totalPublishers: validTargets.length,
+      createdList,
+      targetListIds: [...targetListIds],
       validation: batch
     });
 
@@ -504,11 +609,22 @@ function registerAmazonRoutes({ app, pool }) {
             onPublisherDone: async (r) => {
               doneCount += 1;
               try {
+                let pubId = null;
                 if (r.games && r.games.length > 0) {
-                  await savePublisherScanResult(pool, r);
+                  pubId = await savePublisherScanResult(pool, r);
                   savedGamesTotal += r.games.length;
                 } else if (r.status !== 'skipped') {
-                  await savePublisherScanResult(pool, r);
+                  pubId = await savePublisherScanResult(pool, r);
+                }
+                if (pubId && targetListIds.size > 0) {
+                  for (const listId of targetListIds) {
+                    await pool.query(
+                      `INSERT INTO amazon_list_publishers (list_id, publisher_id)
+                       VALUES ($1, $2)
+                       ON CONFLICT DO NOTHING`,
+                      [listId, pubId]
+                    );
+                  }
                 }
               } catch (saveErr) {
                 console.error(`[Amazon Save Error for ${r.publisher}]:`, saveErr.message);
@@ -556,12 +672,153 @@ function registerAmazonRoutes({ app, pool }) {
     })();
   });
 
+  // Rename publisher display_name and/or update its list memberships
+  app.patch('/api/amazon/publishers/:id', async (req, res) => {
+    try {
+      const pubId = Number(req.params.id);
+      if (!Number.isInteger(pubId)) return res.status(400).json({ error: 'Invalid publisher ID.' });
+
+      if (req.body?.displayName !== undefined) {
+        const cleanDisplay = String(req.body.displayName || '').trim() || null;
+        await pool.query(
+          `UPDATE amazon_publishers SET display_name = $2 WHERE id = $1`,
+          [pubId, cleanDisplay]
+        );
+      }
+
+      if (Array.isArray(req.body?.listIds)) {
+        const cleanListIds = req.body.listIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0);
+        await pool.query(`DELETE FROM amazon_list_publishers WHERE publisher_id = $1`, [pubId]);
+        if (cleanListIds.length > 0) {
+          await pool.query(
+            `INSERT INTO amazon_list_publishers (list_id, publisher_id)
+             SELECT unnest($1::int[]), $2::int
+             ON CONFLICT DO NOTHING`,
+            [cleanListIds, pubId]
+          );
+        }
+      }
+
+      res.json({ status: 'updated' });
+    } catch (err) {
+      console.error('[Amazon Update Publisher Error]:', err);
+      res.status(500).json({ error: 'Failed to update publisher.' });
+    }
+  });
+
   app.delete('/api/amazon/publishers/:id', async (req, res) => {
     try {
       await pool.query(`DELETE FROM amazon_publishers WHERE id = $1`, [req.params.id]);
       res.json({ status: 'deleted' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete publisher.' });
+    }
+  });
+
+  // Create a new competitor list (and optionally assign existing publisher IDs)
+  app.post('/api/amazon/lists', async (req, res) => {
+    try {
+      const name = String(req.body?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'List name is required.' });
+      const description = String(req.body?.description || '').trim() || null;
+
+      const listRes = await pool.query(
+        `INSERT INTO amazon_lists (name, description) VALUES ($1, $2) RETURNING *`,
+        [name, description]
+      );
+      const list = listRes.rows[0];
+
+      const pubIds = (Array.isArray(req.body?.publisherIds) ? req.body.publisherIds : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (pubIds.length > 0) {
+        await pool.query(
+          `INSERT INTO amazon_list_publishers (list_id, publisher_id)
+           SELECT $1::int, unnest($2::int[])
+           ON CONFLICT DO NOTHING`,
+          [list.id, pubIds]
+        );
+      }
+
+      res.json({ status: 'created', list });
+    } catch (err) {
+      console.error('[Amazon Create List Error]:', err);
+      res.status(500).json({ error: 'Failed to create list.' });
+    }
+  });
+
+  // Rename a list or update its description
+  app.patch('/api/amazon/lists/:id', async (req, res) => {
+    try {
+      const listId = Number(req.params.id);
+      const name = String(req.body?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'List name is required.' });
+      const description = req.body?.description !== undefined ? (String(req.body.description || '').trim() || null) : undefined;
+
+      const updated = await pool.query(
+        `UPDATE amazon_lists
+         SET name = $2,
+             description = COALESCE($3, description),
+             updated_at = now()
+         WHERE id = $1
+         RETURNING *`,
+        [listId, name, description ?? null]
+      );
+      res.json({ status: 'updated', list: updated.rows[0] });
+    } catch (err) {
+      console.error('[Amazon Rename List Error]:', err);
+      res.status(500).json({ error: 'Failed to rename list.' });
+    }
+  });
+
+  // Delete a list (keeps underlying publishers and games intact)
+  app.delete('/api/amazon/lists/:id', async (req, res) => {
+    try {
+      await pool.query(`DELETE FROM amazon_lists WHERE id = $1`, [req.params.id]);
+      res.json({ status: 'deleted' });
+    } catch (err) {
+      res.status(500).json({ error: 'Failed to delete list.' });
+    }
+  });
+
+  // Add, remove, or set publishers in a list
+  app.post('/api/amazon/lists/:id/publishers', async (req, res) => {
+    try {
+      const listId = Number(req.params.id);
+      const action = req.body?.action || 'add'; // 'add' | 'remove' | 'set'
+      const pubIds = (Array.isArray(req.body?.publisherIds) ? req.body.publisherIds : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (action === 'set') {
+        await pool.query(`DELETE FROM amazon_list_publishers WHERE list_id = $1`, [listId]);
+        if (pubIds.length > 0) {
+          await pool.query(
+            `INSERT INTO amazon_list_publishers (list_id, publisher_id)
+             SELECT $1::int, unnest($2::int[])
+             ON CONFLICT DO NOTHING`,
+            [listId, pubIds]
+          );
+        }
+      } else if (action === 'remove' && pubIds.length > 0) {
+        await pool.query(
+          `DELETE FROM amazon_list_publishers WHERE list_id = $1 AND publisher_id = ANY($2::int[])`,
+          [listId, pubIds]
+        );
+      } else if (pubIds.length > 0) {
+        await pool.query(
+          `INSERT INTO amazon_list_publishers (list_id, publisher_id)
+           SELECT $1::int, unnest($2::int[])
+           ON CONFLICT DO NOTHING`,
+          [listId, pubIds]
+        );
+      }
+
+      res.json({ status: 'updated' });
+    } catch (err) {
+      console.error('[Amazon List Membership Error]:', err);
+      res.status(500).json({ error: 'Failed to update list publishers.' });
     }
   });
 }
