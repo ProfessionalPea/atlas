@@ -10,17 +10,22 @@ const {
 let amazonScanStatus = {
   running: false,
   state: 'idle',
+  phase: 'idle',
   isCancelled: false,
   isComplete: false,
   isError: false,
   currentPublisher: null,
   publisherIndex: 0,
+  completedPublishers: 0,
   totalPublishers: 0,
   currentPage: 0,
+  totalPagesProcessed: 0,
   gamesFoundInCurrent: 0,
   totalGamesSaved: 0,
   startedAt: null,
   finishedAt: null,
+  resultsSummary: [],
+  failedLinks: [],
   log: '> Ready to scan Amazon Appstore publishers.'
 };
 let activeAmazonScanCancelled = false;
@@ -37,7 +42,7 @@ async function savePublisherScanResult(pool, r) {
   const currency = (stats.currencies && stats.currencies[0]) || '$';
 
   // If the scan failed/blocked with 0 games, only record status if publisher already exists;
-  // do not overwrite existing game counts with zeros.
+  // do not overwrite existing game counts or last_successful_scan_at with zeros.
   const existingPubRes = await pool.query(
     `SELECT id, total_games FROM amazon_publishers WHERE host = $1 AND normalized_name = $2 LIMIT 1`,
     [host, normName]
@@ -63,19 +68,21 @@ async function savePublisherScanResult(pool, r) {
     return existingPub.id;
   }
 
+  const hasSuccessfulGames = (stats.total || 0) > 0 || r.status === 'complete' || r.status === 'partial';
+
   const pubUpsert = await pool.query(
     `INSERT INTO amazon_publishers (
        publisher_name, normalized_name, host, source_url,
        total_games, free_games, paid_games, unknown_games,
        free_share, free_to_paid_ratio, avg_paid_price, median_paid_price, currency,
        avg_rating, total_reviews, free_review_share,
-       last_scan_status, last_scan_detail, last_scanned_at
+       last_scan_status, last_scan_detail, last_scanned_at, last_successful_scan_at
      ) VALUES (
        $1, $2, $3, $4,
        $5, $6, $7, $8,
        $9, $10, $11, $12, $13,
        $14, $15, $16,
-       $17, $18, now()
+       $17, $18, now(), CASE WHEN $19::boolean THEN now() ELSE NULL END
      )
      ON CONFLICT (host, normalized_name) DO UPDATE SET
        publisher_name = EXCLUDED.publisher_name,
@@ -94,7 +101,11 @@ async function savePublisherScanResult(pool, r) {
        free_review_share = EXCLUDED.free_review_share,
        last_scan_status = EXCLUDED.last_scan_status,
        last_scan_detail = EXCLUDED.last_scan_detail,
-       last_scanned_at = now()
+       last_scanned_at = now(),
+       last_successful_scan_at = CASE
+         WHEN $19::boolean THEN now()
+         ELSE amazon_publishers.last_successful_scan_at
+       END
      RETURNING id`,
     [
       r.publisher,
@@ -114,7 +125,8 @@ async function savePublisherScanResult(pool, r) {
       stats.totalReviews || 0,
       stats.freeReviewShare ?? null,
       r.status || 'complete',
-      r.statusDetail || null
+      r.statusDetail || null,
+      hasSuccessfulGames
     ]
   );
   const publisherId = pubUpsert.rows[0].id;
@@ -289,6 +301,15 @@ async function initializeAmazonStorage(pool) {
     );
 
     ALTER TABLE amazon_publishers ADD COLUMN IF NOT EXISTS display_name TEXT;
+    ALTER TABLE amazon_publishers ADD COLUMN IF NOT EXISTS last_successful_scan_at TIMESTAMPTZ;
+
+    UPDATE amazon_publishers p
+    SET last_successful_scan_at = COALESCE(
+      (SELECT MAX(s.scanned_at) FROM amazon_scan_snapshots s WHERE s.publisher_id = p.id AND (s.status = 'complete' OR s.total_games > 0)),
+      (SELECT MAX(g.last_seen_at) FROM amazon_games g WHERE g.publisher_id = p.id),
+      p.last_scanned_at
+    )
+    WHERE p.last_successful_scan_at IS NULL AND p.total_games > 0;
 
     CREATE TABLE IF NOT EXISTS amazon_lists (
       id SERIAL PRIMARY KEY,
@@ -628,17 +649,22 @@ function registerAmazonRoutes({ app, pool }) {
     amazonScanStatus = {
       running: true,
       state: 'scanning',
+      phase: 'warming_up',
       isCancelled: false,
       isComplete: false,
       isError: false,
       currentPublisher: validTargets[0].publisher,
       publisherIndex: 1,
+      completedPublishers: 0,
       totalPublishers: validTargets.length,
       currentPage: 0,
+      totalPagesProcessed: 0,
       gamesFoundInCurrent: 0,
       totalGamesSaved: 0,
       startedAt: new Date().toISOString(),
       finishedAt: null,
+      resultsSummary: [],
+      failedLinks: [],
       log: `> 🚀 Starting Amazon batch scan for ${validTargets.length} publisher(s)...`
     };
 
@@ -653,6 +679,9 @@ function registerAmazonRoutes({ app, pool }) {
     (async () => {
       let savedGamesTotal = 0;
       let doneCount = 0;
+      let pagesTotal = 0;
+      const resultsSummary = [];
+      const failedLinks = [];
       try {
         await scanPublishers(
           validTargets.map((t) => t.normalizedUrl),
@@ -661,16 +690,35 @@ function registerAmazonRoutes({ app, pool }) {
             maxPages: 30,
             isCancelled: () => activeAmazonScanCancelled,
             onProgress: (p) => {
+              const isRetry = p.phase === 'retrying';
               amazonScanStatus = {
                 ...amazonScanStatus,
+                phase: isRetry ? 'retrying' : 'scanning',
                 currentPublisher: p.publisher,
                 currentPage: p.page,
                 gamesFoundInCurrent: p.found,
-                log: `> [${p.publisher}] Page ${p.page}: extracted ${p.found}${p.reportedTotal ? '/' + p.reportedTotal : ''} unique games...`
+                log: isRetry
+                  ? `> ↻ [${p.publisher}] Retrying page ${p.page} (attempt ${p.attempt})...`
+                  : `> [${p.publisher}] Page ${p.page}: extracted ${p.found}${p.reportedTotal ? '/' + p.reportedTotal : ''} unique games...`
               };
             },
             onPublisherDone: async (r) => {
               doneCount += 1;
+              pagesTotal += Number(r.pagesRead || 0);
+              const gamesCount = r.games?.length || 0;
+              resultsSummary.push({
+                publisher: r.publisher,
+                sourceUrl: r.sourceUrl,
+                status: r.status,
+                statusDetail: r.statusDetail || null,
+                pagesRead: r.pagesRead || 0,
+                gamesFound: gamesCount,
+                freeGames: r.stats?.free || 0,
+                paidGames: r.stats?.paid || 0
+              });
+              if ((r.status === 'blocked' || r.status === 'error' || r.status === 'skipped') && gamesCount === 0 && r.sourceUrl) {
+                failedLinks.push(r.sourceUrl);
+              }
               try {
                 let pubId = null;
                 if (r.games && r.games.length > 0) {
@@ -694,9 +742,14 @@ function registerAmazonRoutes({ app, pool }) {
               }
               amazonScanStatus = {
                 ...amazonScanStatus,
+                phase: r.status === 'blocked' ? 'blocked' : r.status === 'error' ? 'failed' : 'scanning',
+                completedPublishers: doneCount,
                 publisherIndex: Math.min(validTargets.length, doneCount + 1),
+                totalPagesProcessed: pagesTotal,
                 totalGamesSaved: savedGamesTotal,
-                log: `> ✔ ${r.publisher} (${r.status}): saved ${r.games?.length || 0} games (${r.stats?.free || 0} free, ${r.stats?.paid || 0} paid).`
+                resultsSummary: [...resultsSummary],
+                failedLinks: [...failedLinks],
+                log: `> ${r.status === 'complete' || gamesCount > 0 ? '✔' : '⚠'} ${r.publisher} (${r.status}${r.statusDetail ? ': ' + r.statusDetail : ''}): saved ${gamesCount} games (${r.stats?.free || 0} free, ${r.stats?.paid || 0} paid).`
               };
             }
           }
@@ -707,18 +760,25 @@ function registerAmazonRoutes({ app, pool }) {
             ...amazonScanStatus,
             running: false,
             state: 'cancelled',
+            phase: 'cancelled',
             isCancelled: true,
             finishedAt: new Date().toISOString(),
-            log: `> 🛑 Scan stopped by user. Saved ${savedGamesTotal} Amazon games collected so far.`
+            log: `> 🛑 Scan stopped by user. Saved ${savedGamesTotal} Amazon games across ${doneCount}/${validTargets.length} publisher(s).`
           };
         } else {
+          const failedCount = failedLinks.length;
           amazonScanStatus = {
             ...amazonScanStatus,
             running: false,
-            state: 'complete',
+            state: failedCount === validTargets.length && savedGamesTotal === 0 ? 'error' : 'complete',
+            phase: failedCount > 0 ? 'completed_with_warnings' : 'completed',
             isComplete: true,
+            isError: failedCount === validTargets.length && savedGamesTotal === 0,
             finishedAt: new Date().toISOString(),
-            log: `> 🎉 Amazon scan complete! Synchronized ${savedGamesTotal} unique games across ${doneCount} publisher(s).`
+            log:
+              failedCount > 0
+                ? `> ⚠ Scan finished: ${validTargets.length - failedCount}/${validTargets.length} succeeded (${savedGamesTotal} games saved, ${failedCount} failed/blocked).`
+                : `> 🎉 Amazon scan complete! Synchronized ${savedGamesTotal} games across ${doneCount} publisher(s).`
           };
         }
       } catch (err) {
@@ -727,6 +787,7 @@ function registerAmazonRoutes({ app, pool }) {
           ...amazonScanStatus,
           running: false,
           state: 'error',
+          phase: 'failed',
           isError: true,
           finishedAt: new Date().toISOString(),
           log: `> ❌ Amazon scan error: ${err.message} (Saved ${savedGamesTotal} games before error)`

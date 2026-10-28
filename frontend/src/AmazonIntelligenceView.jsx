@@ -20,34 +20,6 @@ const SAMPLE_LINKS = [
   "https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGaming%2BPills&search-type=ss"
 ];
 
-function classifyStrategy(pub) {
-  const freeShare = Number(pub.free_share ?? 0);
-  const medianPaid = Number(pub.median_paid_price ?? 0);
-  const paidCount = Number(pub.paid_games ?? 0);
-  if (paidCount === 0) return { label: "Free Only", tone: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" };
-  if (freeShare >= 0.55 && medianPaid >= 8) {
-    return { label: "High-Ticket Funnel", tone: "bg-amber-500/15 text-amber-400 border-amber-500/30" };
-  }
-  if (freeShare >= 0.5 && medianPaid < 8) {
-    return { label: "Volume Funnel", tone: "bg-sky-500/15 text-sky-400 border-sky-500/30" };
-  }
-  return { label: "Paid-Heavy Catalogue", tone: "bg-purple-500/15 text-purple-400 border-purple-500/30" };
-}
-
-function getScanStatusMeta(status) {
-  const s = String(status || "unscanned").toLowerCase();
-  if (s === "complete") {
-    return { label: "Synced", tone: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", dot: "bg-emerald-400" };
-  }
-  if (s === "partial") {
-    return { label: "Partial", tone: "bg-amber-500/15 text-amber-400 border-amber-500/30", dot: "bg-amber-400" };
-  }
-  if (s === "blocked" || s === "error") {
-    return { label: s === "blocked" ? "Blocked" : "Error", tone: "bg-urgent-red/15 text-urgent-red border-urgent-red/30", dot: "bg-urgent-red" };
-  }
-  return { label: "Unscanned", tone: "bg-input-bg text-text-muted border-border-subtle", dot: "bg-text-muted" };
-}
-
 function formatRelativeTime(iso) {
   if (!iso) return "Never";
   const d = new Date(iso);
@@ -61,6 +33,68 @@ function formatRelativeTime(iso) {
   const diffDays = Math.floor(diffHr / 24);
   if (diffDays < 30) return `${diffDays}d ago`;
   return d.toISOString().slice(0, 10);
+}
+
+function formatDurationSec(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return m > 0 ? `${m}m ${rem}s` : `${rem}s`;
+}
+
+/**
+ * Separate data availability ("Synced") from latest refresh attempt ("Blocked" / "Failed").
+ * An account with synced games in Atlas is never labeled as broken just because a later refresh hit a transient 503.
+ */
+function getPublisherSyncState(pub) {
+  const hasGames = Number(pub.total_games || 0) > 0;
+  const lastSuccess = pub.last_successful_scan_at || (hasGames ? pub.last_scanned_at : null);
+  const latestStatus = String(pub.last_scan_status || "unscanned").toLowerCase();
+  const latestAttemptFailed = latestStatus === "blocked" || latestStatus === "error";
+
+  if (hasGames) {
+    return {
+      dataLabel: "Synced",
+      dataTone: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+      dotTone: "bg-emerald-400",
+      lastSyncedText: formatRelativeTime(lastSuccess),
+      hasRefreshWarning: latestAttemptFailed,
+      warningText: latestAttemptFailed
+        ? `Latest refresh attempt (${formatRelativeTime(pub.last_scanned_at)}) did not complete (${pub.last_scan_detail || latestStatus}). Showing preserved data from last successful sync.`
+        : null
+    };
+  }
+
+  if (latestStatus === "blocked") {
+    return {
+      dataLabel: "Blocked",
+      dataTone: "bg-urgent-red/15 text-urgent-red border-urgent-red/30",
+      dotTone: "bg-urgent-red",
+      lastSyncedText: formatRelativeTime(pub.last_scanned_at),
+      hasRefreshWarning: true,
+      warningText: pub.last_scan_detail || "Amazon temporarily blocked the scan request."
+    };
+  }
+
+  if (latestStatus === "error") {
+    return {
+      dataLabel: "Retry Needed",
+      dataTone: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+      dotTone: "bg-amber-400",
+      lastSyncedText: formatRelativeTime(pub.last_scanned_at),
+      hasRefreshWarning: true,
+      warningText: pub.last_scan_detail || "Scan did not return listings."
+    };
+  }
+
+  return {
+    dataLabel: "Unscanned",
+    dataTone: "bg-input-bg text-text-muted border-border-subtle",
+    dotTone: "bg-text-muted",
+    lastSyncedText: "Never",
+    hasRefreshWarning: false,
+    warningText: null
+  };
 }
 
 export default function AmazonIntelligenceView() {
@@ -78,15 +112,24 @@ export default function AmazonIntelligenceView() {
   }, []);
 
   const [overview, setOverview] = useState({
-    summary: { publisherCount: 0, listCount: 0, totalGames: 0, freeGames: 0, paidGames: 0, unknownGames: 0, freeShare: 0, totalReviews: 0 },
+    summary: {
+      publisherCount: 0,
+      listCount: 0,
+      uniqueGames: 0,
+      totalListings: 0,
+      totalGames: 0,
+      freeGames: 0,
+      paidGames: 0,
+      unknownGames: 0,
+      freeShare: 0,
+      totalReviews: 0
+    },
     lists: [],
     publishers: [],
     games: [],
     snapshots: []
   });
   const [loading, setLoading] = useState(true);
-  const [activeVisual, setActiveVisual] = useState("comparison"); // comparison | treemap | strategy
-  const [treemapMetric, setTreemapMetric] = useState("reviews"); // reviews | price | equal
 
   // Competitor List & Account Filter state
   const [selectedListId, setSelectedListId] = useState("all"); // "all" | "ungrouped" | number
@@ -94,23 +137,31 @@ export default function AmazonIntelligenceView() {
   const [selectedPricing, setSelectedPricing] = useState("all"); // all | free | paid
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("reviews"); // reviews | price_desc | price_asc | rating | release
+
+  // Launch Duration / Date Filter state
+  const [dateBasis, setDateBasis] = useState("release_date"); // "release_date" | "first_seen_at"
+  const [durationPreset, setDurationPreset] = useState("all"); // "all" | "30d" | "90d" | "6m" | "1y" | "custom"
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+  const [includeUnknownDates, setIncludeUnknownDates] = useState(false);
+
+  // Drawers & Modals (Layered z-index: Drawer z-[90], Modals z-[100], Confirmations z-[110])
   const [activeGameDrawer, setActiveGameDrawer] = useState(null);
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [listModal, setListModal] = useState(null); // { mode: 'create' | 'edit', listId: 'new' | number, name, description, publisherIds: number[] }
+  const [editingPublisher, setEditingPublisher] = useState(null); // { id, publisher_name, display_name, list_ids: number[] }
+  const [confirmDeletePub, setConfirmDeletePub] = useState(null);
 
   // Scanner & validation state
-  const [showScannerModal, setShowScannerModal] = useState(false);
   const [linksInput, setLinksInput] = useState("");
   const [scanTargetListIds, setScanTargetListIds] = useState([]);
   const [scanNewListName, setScanNewListName] = useState("");
   const [validationResult, setValidationResult] = useState(null);
   const [isValidating, setIsValidating] = useState(false);
   const [scanStatus, setScanStatus] = useState({ running: false, state: "idle", log: "" });
+  const [elapsedSec, setElapsedSec] = useState(0);
 
-  // List creation / editing modal state
-  const [listModal, setListModal] = useState(null); // { mode: 'create' | 'edit', listId?, name, description, publisherIds: number[] }
   const [isSavingList, setIsSavingList] = useState(false);
-
-  // Account rename / list assignment modal state
-  const [editingPublisher, setEditingPublisher] = useState(null); // { id, publisher_name, display_name, list_ids: number[] }
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
 
   const loadOverview = useCallback(async () => {
@@ -119,7 +170,18 @@ export default function AmazonIntelligenceView() {
       if (res.ok) {
         const data = await res.json();
         setOverview({
-          summary: data.summary || { publisherCount: 0, listCount: 0, totalGames: 0, freeGames: 0, paidGames: 0, unknownGames: 0, freeShare: 0, totalReviews: 0 },
+          summary: data.summary || {
+            publisherCount: 0,
+            listCount: 0,
+            uniqueGames: 0,
+            totalListings: 0,
+            totalGames: 0,
+            freeGames: 0,
+            paidGames: 0,
+            unknownGames: 0,
+            freeShare: 0,
+            totalReviews: 0
+          },
           lists: data.lists || [],
           publishers: data.publishers || [],
           games: data.games || [],
@@ -154,11 +216,51 @@ export default function AmazonIntelligenceView() {
       } catch {}
     };
     checkStatus();
-    const timer = setInterval(checkStatus, 2200);
+    const timer = setInterval(checkStatus, 2000);
     return () => clearInterval(timer);
   }, [fetcher, loadOverview]);
 
-  // Map publisher_name -> publisher record (for display_name lookup)
+  // Live elapsed timer during active scan
+  useEffect(() => {
+    if (!scanStatus.running || !scanStatus.startedAt) {
+      if (scanStatus.startedAt && scanStatus.finishedAt) {
+        const diff = (new Date(scanStatus.finishedAt).getTime() - new Date(scanStatus.startedAt).getTime()) / 1000;
+        setElapsedSec(Math.max(0, Math.round(diff)));
+      }
+      return;
+    }
+    const updateElapsed = () => {
+      const diff = (Date.now() - new Date(scanStatus.startedAt).getTime()) / 1000;
+      setElapsedSec(Math.max(0, Math.round(diff)));
+    };
+    updateElapsed();
+    const iv = setInterval(updateElapsed, 1000);
+    return () => clearInterval(iv);
+  }, [scanStatus.running, scanStatus.startedAt, scanStatus.finishedAt]);
+
+  // Keyboard Escape dismissal & body scroll lock when modals/drawer are open
+  useEffect(() => {
+    const anyOpen = Boolean(activeGameDrawer || showScannerModal || listModal || editingPublisher || confirmDeletePub);
+    if (!anyOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        if (confirmDeletePub) setConfirmDeletePub(null);
+        else if (editingPublisher) setEditingPublisher(null);
+        else if (listModal) setListModal(null);
+        else if (showScannerModal) setShowScannerModal(false);
+        else if (activeGameDrawer) setActiveGameDrawer(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [activeGameDrawer, showScannerModal, listModal, editingPublisher, confirmDeletePub]);
+
+  // Map publisher_name -> publisher record
   const publisherByRawName = useMemo(() => {
     const map = new Map();
     for (const p of overview.publishers || []) {
@@ -191,39 +293,6 @@ export default function AmazonIntelligenceView() {
     [visiblePublishers]
   );
 
-  // Scoped KPI summary for the currently selected Competitor List (deduplicated by ASIN)
-  const scopedSummary = useMemo(() => {
-    const pubs = visiblePublishers;
-    const totalListings = pubs.reduce((s, p) => s + (Number(p.total_games) || 0), 0);
-    const seenAsins = new Map();
-    for (const g of overview.games || []) {
-      if (visiblePublisherNames.has(g.publisher_name) && !seenAsins.has(g.asin)) {
-        seenAsins.set(g.asin, g);
-      }
-    }
-    const uniqueGamesList = [...seenAsins.values()];
-    const uniqueGames = uniqueGamesList.length || totalListings;
-    const freeGames = uniqueGamesList.length
-      ? uniqueGamesList.filter((g) => g.pricing === "free").length
-      : pubs.reduce((s, p) => s + (Number(p.free_games) || 0), 0);
-    const paidGames = uniqueGamesList.length
-      ? uniqueGamesList.filter((g) => g.pricing === "paid").length
-      : pubs.reduce((s, p) => s + (Number(p.paid_games) || 0), 0);
-    const totalReviews = uniqueGamesList.length
-      ? uniqueGamesList.reduce((s, g) => s + (Number(g.review_count) || 0), 0)
-      : pubs.reduce((s, p) => s + (Number(p.total_reviews) || 0), 0);
-    return {
-      publisherCount: pubs.length,
-      uniqueGames,
-      totalListings,
-      totalGames: uniqueGames,
-      freeGames,
-      paidGames,
-      freeShare: uniqueGames ? freeGames / uniqueGames : 0,
-      totalReviews
-    };
-  }, [visiblePublishers, overview.games, visiblePublisherNames]);
-
   const activeListObj = useMemo(() => {
     if (selectedListId === "all" || selectedListId === "ungrouped") return null;
     return (overview.lists || []).find((l) => l.id === Number(selectedListId)) || null;
@@ -234,6 +303,210 @@ export default function AmazonIntelligenceView() {
     [overview.publishers]
   );
 
+  // Compute active date window bounds
+  const dateWindow = useMemo(() => {
+    if (durationPreset === "all") return { active: false, startMs: null, endMs: null, label: "All Time" };
+    const now = new Date();
+    const endOfTodayMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+
+    if (durationPreset === "custom") {
+      const sMs = customStartDate ? new Date(`${customStartDate}T00:00:00Z`).getTime() : null;
+      const eMs = customEndDate ? new Date(`${customEndDate}T23:59:59Z`).getTime() : null;
+      if (!sMs && !eMs) return { active: false, startMs: null, endMs: null, label: "Custom Range" };
+      return {
+        active: true,
+        startMs: sMs,
+        endMs: eMs,
+        label: `${customStartDate || "Start"} → ${customEndDate || "Now"}`
+      };
+    }
+
+    const daysMap = { "30d": 30, "90d": 90, "6m": 182, "1y": 365 };
+    const labelsMap = { "30d": "Last 30 Days", "90d": "Last 90 Days", "6m": "Last 6 Months", "1y": "Last 1 Year" };
+    const days = daysMap[durationPreset] || 30;
+    const startMs = endOfTodayMs - days * 86400 * 1000;
+    return { active: true, startMs, endMs: endOfTodayMs, label: labelsMap[durationPreset] || "Selected Period" };
+  }, [durationPreset, customStartDate, customEndDate]);
+
+  // Helper to evaluate whether a game matches the selected date filter
+  const evaluateGameDate = useCallback(
+    (g) => {
+      const rawDate = dateBasis === "first_seen_at" ? g.first_seen_at : g.release_date;
+      if (!rawDate) {
+        return { known: false, inRange: !dateWindow.active || includeUnknownDates };
+      }
+      const ms = new Date(rawDate).getTime();
+      if (Number.isNaN(ms)) {
+        return { known: false, inRange: !dateWindow.active || includeUnknownDates };
+      }
+      if (!dateWindow.active) return { known: true, inRange: true };
+      if (dateWindow.startMs !== null && ms < dateWindow.startMs) return { known: true, inRange: false };
+      if (dateWindow.endMs !== null && ms > dateWindow.endMs) return { known: true, inRange: false };
+      return { known: true, inRange: true };
+    },
+    [dateBasis, dateWindow, includeUnknownDates]
+  );
+
+  // Scope games to current list AND/OR selected account, then compute both all-time and period metrics
+  const scopedStats = useMemo(() => {
+    const inScopeGames = (overview.games || []).filter((g) => {
+      if (!visiblePublisherNames.has(g.publisher_name)) return false;
+      if (selectedPublisher !== "all" && g.publisher_name !== selectedPublisher) return false;
+      return true;
+    });
+
+    const uniqueAllTimeByAsin = new Map();
+    const uniqueMatchingByAsin = new Map();
+    let knownDateCount = 0;
+    let unknownDateCount = 0;
+
+    for (const g of inScopeGames) {
+      if (!uniqueAllTimeByAsin.has(g.asin)) {
+        uniqueAllTimeByAsin.set(g.asin, g);
+        const dEval = evaluateGameDate(g);
+        if (dEval.known) knownDateCount += 1;
+        else unknownDateCount += 1;
+        if (dEval.inRange) {
+          uniqueMatchingByAsin.set(g.asin, g);
+        }
+      }
+    }
+
+    const matchingArr = [...uniqueMatchingByAsin.values()];
+    const allTimeArr = [...uniqueAllTimeByAsin.values()];
+    const freeMatching = matchingArr.filter((g) => g.pricing === "free").length;
+    const paidMatching = matchingArr.filter((g) => g.pricing === "paid").length;
+
+    return {
+      allTimeUnique: allTimeArr.length,
+      totalListings: inScopeGames.length,
+      matchingUnique: matchingArr.length,
+      freeMatching,
+      paidMatching,
+      freeShare: matchingArr.length ? freeMatching / matchingArr.length : 0,
+      knownDateCount,
+      unknownDateCount
+    };
+  }, [overview.games, visiblePublisherNames, selectedPublisher, evaluateGameDate]);
+
+  // Per-publisher stats dynamically computed for the active date filter
+  const publisherStatsByName = useMemo(() => {
+    const map = new Map();
+    for (const pub of visiblePublishers) {
+      map.set(pub.publisher_name, {
+        total: 0,
+        free: 0,
+        paid: 0,
+        unknownDate: 0,
+        allTimeTotal: Number(pub.total_games) || 0
+      });
+    }
+    for (const g of overview.games || []) {
+      const entry = map.get(g.publisher_name);
+      if (!entry) continue;
+      const dEval = evaluateGameDate(g);
+      if (!dEval.known) entry.unknownDate += 1;
+      if (dEval.inRange) {
+        entry.total += 1;
+        if (g.pricing === "free") entry.free += 1;
+        else if (g.pricing === "paid") entry.paid += 1;
+      }
+    }
+    return map;
+  }, [visiblePublishers, overview.games, evaluateGameDate]);
+
+  const maxPublisherGames = useMemo(() => {
+    return Math.max(
+      1,
+      ...visiblePublishers.map((p) => {
+        const st = publisherStatsByName.get(p.publisher_name);
+        return st ? st.total : Number(p.total_games) || 0;
+      })
+    );
+  }, [visiblePublishers, publisherStatsByName]);
+
+  const filteredGames = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return (overview.games || [])
+      .filter((g) => {
+        if (!visiblePublisherNames.has(g.publisher_name)) return false;
+        if (selectedPublisher !== "all" && g.publisher_name !== selectedPublisher) return false;
+        if (selectedPricing !== "all" && g.pricing !== selectedPricing) return false;
+        const dEval = evaluateGameDate(g);
+        if (!dEval.inRange) return false;
+        if (q) {
+          const disp = getDisplayName(g.publisher_name);
+          const hay = `${g.title || ""} ${g.asin || ""} ${g.publisher_name || ""} ${disp}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === "price_desc") return (Number(b.price) || 0) - (Number(a.price) || 0);
+        if (sortBy === "price_asc") return (Number(a.price) || 0) - (Number(b.price) || 0);
+        if (sortBy === "rating") return (Number(b.rating) || 0) - (Number(a.rating) || 0);
+        if (sortBy === "release") return String(b.release_date || "").localeCompare(String(a.release_date || ""));
+        return (Number(b.review_count) || 0) - (Number(a.review_count) || 0);
+      });
+  }, [overview.games, visiblePublisherNames, selectedPublisher, selectedPricing, searchQuery, sortBy, getDisplayName, evaluateGameDate]);
+
+  const gamesByPublisher = useMemo(() => {
+    const map = new Map();
+    for (const g of overview.games || []) {
+      if (!map.has(g.publisher_name)) map.set(g.publisher_name, []);
+      map.get(g.publisher_name).push(g);
+    }
+    return map;
+  }, [overview.games]);
+
+  const selectedPublisherObj = useMemo(
+    () => (overview.publishers || []).find((p) => p.publisher_name === selectedPublisher) || null,
+    [overview.publishers, selectedPublisher]
+  );
+
+  // Open Manage Lists modal for a specific list or new list
+  const openListManager = useCallback(
+    (targetList = null) => {
+      if (targetList) {
+        setListModal({
+          mode: "edit",
+          listId: targetList.id,
+          name: targetList.name,
+          description: targetList.description || "",
+          publisherIds: Array.isArray(targetList.publisher_ids) ? [...targetList.publisher_ids] : []
+        });
+      } else {
+        setListModal({
+          mode: "create",
+          listId: "new",
+          name: "",
+          description: "",
+          publisherIds: []
+        });
+      }
+    },
+    []
+  );
+
+  // Switch between lists inside the Manage Lists modal
+  const handleSelectListInModal = (val) => {
+    if (val === "new") {
+      setListModal({
+        mode: "create",
+        listId: "new",
+        name: "",
+        description: "",
+        publisherIds: []
+      });
+      return;
+    }
+    const found = (overview.lists || []).find((l) => Number(l.id) === Number(val));
+    if (found) {
+      openListManager(found);
+    }
+  };
+
+  // Validate links
   const handleValidateLinks = async (rawText = linksInput) => {
     setIsValidating(true);
     try {
@@ -244,12 +517,14 @@ export default function AmazonIntelligenceView() {
       if (res.ok) {
         const data = await res.json();
         setValidationResult(data);
+        return data;
       }
     } catch (err) {
       console.error("Validation error:", err);
     } finally {
       setIsValidating(false);
     }
+    return null;
   };
 
   const handleRemoveInvalidAndDuplicates = () => {
@@ -277,6 +552,7 @@ export default function AmazonIntelligenceView() {
       if (res.ok) {
         setValidationResult(null);
         setScanNewListName("");
+        setShowScannerModal(false);
         if (data?.createdList?.id) {
           await loadOverview();
           setSelectedListId(data.createdList.id);
@@ -316,51 +592,6 @@ export default function AmazonIntelligenceView() {
     });
   };
 
-  const handleRemoveFromCurrentList = async (pubId, listId = activeListObj?.id) => {
-    if (!pubId || !listId) return;
-    try {
-      const res = await fetcher(`${API_BASE}/api/amazon/lists/${listId}/publishers`, {
-        method: "POST",
-        body: JSON.stringify({
-          action: "remove",
-          publisherIds: [pubId]
-        })
-      });
-      if (res.ok) {
-        if (editingPublisher && editingPublisher.id === pubId) {
-          setEditingPublisher((prev) =>
-            prev ? { ...prev, list_ids: (prev.list_ids || []).filter((id) => Number(id) !== Number(listId)) } : null
-          );
-        }
-        await loadOverview();
-      }
-    } catch (err) {
-      console.error("Remove from list failed:", err);
-    }
-  };
-
-  const handleDeletePublisherFromAtlas = async (pub) => {
-    if (!pub || !pub.id) return;
-    const disp = getDisplayName(pub.publisher_name);
-    if (
-      !window.confirm(
-        `Delete "${disp}" (${pub.publisher_name}) and its extracted games from Atlas entirely?\n\nTip: If you only want to remove it from the current Competitor List while keeping its games in Atlas, use "Remove from List" instead.`
-      )
-    ) {
-      return;
-    }
-    try {
-      const res = await fetcher(`${API_BASE}/api/amazon/publishers/${pub.id}`, { method: "DELETE" });
-      if (res.ok) {
-        if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
-        setEditingPublisher(null);
-        await loadOverview();
-      }
-    } catch (err) {
-      console.error("Delete publisher failed:", err);
-    }
-  };
-
   const handleCancelScan = async () => {
     try {
       await fetcher(`${API_BASE}/api/amazon/cancel-scan`, { method: "POST" });
@@ -369,12 +600,13 @@ export default function AmazonIntelligenceView() {
     }
   };
 
-  // Save Create / Edit List modal
-  const handleSaveListModal = async (e) => {
-    e.preventDefault();
+  // Save Create / Edit List modal (and optionally jump straight to Add & Scan Accounts for that list)
+  const handleSaveListModal = async (e, openScannerAfter = false) => {
+    if (e) e.preventDefault();
     if (!listModal || !listModal.name.trim()) return;
     setIsSavingList(true);
     try {
+      let targetListId = listModal.listId;
       if (listModal.mode === "create") {
         const res = await fetcher(`${API_BASE}/api/amazon/lists`, {
           method: "POST",
@@ -386,8 +618,9 @@ export default function AmazonIntelligenceView() {
         });
         if (res.ok) {
           const data = await res.json();
+          targetListId = data?.list?.id;
           await loadOverview();
-          if (data?.list?.id) setSelectedListId(data.list.id);
+          if (targetListId) setSelectedListId(targetListId);
           setListModal(null);
         }
       } else {
@@ -407,6 +640,12 @@ export default function AmazonIntelligenceView() {
         });
         await loadOverview();
         setListModal(null);
+      }
+
+      if (openScannerAfter && targetListId && targetListId !== "new") {
+        setScanTargetListIds([Number(targetListId)]);
+        setScanNewListName("");
+        setShowScannerModal(true);
       }
     } catch (err) {
       console.error("Save list failed:", err);
@@ -428,7 +667,6 @@ export default function AmazonIntelligenceView() {
     }
   };
 
-  // Save Publisher Rename & Multi-List membership
   const handleSavePublisherModal = async (e) => {
     e.preventDefault();
     if (!editingPublisher) return;
@@ -452,40 +690,58 @@ export default function AmazonIntelligenceView() {
     }
   };
 
-  const filteredGames = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return (overview.games || [])
-      .filter((g) => {
-        if (!visiblePublisherNames.has(g.publisher_name)) return false;
-        if (selectedPublisher !== "all" && g.publisher_name !== selectedPublisher) return false;
-        if (selectedPricing !== "all" && g.pricing !== selectedPricing) return false;
-        if (q) {
-          const disp = getDisplayName(g.publisher_name);
-          const hay = `${g.title || ""} ${g.asin || ""} ${g.publisher_name || ""} ${disp}`.toLowerCase();
-          if (!hay.includes(q)) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        if (sortBy === "price_desc") return (Number(b.price) || 0) - (Number(a.price) || 0);
-        if (sortBy === "price_asc") return (Number(a.price) || 0) - (Number(b.price) || 0);
-        if (sortBy === "rating") return (Number(b.rating) || 0) - (Number(a.rating) || 0);
-        if (sortBy === "release") return String(b.release_date || "").localeCompare(String(a.release_date || ""));
-        return (Number(b.review_count) || 0) - (Number(a.review_count) || 0);
+  const handleRemoveFromCurrentList = async (pubId, listId = activeListObj?.id) => {
+    if (!pubId || !listId) return;
+    try {
+      const res = await fetcher(`${API_BASE}/api/amazon/lists/${listId}/publishers`, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "remove",
+          publisherIds: [pubId]
+        })
       });
-  }, [overview.games, visiblePublisherNames, selectedPublisher, selectedPricing, searchQuery, sortBy, getDisplayName]);
-
-  const gamesByPublisher = useMemo(() => {
-    const map = new Map();
-    for (const g of overview.games || []) {
-      if (!map.has(g.publisher_name)) map.set(g.publisher_name, []);
-      map.get(g.publisher_name).push(g);
+      if (res.ok) {
+        if (editingPublisher && editingPublisher.id === pubId) {
+          setEditingPublisher((prev) =>
+            prev ? { ...prev, list_ids: (prev.list_ids || []).filter((id) => Number(id) !== Number(listId)) } : null
+          );
+        }
+        await loadOverview();
+      }
+    } catch (err) {
+      console.error("Remove from list failed:", err);
     }
-    return map;
-  }, [overview.games]);
+  };
+
+  const executeDeletePublisherFromAtlas = async (pub) => {
+    if (!pub || !pub.id) return;
+    try {
+      const res = await fetcher(`${API_BASE}/api/amazon/publishers/${pub.id}`, { method: "DELETE" });
+      if (res.ok) {
+        if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
+        setConfirmDeletePub(null);
+        setEditingPublisher(null);
+        await loadOverview();
+      }
+    } catch (err) {
+      console.error("Delete publisher failed:", err);
+    }
+  };
 
   const exportCsv = () => {
-    const headers = ["Display Name", "Amazon Brand Name", "ASIN", "Title", "Pricing", "Price (USD)", "Rating", "Reviews", "Release Date", "URL"];
+    const headers = [
+      "Display Name",
+      "Amazon Brand Name",
+      "ASIN",
+      "Title",
+      "Pricing",
+      "Price (USD)",
+      "Rating",
+      "Reviews",
+      "Amazon Release Date",
+      "First Discovered (Atlas)",
+      "URL"
+    ];
     const rows = filteredGames.map((g) => [
       `"${String(getDisplayName(g.publisher_name)).replace(/"/g, '""')}"`,
       `"${String(g.publisher_name || "").replace(/"/g, '""')}"`,
@@ -496,6 +752,7 @@ export default function AmazonIntelligenceView() {
       g.rating ?? "",
       g.review_count ?? 0,
       g.release_date ? String(g.release_date).slice(0, 10) : "",
+      g.first_seen_at ? String(g.first_seen_at).slice(0, 10) : "",
       g.url
     ]);
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -508,98 +765,257 @@ export default function AmazonIntelligenceView() {
     URL.revokeObjectURL(url);
   };
 
-  const maxPublisherGames = useMemo(
-    () => Math.max(1, ...visiblePublishers.map((p) => Number(p.total_games) || 0)),
-    [visiblePublishers]
-  );
-
-  const selectedPublisherObj = useMemo(
-    () => (overview.publishers || []).find((p) => p.publisher_name === selectedPublisher) || null,
-    [overview.publishers, selectedPublisher]
-  );
+  const scanProgressPct = useMemo(() => {
+    const total = Number(scanStatus.totalPublishers) || 0;
+    if (!total) return 0;
+    const completed = Number(scanStatus.completedPublishers) || 0;
+    if (!scanStatus.running && scanStatus.isComplete) return 100;
+    const activeFraction = scanStatus.running && scanStatus.currentPage > 0 ? 0.35 : 0.1;
+    return Math.min(98, Math.round(((completed + activeFraction) / total) * 100));
+  }, [scanStatus]);
 
   return (
-    <div className="flex flex-col w-full gap-6">
+    <div className="flex flex-col w-full gap-5">
       {/* HEADER */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 px-1">
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px] font-semibold mb-2">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px] font-semibold mb-1.5">
             <span className="material-symbols-outlined text-[15px]">storefront</span>
-            Amazon Appstore Intelligence
+            Amazon Intelligence
           </div>
           <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
-            Publisher Portfolio & Competitor Lists
+            Competitor Research &amp; Portfolio Analysis
           </h1>
-          <p className="text-xs md:text-sm text-text-muted mt-1">
-            Group Amazon accounts into competitor lists, rename accounts, and analyze their free-to-paid funnels.
-          </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() =>
-              setListModal({
-                mode: "create",
-                name: "",
-                description: "",
-                publisherIds: []
-              })
-            }
-            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
+            onClick={() => openListManager(activeListObj || null)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
           >
-            <span className="material-symbols-outlined text-[17px]">create_new_folder</span>
-            New Competitor List
+            <span className="material-symbols-outlined text-[16px]">folder_managed</span>
+            Manage Lists ({overview.lists.length})
           </button>
           <button
             type="button"
             onClick={() => {
-              if (!showScannerModal && activeListObj) {
+              if (activeListObj) {
                 setScanTargetListIds([activeListObj.id]);
+              } else {
+                setScanTargetListIds([]);
               }
-              setShowScannerModal((v) => !v);
+              setShowScannerModal(true);
             }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition shadow-sm"
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition shadow-sm"
           >
-            <span className="material-symbols-outlined text-[18px]">radar</span>
-            {showScannerModal ? "Hide Link Scanner" : "Add & Scan Amazon Links"}
+            <span className="material-symbols-outlined text-[17px]">add_link</span>
+            Add &amp; Scan Accounts
           </button>
           <button
             type="button"
             onClick={exportCsv}
-            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:bg-input-bg transition"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:bg-input-bg transition"
           >
-            <span className="material-symbols-outlined text-[17px]">download</span>
+            <span className="material-symbols-outlined text-[16px]">download</span>
             Export CSV ({filteredGames.length})
           </button>
         </div>
       </div>
 
-      {/* COMPETITOR LISTS BAR */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-text-main flex items-center gap-2">
-            <span className="material-symbols-outlined text-[17px] text-amber-400">folder_special</span>
-            Competitor Lists (Accounts can belong to multiple lists)
+      {/* LIVE PROGRESS BAR & SCAN BANNER */}
+      {(scanStatus.running ||
+        scanStatus.state === "complete" ||
+        scanStatus.state === "cancelled" ||
+        scanStatus.state === "error") &&
+        scanStatus.log && (
+          <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <span
+                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                    scanStatus.running
+                      ? "bg-amber-400 animate-pulse"
+                      : scanStatus.state === "error"
+                      ? "bg-urgent-red"
+                      : "bg-emerald-400"
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-text-main flex flex-wrap items-center gap-2">
+                    <span>
+                      {scanStatus.running
+                        ? `Scanning ${scanStatus.currentPublisher || "..."} (${scanStatus.completedPublishers || 0}/${scanStatus.totalPublishers || 1} completed)`
+                        : scanStatus.state === "cancelled"
+                        ? "Scan Aborted · Partial Results Saved"
+                        : scanStatus.state === "error"
+                        ? "Scan Finished with Errors"
+                        : "Amazon Scan Complete"}
+                    </span>
+                    {scanStatus.phase && scanStatus.running && (
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                          scanStatus.phase === "retrying"
+                            ? "bg-amber-500/20 text-amber-300"
+                            : "bg-electric-blue/20 text-electric-blue"
+                        }`}
+                      >
+                        {scanStatus.phase.replace(/_/g, " ")}
+                      </span>
+                    )}
+                    <span className="text-[11px] font-mono text-text-muted">
+                      · Elapsed: {formatDurationSec(elapsedSec)} · Pages: {scanStatus.totalPagesProcessed || scanStatus.currentPage || 0} · Games Saved: {scanStatus.totalGamesSaved || 0}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-text-muted font-mono truncate mt-0.5">{scanStatus.log}</div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {!scanStatus.running && Array.isArray(scanStatus.failedLinks) && scanStatus.failedLinks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleStartScan({ links: scanStatus.failedLinks })}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">refresh</span>
+                    Retry Failed ({scanStatus.failedLinks.length})
+                  </button>
+                )}
+                {scanStatus.running && (
+                  <button
+                    type="button"
+                    onClick={handleCancelScan}
+                    className="px-3.5 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition"
+                  >
+                    Abort &amp; Save Collected
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Visual Progress Bar */}
+            {scanStatus.totalPublishers > 0 && (
+              <div className="w-full h-2 rounded-full bg-input-bg overflow-hidden">
+                <div
+                  style={{ width: `${scanStatus.running ? scanProgressPct : 100}%` }}
+                  className={`h-full transition-all duration-300 ${
+                    scanStatus.state === "error"
+                      ? "bg-urgent-red"
+                      : scanStatus.running
+                      ? "bg-electric-blue"
+                      : "bg-emerald-500"
+                  }`}
+                />
+              </div>
+            )}
           </div>
-          {activeListObj && (
-            <div className="flex flex-wrap items-center gap-2">
+        )}
+
+      {/* COMPETITOR LISTS & LAUNCH DATE FILTER BAR */}
+      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3.5">
+        {/* Row 1: Competitor Lists */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mr-1">
+              Competitor List:
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedListId("all");
+                setSelectedPublisher("all");
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 border ${
+                selectedListId === "all"
+                  ? "bg-electric-blue text-white border-electric-blue"
+                  : "bg-input-bg text-text-muted border-border-subtle hover:text-text-main"
+              }`}
+            >
+              <span>All Accounts</span>
+              <span className="px-1.5 py-0.2 rounded bg-black/20 text-[10px] font-mono">
+                {overview.publishers.length}
+              </span>
+            </button>
+
+            {(overview.lists || []).map((list) => {
+              const isActive = Number(selectedListId) === Number(list.id);
+              return (
+                <div
+                  key={list.id}
+                  className={`inline-flex items-center rounded-xl text-xs font-semibold border transition overflow-hidden ${
+                    isActive
+                      ? "bg-amber-500 text-slate-950 border-amber-400"
+                      : "bg-input-bg text-text-main border-border-subtle hover:border-amber-500/40"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedListId(isActive ? "all" : list.id);
+                      setSelectedPublisher("all");
+                    }}
+                    className="px-3 py-1.5 flex items-center gap-1.5"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">folder</span>
+                    <span>{list.name}</span>
+                    <span
+                      className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                        isActive ? "bg-black/15 text-slate-950" : "bg-bg-base text-text-muted"
+                      }`}
+                    >
+                      {list.account_count}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openListManager(list);
+                    }}
+                    title={`Edit "${list.name}"`}
+                    className={`px-2 py-1.5 border-l ${
+                      isActive
+                        ? "border-black/15 hover:bg-black/10 text-slate-950"
+                        : "border-border-subtle hover:bg-surface-solid text-text-muted hover:text-text-main"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">edit</span>
+                  </button>
+                </div>
+              );
+            })}
+
+            {ungroupedCount > 0 && (
               <button
                 type="button"
-                onClick={() =>
-                  setListModal({
-                    mode: "edit",
-                    listId: activeListObj.id,
-                    name: activeListObj.name,
-                    description: activeListObj.description || "",
-                    publisherIds: activeListObj.publisher_ids || []
-                  })
-                }
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-input-bg border border-border-subtle text-text-main text-[11px] font-medium hover:border-electric-blue"
+                onClick={() => {
+                  setSelectedListId(selectedListId === "ungrouped" ? "all" : "ungrouped");
+                  setSelectedPublisher("all");
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 border ${
+                  selectedListId === "ungrouped"
+                    ? "bg-electric-blue text-white border-electric-blue"
+                    : "bg-input-bg text-text-muted border-border-subtle hover:text-text-main"
+                }`}
               >
-                <span className="material-symbols-outlined text-[14px]">edit</span>
-                Rename / Manage Accounts
+                <span>Ungrouped</span>
+                <span className="px-1.5 py-0.2 rounded bg-black/20 text-[10px] font-mono">{ungroupedCount}</span>
               </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => openListManager(null)}
+              className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-input-bg border border-dashed border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue transition inline-flex items-center gap-1"
+            >
+              <span className="material-symbols-outlined text-[14px]">add</span>
+              New List
+            </button>
+          </div>
+
+          {activeListObj && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -609,7 +1025,7 @@ export default function AmazonIntelligenceView() {
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-electric-blue/15 text-electric-blue text-[11px] font-semibold hover:bg-electric-blue/25"
               >
                 <span className="material-symbols-outlined text-[14px]">add_link</span>
-                Add & Scan into "{activeListObj.name}"
+                Add Accounts to "{activeListObj.name}"
               </button>
               <button
                 type="button"
@@ -624,852 +1040,372 @@ export default function AmazonIntelligenceView() {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedListId("all");
-              setSelectedPublisher("all");
-            }}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-2 border ${
-              selectedListId === "all"
-                ? "bg-electric-blue text-white border-electric-blue"
-                : "bg-input-bg text-text-muted border-border-subtle hover:text-text-main"
-            }`}
-          >
-            <span>All Accounts</span>
-            <span className="px-1.5 py-0.5 rounded-md bg-black/20 text-[10px] font-mono">
-              {overview.publishers.length} acc · {overview.summary.uniqueGames ?? overview.summary.totalGames} unique
-            </span>
-          </button>
-
-          {(overview.lists || []).map((list) => {
-            const isActive = Number(selectedListId) === Number(list.id);
-            const uniqueCnt = list.unique_games ?? list.total_games;
-            const totalListCnt = list.total_listings ?? list.total_games;
-            return (
-              <button
-                key={list.id}
-                type="button"
-                onClick={() => {
-                  setSelectedListId(isActive ? "all" : list.id);
-                  setSelectedPublisher("all");
-                }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-2 border ${
-                  isActive
-                    ? "bg-amber-500 text-slate-950 border-amber-400"
-                    : "bg-input-bg text-text-main border-border-subtle hover:border-amber-500/40"
-                }`}
-              >
-                <span className="material-symbols-outlined text-[15px]">folder</span>
-                <span>{list.name}</span>
-                <span
-                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${
-                    isActive ? "bg-black/15 text-slate-950" : "bg-bg-base text-text-muted"
-                  }`}
-                >
-                  {list.account_count} acc · {uniqueCnt} unique{totalListCnt > uniqueCnt ? ` (${totalListCnt} listings)` : ""}
-                </span>
-              </button>
-            );
-          })}
-
-          {ungroupedCount > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedListId(selectedListId === "ungrouped" ? "all" : "ungrouped");
-                setSelectedPublisher("all");
-              }}
-              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-2 border ${
-                selectedListId === "ungrouped"
-                  ? "bg-electric-blue text-white border-electric-blue"
-                  : "bg-input-bg text-text-muted border-border-subtle hover:text-text-main"
-              }`}
+        {/* Row 2: Launch Date / Duration Filter */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-border-subtle">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <select
+              value={dateBasis}
+              onChange={(e) => setDateBasis(e.target.value)}
+              className="rounded-lg bg-input-bg border border-border-subtle px-2.5 py-1 text-[11px] font-semibold text-text-main"
             >
-              <span>Ungrouped</span>
-              <span className="px-1.5 py-0.5 rounded-md bg-black/20 text-[10px] font-mono">{ungroupedCount}</span>
-            </button>
-          )}
-        </div>
-      </div>
+              <option value="release_date">Filter by: Amazon Launch Date</option>
+              <option value="first_seen_at">Filter by: First Discovered in Atlas</option>
+            </select>
 
-      {/* LIVE SCAN BANNER */}
-      {(scanStatus.running || scanStatus.state === "complete" || scanStatus.state === "cancelled" || scanStatus.state === "error") && scanStatus.log && (
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <span
-              className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                scanStatus.running
-                  ? "bg-amber-400 animate-pulse"
-                  : scanStatus.state === "error"
-                  ? "bg-urgent-red"
-                  : "bg-emerald-metric"
-              }`}
-            />
-            <div className="min-w-0">
-              <div className="text-xs font-semibold text-text-main">
-                {scanStatus.running
-                  ? `Scanning ${scanStatus.currentPublisher || "..."} (${scanStatus.publisherIndex}/${scanStatus.totalPublishers})`
-                  : scanStatus.state === "cancelled"
-                  ? "Scan Aborted (Collected Data Saved)"
-                  : scanStatus.state === "error"
-                  ? "Scan Stopped"
-                  : "Amazon Scan Complete"}
-              </div>
-              <div className="text-[11px] text-text-muted font-mono truncate">{scanStatus.log}</div>
-            </div>
-          </div>
-          {scanStatus.running && (
-            <button
-              type="button"
-              onClick={handleCancelScan}
-              className="px-3.5 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition shrink-0"
-            >
-              Abort & Save Collected
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* BATCH SCANNER & LINK VALIDATOR DRAWER */}
-      {showScannerModal && (
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4 shadow-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-text-main">Batch Amazon Store Link Validator & Scanner</h2>
-              <p className="text-xs text-text-muted">
-                Paste one or more Amazon publisher links (<code className="text-[11px]">https://www.amazon.com/s?i=mobile-apps&amp;rh=p_4:...</code>), assign them to existing or new competitor lists, and scan.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                const text = SAMPLE_LINKS.join("\n");
-                setLinksInput(text);
-                handleValidateLinks(text);
-              }}
-              className="text-xs font-medium text-electric-blue hover:underline self-start sm:self-auto"
-            >
-              Load 16 Benchmark Links
-            </button>
-          </div>
-
-          <textarea
-            rows={5}
-            value={linksInput}
-            onChange={(e) => setLinksInput(e.target.value)}
-            placeholder="https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGames%2BArk&search-type=ss"
-            className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
-          />
-
-          {/* TARGET LIST ASSIGNMENT FOR THIS SCAN BATCH */}
-          <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
-            <div className="text-xs font-semibold text-text-main">
-              Assign Scanned Accounts to Competitor List(s) (Optional)
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {(overview.lists || []).map((list) => {
-                const checked = scanTargetListIds.includes(list.id);
-                return (
-                  <button
-                    key={list.id}
-                    type="button"
-                    onClick={() =>
-                      setScanTargetListIds((prev) =>
-                        checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
-                      )
-                    }
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
-                      checked
-                        ? "bg-amber-500/20 text-amber-300 border-amber-400"
-                        : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[14px]">
-                      {checked ? "check_box" : "check_box_outline_blank"}
-                    </span>
-                    {list.name}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-              <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
-              <input
-                type="text"
-                value={scanNewListName}
-                onChange={(e) => setScanNewListName(e.target.value)}
-                placeholder="e.g. Studio X Amazon Accounts..."
-                className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1 max-w-xs"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              disabled={!linksInput.trim() || isValidating}
-              onClick={() => handleValidateLinks(linksInput)}
-              className="px-4 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
-            >
-              {isValidating ? "Validating..." : "1. Validate & Preview Batch"}
-            </button>
-            <button
-              type="button"
-              disabled={!linksInput.trim() || scanStatus.running}
-              onClick={() => handleStartScan()}
-              className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
-            >
-              {scanStatus.running ? "Scan Running..." : "2. Scan Valid Publishers"}
-            </button>
-            {validationResult && (validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
-              <button
-                type="button"
-                onClick={handleRemoveInvalidAndDuplicates}
-                className="px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition"
-              >
-                Remove {validationResult.invalidCount + validationResult.duplicateCount} Invalid / Duplicate Entries
-              </button>
-            )}
-          </div>
-
-          {validationResult && (
-            <div className="border border-border-subtle rounded-xl overflow-hidden">
-              <div className="bg-input-bg px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="font-semibold text-text-main">
-                  Batch Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates · {validationResult.invalidCount} Invalid
-                </span>
-              </div>
-              <div className="max-h-56 overflow-y-auto divide-y divide-border-subtle text-xs">
-                {validationResult.validation.map((item) => (
-                  <div key={item.index} className="px-4 py-2 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="font-medium text-text-main truncate">
-                        {item.valid ? item.publisher : item.input}
-                      </div>
-                      <div className="text-[11px] text-text-muted truncate">
-                        {item.valid ? item.normalizedUrl : item.error}
-                      </div>
-                    </div>
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
-                        !item.valid
-                          ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
-                          : item.duplicate
-                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                          : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                      }`}
-                    >
-                      {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* KPI STRIP (Scoped to active list or All Accounts) */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
-          <div className="text-[11px] text-text-muted">
-            {activeListObj ? `Accounts in "${activeListObj.name}"` : "Amazon Accounts"}
-          </div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.publisherCount}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {overview.lists.length} competitor list{overview.lists.length === 1 ? "" : "s"}
-          </div>
-        </div>
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
-          <div className="text-[11px] text-text-muted">Total Unique Games</div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.uniqueGames.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {scopedSummary.totalListings > scopedSummary.uniqueGames
-              ? `Distinct ASINs (${scopedSummary.totalListings.toLocaleString()} total listings)`
-              : "Distinct Amazon ASINs"}
-          </div>
-        </div>
-        <div
-          onClick={() => setSelectedPricing(selectedPricing === "free" ? "all" : "free")}
-          className={`cursor-pointer bg-surface-solid border rounded-2xl p-4 transition ${
-            selectedPricing === "free" ? "border-emerald-400 ring-1 ring-emerald-400/40" : "border-border-subtle hover:border-emerald-500/40"
-          }`}
-        >
-          <div className="text-[11px] text-emerald-400 font-medium">Free Games (Click to filter)</div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.freeGames.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {Math.round((scopedSummary.freeShare || 0) * 100)}% of {activeListObj ? "list" : "total"} portfolio
-          </div>
-        </div>
-        <div
-          onClick={() => setSelectedPricing(selectedPricing === "paid" ? "all" : "paid")}
-          className={`cursor-pointer bg-surface-solid border rounded-2xl p-4 transition ${
-            selectedPricing === "paid" ? "border-amber-400 ring-1 ring-amber-400/40" : "border-border-subtle hover:border-amber-500/40"
-          }`}
-        >
-          <div className="text-[11px] text-amber-400 font-medium">Paid Games (Click to filter)</div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.paidGames.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {scopedSummary.totalGames ? Math.round((scopedSummary.paidGames / scopedSummary.totalGames) * 100) : 0}% of {activeListObj ? "list" : "total"} portfolio
-          </div>
-        </div>
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 col-span-2 sm:col-span-1">
-          <div className="text-[11px] text-text-muted">Customer Reviews</div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedSummary.totalReviews.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">Across visible accounts</div>
-        </div>
-      </div>
-
-      {/* VISUAL SWITCHER TABS */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border-subtle pb-4">
-          <div className="flex flex-wrap items-center gap-2">
             {[
-              { id: "comparison", icon: "bar_chart", label: "View A · Publisher Comparison" },
-              { id: "treemap", icon: "account_tree", label: "View B · Interactive Portfolio Map" },
-              { id: "strategy", icon: "insights", label: "View C · Monetization Funnel Matrix" }
-            ].map((tab) => (
+              { id: "all", label: "All Time" },
+              { id: "30d", label: "30 Days" },
+              { id: "90d", label: "90 Days" },
+              { id: "6m", label: "6 Months" },
+              { id: "1y", label: "1 Year" },
+              { id: "custom", label: "Custom Range" }
+            ].map((p) => (
               <button
-                key={tab.id}
+                key={p.id}
                 type="button"
-                onClick={() => setActiveVisual(tab.id)}
-                className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition ${
-                  activeVisual === tab.id
-                    ? "bg-primary-container text-on-primary-container"
+                onClick={() => setDurationPreset(p.id)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
+                  durationPreset === p.id
+                    ? "bg-electric-blue text-white"
                     : "bg-input-bg text-text-muted hover:text-text-main"
                 }`}
               >
-                <span className="material-symbols-outlined text-[17px]">{tab.icon}</span>
-                {tab.label}
+                {p.label}
               </button>
             ))}
+
+            {durationPreset === "custom" && (
+              <div className="flex items-center gap-1.5 ml-1">
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="rounded-lg bg-input-bg border border-border-subtle px-2 py-1 text-xs text-text-main"
+                />
+                <span className="text-xs text-text-muted">to</span>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="rounded-lg bg-input-bg border border-border-subtle px-2 py-1 text-xs text-text-main"
+                />
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-2 text-xs">
-            {(selectedPublisher !== "all" || selectedPricing !== "all") && (
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-text-muted">
+            <span>
+              Known dates: <strong className="text-text-main">{scopedStats.knownDateCount.toLocaleString()}</strong>
+              {scopedStats.unknownDateCount > 0 && (
+                <>
+                  {" "}
+                  · Unknown dates: <strong className="text-amber-400">{scopedStats.unknownDateCount.toLocaleString()}</strong>
+                </>
+              )}
+            </span>
+            {dateWindow.active && scopedStats.unknownDateCount > 0 && (
+              <label className="inline-flex items-center gap-1.5 cursor-pointer text-text-main">
+                <input
+                  type="checkbox"
+                  checked={includeUnknownDates}
+                  onChange={(e) => setIncludeUnknownDates(e.target.checked)}
+                />
+                <span>Include unknown dates</span>
+              </label>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 4 CLEAN KPI CARDS (Scoped to active list + account + date filter) */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
+          <div className="text-[11px] text-text-muted">
+            {selectedPublisher !== "all"
+              ? `Total Games (${getDisplayName(selectedPublisher)})`
+              : activeListObj
+              ? `Total Games in "${activeListObj.name}"`
+              : "Total Unique Games"}
+          </div>
+          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.allTimeUnique.toLocaleString()}</div>
+          <div className="text-[10px] text-text-muted mt-1">
+            {visiblePublishers.length} account{visiblePublishers.length === 1 ? "" : "s"}
+            {scopedStats.totalListings > scopedStats.allTimeUnique
+              ? ` · ${scopedStats.totalListings.toLocaleString()} total listings`
+              : " · Distinct Amazon ASINs"}
+          </div>
+        </div>
+
+        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
+          <div className="text-[11px] text-electric-blue font-medium">
+            {dateWindow.active ? `Launched (${dateWindow.label})` : "Games in Selected Period"}
+          </div>
+          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.matchingUnique.toLocaleString()}</div>
+          <div className="text-[10px] text-text-muted mt-1">
+            {dateWindow.active
+              ? `${scopedStats.freeMatching} Free · ${scopedStats.paidMatching} Paid`
+              : `All Time (${scopedStats.knownDateCount} with known date)`}
+          </div>
+        </div>
+
+        <div
+          onClick={() => setSelectedPricing(selectedPricing === "free" ? "all" : "free")}
+          className={`cursor-pointer bg-surface-solid border rounded-2xl p-4 transition ${
+            selectedPricing === "free"
+              ? "border-emerald-400 ring-1 ring-emerald-400/40"
+              : "border-border-subtle hover:border-emerald-500/40"
+          }`}
+        >
+          <div className="text-[11px] text-emerald-400 font-medium">
+            Free Games {dateWindow.active ? `(${dateWindow.label})` : "(Click to filter)"}
+          </div>
+          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.freeMatching.toLocaleString()}</div>
+          <div className="text-[10px] text-text-muted mt-1">
+            {Math.round((scopedStats.freeShare || 0) * 100)}% of {dateWindow.active ? "period" : "portfolio"}
+          </div>
+        </div>
+
+        <div
+          onClick={() => setSelectedPricing(selectedPricing === "paid" ? "all" : "paid")}
+          className={`cursor-pointer bg-surface-solid border rounded-2xl p-4 transition ${
+            selectedPricing === "paid"
+              ? "border-amber-400 ring-1 ring-amber-400/40"
+              : "border-border-subtle hover:border-amber-500/40"
+          }`}
+        >
+          <div className="text-[11px] text-amber-400 font-medium">
+            Paid Games {dateWindow.active ? `(${dateWindow.label})` : "(Click to filter)"}
+          </div>
+          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.paidMatching.toLocaleString()}</div>
+          <div className="text-[10px] text-text-muted mt-1">
+            {scopedStats.matchingUnique
+              ? Math.round((scopedStats.paidMatching / scopedStats.matchingUnique) * 100)
+              : 0}
+            % of {dateWindow.active ? "period" : "portfolio"}
+          </div>
+        </div>
+      </div>
+
+      {/* PUBLISHER COMPARISON */}
+      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border-subtle pb-3">
+          <div>
+            <h2 className="text-base font-semibold text-text-main">Publisher Comparison</h2>
+            <p className="text-xs text-text-muted">
+              Click any publisher account, Free bar, or Paid bar to inspect its games below.
+              {dateWindow.active ? ` Showing games launched in: ${dateWindow.label}.` : ""}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-4 text-xs">
+            {(selectedPublisher !== "all" || selectedPricing !== "all" || durationPreset !== "all") && (
               <button
                 type="button"
                 onClick={() => {
                   setSelectedPublisher("all");
                   setSelectedPricing("all");
+                  setDurationPreset("all");
                 }}
-                className="px-3 py-1.5 rounded-lg bg-electric-blue/15 text-electric-blue font-semibold hover:bg-electric-blue/25 transition"
+                className="px-3 py-1 rounded-lg bg-electric-blue/15 text-electric-blue font-semibold hover:bg-electric-blue/25 transition"
               >
-                Reset Account Filter ({selectedPublisher !== "all" ? getDisplayName(selectedPublisher) : "All"} · {selectedPricing.toUpperCase()})
+                Reset Filters
               </button>
             )}
+            <span className="inline-flex items-center gap-1.5 text-text-muted">
+              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" /> Free
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-text-muted">
+              <span className="w-2.5 h-2.5 rounded-sm bg-amber-500 inline-block" /> Paid
+            </span>
           </div>
         </div>
 
-        {/* VIEW A: CLICKABLE STACKED BAR COMPARISON */}
-        {activeVisual === "comparison" && (
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
-              <span>Click any account, Free bar (green), or Paid bar (amber) to filter games. Click the pencil icon to rename an account or assign it to lists.</span>
-              <div className="flex items-center gap-4">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-sm bg-emerald-500 inline-block" /> Free Games
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-sm bg-amber-500 inline-block" /> Paid Games
-                </span>
+        {visiblePublishers.length === 0 ? (
+          <div className="py-8 text-center text-xs text-text-muted flex flex-col items-center gap-2">
+            <span>No Amazon accounts in this Competitor List yet.</span>
+            {activeListObj && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => openListManager(activeListObj)}
+                  className="px-3 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-text-main font-semibold"
+                >
+                  Select Existing Accounts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScanTargetListIds([activeListObj.id]);
+                    setShowScannerModal(true);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-electric-blue text-white font-semibold"
+                >
+                  Add &amp; Scan New Links
+                </button>
               </div>
-            </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {visiblePublishers.map((pub) => {
+              const pSt = publisherStatsByName.get(pub.publisher_name) || {
+                total: Number(pub.total_games) || 0,
+                free: Number(pub.free_games) || 0,
+                paid: Number(pub.paid_games) || 0,
+                allTimeTotal: Number(pub.total_games) || 0
+              };
+              const total = pSt.total;
+              const free = pSt.free;
+              const paid = pSt.paid;
+              const freeWidthPct = (free / maxPublisherGames) * 100;
+              const paidWidthPct = (paid / maxPublisherGames) * 100;
+              const isSelected = selectedPublisher === pub.publisher_name;
+              const dispName = getDisplayName(pub.publisher_name);
+              const hasCustomName = dispName !== pub.publisher_name;
+              const syncMeta = getPublisherSyncState(pub);
 
-            <div className="flex flex-col gap-2.5 mt-1">
-              {visiblePublishers.map((pub) => {
-                const total = Number(pub.total_games) || 0;
-                const free = Number(pub.free_games) || 0;
-                const paid = Number(pub.paid_games) || 0;
-                const freeWidthPct = (free / maxPublisherGames) * 100;
-                const paidWidthPct = (paid / maxPublisherGames) * 100;
-                const isSelected = selectedPublisher === pub.publisher_name;
-                const strat = classifyStrategy(pub);
-                const statusMeta = getScanStatusMeta(pub.last_scan_status);
-                const dispName = getDisplayName(pub.publisher_name);
-                const hasCustomName = dispName !== pub.publisher_name;
+              return (
+                <div
+                  key={pub.id}
+                  className={`p-3 rounded-xl border transition ${
+                    isSelected
+                      ? "border-electric-blue bg-electric-blue/5"
+                      : "border-border-subtle bg-input-bg/40 hover:border-border-subtle/80"
+                  }`}
+                >
+                  <div className="flex flex-col md:flex-row md:items-center gap-3">
+                    {/* Account Identity & Status */}
+                    <div className="md:w-64 shrink-0 flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedPublisher(isSelected && selectedPricing === "all" ? "all" : pub.publisher_name);
+                          setSelectedPricing("all");
+                        }}
+                        className="text-left min-w-0 flex-1"
+                      >
+                        <div className="text-xs font-semibold text-text-main hover:text-electric-blue truncate">
+                          {dispName}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-text-muted truncate mt-0.5">
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full border text-[9px] font-semibold ${syncMeta.dataTone}`}
+                            title={syncMeta.warningText || `Last synced: ${syncMeta.lastSyncedText}`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${syncMeta.dotTone}`} />
+                            {syncMeta.dataLabel}
+                          </span>
+                          <span>· {syncMeta.lastSyncedText}</span>
+                          {syncMeta.hasRefreshWarning && (
+                            <span
+                              title={syncMeta.warningText}
+                              className="text-amber-400 inline-flex items-center"
+                            >
+                              <span className="material-symbols-outlined text-[12px]">info</span>
+                            </span>
+                          )}
+                          {hasCustomName && <span className="truncate">· {pub.publisher_name}</span>}
+                        </div>
+                      </button>
 
-                return (
-                  <div
-                    key={pub.id}
-                    className={`p-3 rounded-xl border transition ${
-                      isSelected
-                        ? "border-electric-blue bg-electric-blue/5"
-                        : "border-border-subtle bg-input-bg/40 hover:border-border-subtle/80"
-                    }`}
-                  >
-                    <div className="flex flex-col md:flex-row md:items-center gap-2.5">
-                      <div className="md:w-72 shrink-0 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-0.5 shrink-0">
                         <button
                           type="button"
-                          onClick={() => {
-                            setSelectedPublisher(isSelected && selectedPricing === "all" ? "all" : pub.publisher_name);
-                            setSelectedPricing("all");
-                          }}
-                          className="text-left min-w-0 flex-1"
+                          disabled={scanStatus.running}
+                          onClick={() => handleRescanPublisher(pub)}
+                          title={`Re-scan ${dispName}`}
+                          className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
                         >
-                          <div className="text-xs font-semibold text-text-main hover:text-electric-blue truncate">
-                            {dispName}
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[10px] text-text-muted truncate mt-0.5">
-                            <span
-                              className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full border text-[9px] font-semibold ${statusMeta.tone}`}
-                              title={pub.last_scan_detail || `Scan status: ${pub.last_scan_status || "unscanned"}`}
-                            >
-                              <span className={`w-1.5 h-1.5 rounded-full ${statusMeta.dot}`} />
-                              {statusMeta.label}
-                            </span>
-                            <span>· {formatRelativeTime(pub.last_scanned_at)}</span>
-                            {hasCustomName && <span className="truncate">· {pub.publisher_name}</span>}
-                          </div>
+                          <span className="material-symbols-outlined text-[15px]">refresh</span>
                         </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditingPublisher({
+                              id: pub.id,
+                              publisher_name: pub.publisher_name,
+                              display_name: pub.display_name || "",
+                              list_ids: Array.isArray(pub.list_ids) ? [...pub.list_ids] : []
+                            })
+                          }
+                          title="Rename account or assign to Competitor Lists"
+                          className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-text-main transition"
+                        >
+                          <span className="material-symbols-outlined text-[15px]">edit</span>
+                        </button>
+                        {activeListObj && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
+                            title={`Remove "${dispName}" from list "${activeListObj.name}"`}
+                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
 
-                        <div className="flex items-center gap-1 shrink-0">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${strat.tone}`}>
-                            {strat.label}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={scanStatus.running}
-                            onClick={() => handleRescanPublisher(pub)}
-                            title={`Re-scan ${dispName}`}
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">refresh</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setEditingPublisher({
-                                id: pub.id,
-                                publisher_name: pub.publisher_name,
-                                display_name: pub.display_name || "",
-                                list_ids: Array.isArray(pub.list_ids) ? [...pub.list_ids] : []
-                              })
-                            }
-                            title="Rename account or assign to Competitor Lists"
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-text-main transition"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">edit</span>
-                          </button>
-                          {activeListObj && (
+                    {/* Stacked Bar */}
+                    <div className="flex-1 flex items-center gap-1.5 h-7 bg-bg-base/60 rounded-lg p-1 overflow-hidden">
+                      {total === 0 ? (
+                        <span className="text-[10px] text-text-muted px-2">
+                          No games in selected period ({pSt.allTimeTotal} all-time)
+                        </span>
+                      ) : (
+                        <>
+                          {free > 0 && (
                             <button
                               type="button"
-                              onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
-                              title={`Remove "${dispName}" from list "${activeListObj.name}" (keeps account & games in Atlas)`}
-                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                              onClick={() => {
+                                setSelectedPublisher(pub.publisher_name);
+                                setSelectedPricing("free");
+                              }}
+                              style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
+                              title={`${dispName}: ${free} Free games (click to filter)`}
+                              className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
                             >
-                              <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                              {free >= 6 ? `${free} Free` : ""}
                             </button>
                           )}
-                        </div>
-                      </div>
+                          {paid > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedPublisher(pub.publisher_name);
+                                setSelectedPricing("paid");
+                              }}
+                              style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
+                              title={`${dispName}: ${paid} Paid games · Median $${Number(pub.median_paid_price || 0).toFixed(2)} (click to filter)`}
+                              className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
+                            >
+                              {paid >= 6 ? `${paid} Paid` : ""}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
 
-                      <div className="flex-1 flex items-center gap-1.5 h-7 bg-bg-base/60 rounded-lg p-1 overflow-hidden">
-                        {free > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedPublisher(pub.publisher_name);
-                              setSelectedPricing("free");
-                            }}
-                            style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
-                            title={`${dispName}: ${free} Free games (click to filter)`}
-                            className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
-                          >
-                            {free >= 8 ? `${free} Free` : ""}
-                          </button>
-                        )}
-                        {paid > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedPublisher(pub.publisher_name);
-                              setSelectedPricing("paid");
-                            }}
-                            style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
-                            title={`${dispName}: ${paid} Paid games · Median $${Number(pub.median_paid_price || 0).toFixed(2)} (click to filter)`}
-                            className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
-                          >
-                            {paid >= 8 ? `${paid} Paid` : ""}
-                          </button>
-                        )}
-                      </div>
-
-                      <div className="md:w-72 shrink-0 flex items-center justify-between md:justify-end gap-3 text-[11px] text-text-muted font-mono">
-                        <span>
-                          <strong className="text-text-main">{total}</strong> total
-                        </span>
-                        <span className="text-emerald-400">{free}F</span>
-                        <span className="text-amber-400">{paid}P</span>
-                        <span>
-                          Med:{" "}
-                          <strong className="text-text-main">
-                            {pub.median_paid_price ? `$${Number(pub.median_paid_price).toFixed(2)}` : "—"}
-                          </strong>
-                        </span>
-                        <span>⭐ {pub.avg_rating ? Number(pub.avg_rating).toFixed(1) : "—"}</span>
-                      </div>
+                    {/* Compact Metrics */}
+                    <div className="md:w-64 shrink-0 flex items-center justify-between md:justify-end gap-3 text-[11px] text-text-muted font-mono">
+                      <span>
+                        <strong className="text-text-main">{total}</strong>
+                        {dateWindow.active ? `/${pSt.allTimeTotal}` : " total"}
+                      </span>
+                      <span className="text-emerald-400">{free}F</span>
+                      <span className="text-amber-400">{paid}P</span>
+                      <span>
+                        Med:{" "}
+                        <strong className="text-text-main">
+                          {pub.median_paid_price ? `$${Number(pub.median_paid_price).toFixed(2)}` : "—"}
+                        </strong>
+                      </span>
+                      <span>⭐ {pub.avg_rating ? Number(pub.avg_rating).toFixed(1) : "—"}</span>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* VIEW B: INTERACTIVE PORTFOLIO TREEMAP / HIERARCHY EXPLORER */}
-        {activeVisual === "treemap" && (
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-text-muted">
-              <span>
-                Each publisher block splits into <strong className="text-emerald-400">Free</strong> and{" "}
-                <strong className="text-amber-400">Paid</strong> game tiles. Click any tile to inspect that game and its publisher funnel.
-              </span>
-              <div className="flex items-center gap-1.5">
-                <span>Tile Size:</span>
-                {[
-                  { id: "reviews", label: "By Reviews" },
-                  { id: "price", label: "By Price" },
-                  { id: "equal", label: "Uniform" }
-                ].map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setTreemapMetric(m.id)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${
-                      treemapMetric === m.id ? "bg-electric-blue text-white" : "bg-input-bg text-text-muted"
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {visiblePublishers
-                .filter((p) => selectedPublisher === "all" || p.publisher_name === selectedPublisher)
-                .map((pub) => {
-                  const pGames = gamesByPublisher.get(pub.publisher_name) || [];
-                  const freeList = pGames.filter((g) => g.pricing === "free");
-                  const paidList = pGames.filter((g) => g.pricing === "paid");
-                  const strat = classifyStrategy(pub);
-                  const statusMeta = getScanStatusMeta(pub.last_scan_status);
-                  const dispName = getDisplayName(pub.publisher_name);
-
-                  const calcTileSize = (g) => {
-                    if (treemapMetric === "equal") return 34;
-                    if (treemapMetric === "price") {
-                      const pr = Number(g.price) || 0;
-                      return pr <= 0 ? 26 : Math.min(68, Math.max(30, 26 + Math.sqrt(pr) * 7));
-                    }
-                    const rev = Number(g.review_count) || 0;
-                    return Math.min(72, Math.max(26, 24 + Math.log10(rev + 1) * 14));
-                  };
-
-                  return (
-                    <div
-                      key={pub.id}
-                      className="border border-border-subtle rounded-2xl p-4 bg-input-bg/30 flex flex-col gap-3"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSelectedPublisher(selectedPublisher === pub.publisher_name ? "all" : pub.publisher_name)
-                            }
-                            className="text-left group min-w-0"
-                          >
-                            <div className="text-sm font-semibold text-text-main group-hover:text-electric-blue truncate">
-                              {dispName}
-                            </div>
-                            <div className="text-[11px] text-text-muted flex flex-wrap items-center gap-1.5">
-                              <span>
-                                {pub.total_games} games · {pub.free_games} Free ({Math.round((pub.free_share || 0) * 100)}%) ·{" "}
-                                {pub.paid_games} Paid (Med ${Number(pub.median_paid_price || 0).toFixed(2)})
-                              </span>
-                              <span className={`px-1.5 py-0.2 rounded-full border text-[9px] font-semibold ${statusMeta.tone}`}>
-                                {statusMeta.label} · {formatRelativeTime(pub.last_scanned_at)}
-                              </span>
-                            </div>
-                          </button>
-                          <button
-                            type="button"
-                            disabled={scanStatus.running}
-                            onClick={() => handleRescanPublisher(pub)}
-                            title={`Re-scan ${dispName}`}
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 disabled:opacity-40"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">refresh</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setEditingPublisher({
-                                id: pub.id,
-                                publisher_name: pub.publisher_name,
-                                display_name: pub.display_name || "",
-                                list_ids: Array.isArray(pub.list_ids) ? [...pub.list_ids] : []
-                              })
-                            }
-                            title="Rename account or assign to Competitor Lists"
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-text-main"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">edit</span>
-                          </button>
-                        </div>
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${strat.tone}`}>
-                          {strat.label}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        {/* FREE BRANCH */}
-                        <div className="rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-2.5 flex flex-col gap-2">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="font-semibold text-emerald-400">Free Branch ({freeList.length})</span>
-                            <span className="text-text-muted">
-                              {freeList.reduce((s, g) => s + (Number(g.review_count) || 0), 0).toLocaleString()} reviews
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto pr-1">
-                            {freeList.map((g) => {
-                              const sz = calcTileSize(g);
-                              return (
-                                <button
-                                  key={g.asin}
-                                  type="button"
-                                  onClick={() => setActiveGameDrawer(g)}
-                                  style={{ width: `${sz}px`, height: `${sz}px` }}
-                                  title={`${g.title} (FREE) · ⭐ ${g.rating ?? "—"} · ${g.review_count ?? 0} reviews`}
-                                  className="rounded-lg overflow-hidden border border-emerald-500/40 bg-emerald-500/20 hover:scale-105 hover:border-white transition relative group shrink-0"
-                                >
-                                  {g.icon ? (
-                                    <img src={g.icon} alt="" className="w-full h-full object-cover" loading="lazy" />
-                                  ) : (
-                                    <span className="text-[9px] text-emerald-300 font-bold">FREE</span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* PAID BRANCH */}
-                        <div className="rounded-xl bg-amber-500/5 border border-amber-500/20 p-2.5 flex flex-col gap-2">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="font-semibold text-amber-400">Paid Branch ({paidList.length})</span>
-                            <span className="text-text-muted">
-                              {paidList.reduce((s, g) => s + (Number(g.review_count) || 0), 0).toLocaleString()} reviews
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto pr-1">
-                            {paidList.map((g) => {
-                              const sz = calcTileSize(g);
-                              return (
-                                <button
-                                  key={g.asin}
-                                  type="button"
-                                  onClick={() => setActiveGameDrawer(g)}
-                                  style={{ width: `${sz}px`, height: `${sz}px` }}
-                                  title={`${g.title} ($${Number(g.price || 0).toFixed(2)}) · ⭐ ${g.rating ?? "—"} · ${g.review_count ?? 0} reviews`}
-                                  className="rounded-lg overflow-hidden border border-amber-500/40 bg-amber-500/20 hover:scale-105 hover:border-white transition relative group shrink-0"
-                                >
-                                  {g.icon ? (
-                                    <img src={g.icon} alt="" className="w-full h-full object-cover" loading="lazy" />
-                                  ) : (
-                                    <span className="text-[9px] text-amber-300 font-bold">${g.price}</span>
-                                  )}
-                                  <span className="absolute bottom-0 inset-x-0 bg-black/75 text-[8px] text-amber-300 font-mono text-center leading-tight py-0.5">
-                                    ${Number(g.price || 0).toFixed(0)}
-                                  </span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-          </div>
-        )}
-
-        {/* VIEW C: MONETIZATION FUNNEL MATRIX & SCATTER */}
-        {activeVisual === "strategy" && (
-          <div className="flex flex-col gap-5">
-            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs text-text-main">
-              <strong>Hypothesis Note:</strong> Catalogue split and review distribution reveal where a publisher has a{" "}
-              <em>free user-acquisition funnel alongside high-margin paid titles</em>, though proving in-app cross-promotion requires inspecting the free apps directly.
-            </div>
-
-            <div className="border border-border-subtle rounded-2xl p-4 bg-input-bg/30">
-              <div className="text-xs font-semibold text-text-main mb-1">
-                Portfolio Strategy Map (X: Free Portfolio % · Y: Median Paid Price $ · Bubble Size: Reviews on Paid Games)
-              </div>
-              <div className="text-[11px] text-text-muted mb-3">
-                Top-right quadrant = High-Ticket Funnel publishers (large free catalogue + high paid prices). Click any bubble to inspect.
-              </div>
-              <div className="relative h-64 w-full bg-bg-base/70 rounded-xl border border-border-subtle overflow-hidden">
-                <div className="absolute left-1/2 top-0 bottom-0 border-l border-dashed border-border-subtle" />
-                <div className="absolute top-1/2 left-0 right-0 border-t border-dashed border-border-subtle" />
-                <span className="absolute top-2 right-3 text-[10px] text-amber-400/80 font-semibold">
-                  High-Ticket Funnel (Many Free + High Paid Price)
-                </span>
-                <span className="absolute bottom-2 right-3 text-[10px] text-sky-400/80 font-semibold">
-                  Volume Funnel (Many Free + Low Paid Price)
-                </span>
-                <span className="absolute top-2 left-3 text-[10px] text-purple-400/80 font-semibold">
-                  Paid-Heavy Catalogue (Mostly Paid Titles)
-                </span>
-
-                {visiblePublishers.map((pub) => {
-                  const xPct = Math.min(94, Math.max(6, (Number(pub.free_share) || 0) * 100));
-                  const maxPrice = 30;
-                  const yPct = Math.min(92, Math.max(8, ((Number(pub.median_paid_price) || 0) / maxPrice) * 100));
-                  const paidReviews = Math.round(
-                    (Number(pub.total_reviews) || 0) * (1 - (Number(pub.free_review_share) || 0))
-                  );
-                  const size = Math.min(44, Math.max(18, 14 + Math.log10(paidReviews + 1) * 8));
-                  const dispName = getDisplayName(pub.publisher_name);
-
-                  return (
-                    <button
-                      key={pub.id}
-                      type="button"
-                      onClick={() => setSelectedPublisher(pub.publisher_name)}
-                      style={{
-                        left: `${xPct}%`,
-                        bottom: `${yPct}%`,
-                        width: `${size}px`,
-                        height: `${size}px`,
-                        transform: "translate(-50%, 50%)"
-                      }}
-                      title={`${dispName} · ${Math.round((pub.free_share || 0) * 100)}% Free · Median Paid $${Number(
-                        pub.median_paid_price || 0
-                      ).toFixed(2)} · ${paidReviews.toLocaleString()} Paid Reviews`}
-                      className={`absolute rounded-full border-2 flex items-center justify-center text-[9px] font-bold transition hover:scale-125 hover:z-20 ${
-                        selectedPublisher === pub.publisher_name
-                          ? "bg-electric-blue text-white border-white z-10"
-                          : "bg-amber-500/80 text-slate-950 border-amber-200"
-                      }`}
-                    >
-                      {dispName.slice(0, 2).toUpperCase()}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="overflow-x-auto border border-border-subtle rounded-2xl">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-input-bg text-text-muted uppercase text-[10px]">
-                  <tr>
-                    <th className="py-3 px-4">Publisher Account</th>
-                    <th className="py-3 px-3">Scan Status</th>
-                    <th className="py-3 px-3">Model Pattern</th>
-                    <th className="py-3 px-3 text-right">Total</th>
-                    <th className="py-3 px-3 text-right">Free / Paid</th>
-                    <th className="py-3 px-3 text-right">Free:Paid Ratio</th>
-                    <th className="py-3 px-3 text-right">Median Paid $</th>
-                    <th className="py-3 px-3 text-right">Avg Rating</th>
-                    <th className="py-3 px-3 text-right">Free Review %</th>
-                    <th className="py-3 px-4 text-right">Paid Game Reviews</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border-subtle">
-                  {visiblePublishers.map((pub) => {
-                    const strat = classifyStrategy(pub);
-                    const statusMeta = getScanStatusMeta(pub.last_scan_status);
-                    const paidReviews = Math.round(
-                      (Number(pub.total_reviews) || 0) * (1 - (Number(pub.free_review_share) || 0))
-                    );
-                    const dispName = getDisplayName(pub.publisher_name);
-                    return (
-                      <tr
-                        key={pub.id}
-                        onClick={() => setSelectedPublisher(pub.publisher_name)}
-                        className="hover:bg-input-bg/60 cursor-pointer transition"
-                      >
-                        <td className="py-2.5 px-4 font-semibold text-text-main">
-                          <div className="flex items-center gap-2">
-                            <span>{dispName}</span>
-                            <button
-                              type="button"
-                              disabled={scanStatus.running}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRescanPublisher(pub);
-                              }}
-                              className="text-text-muted hover:text-amber-400 disabled:opacity-40"
-                              title={`Re-scan ${dispName}`}
-                            >
-                              <span className="material-symbols-outlined text-[14px]">refresh</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingPublisher({
-                                  id: pub.id,
-                                  publisher_name: pub.publisher_name,
-                                  display_name: pub.display_name || "",
-                                  list_ids: Array.isArray(pub.list_ids) ? [...pub.list_ids] : []
-                                });
-                              }}
-                              className="text-text-muted hover:text-text-main"
-                              title="Rename or assign to lists"
-                            >
-                              <span className="material-symbols-outlined text-[14px]">edit</span>
-                            </button>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <div className="flex items-center gap-1.5">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${statusMeta.tone}`}>
-                              {statusMeta.label}
-                            </span>
-                            <span className="text-[10px] text-text-muted">{formatRelativeTime(pub.last_scanned_at)}</span>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${strat.tone}`}>
-                            {strat.label}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono">{pub.total_games}</td>
-                        <td className="py-2.5 px-3 text-right font-mono">
-                          <span className="text-emerald-400">{pub.free_games}F</span> /{" "}
-                          <span className="text-amber-400">{pub.paid_games}P</span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono">
-                          {pub.free_to_paid_ratio ? `${Number(pub.free_to_paid_ratio).toFixed(2)}:1` : "—"}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono text-amber-400 font-semibold">
-                          {pub.median_paid_price ? `$${Number(pub.median_paid_price).toFixed(2)}` : "—"}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono">
-                          {pub.avg_rating ? Number(pub.avg_rating).toFixed(2) : "—"}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono">
-                          {pub.free_review_share !== null && pub.free_review_share !== undefined
-                            ? `${Math.round(Number(pub.free_review_share) * 100)}%`
-                            : "—"}
-                        </td>
-                        <td className="py-2.5 px-4 text-right font-mono font-semibold text-text-main">
-                          {paidReviews.toLocaleString()}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -1479,25 +1415,17 @@ export default function AmazonIntelligenceView() {
         <div className="bg-electric-blue/10 border border-electric-blue/30 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-text-main flex flex-wrap items-center gap-2">
-              <span>Inspecting: {getDisplayName(selectedPublisherObj.publisher_name)}</span>
+              <span>Account: {getDisplayName(selectedPublisherObj.publisher_name)}</span>
               {selectedPublisherObj.display_name && (
                 <span className="text-xs text-text-muted">(Amazon: {selectedPublisherObj.publisher_name})</span>
               )}
-              {(() => {
-                const st = getScanStatusMeta(selectedPublisherObj.last_scan_status);
-                return (
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${st.tone}`}>
-                    {st.label} · {formatRelativeTime(selectedPublisherObj.last_scanned_at)}
-                  </span>
-                );
-              })()}
               <button
                 type="button"
                 disabled={scanStatus.running}
                 onClick={() => handleRescanPublisher(selectedPublisherObj)}
                 className="text-xs text-amber-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
               >
-                <span className="material-symbols-outlined text-[14px]">refresh</span> Re-scan Account
+                <span className="material-symbols-outlined text-[14px]">refresh</span> Re-scan
               </button>
               <button
                 type="button"
@@ -1519,13 +1447,13 @@ export default function AmazonIntelligenceView() {
                 rel="noreferrer"
                 className="text-xs text-electric-blue hover:underline inline-flex items-center gap-1"
               >
-                Open on Amazon <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                Amazon Store <span className="material-symbols-outlined text-[14px]">open_in_new</span>
               </a>
             </div>
             <div className="text-xs text-text-muted mt-0.5">
-              {selectedPublisherObj.total_games} total games · {selectedPublisherObj.free_games} Free ·{" "}
-              {selectedPublisherObj.paid_games} Paid (Median $
-              {Number(selectedPublisherObj.median_paid_price || 0).toFixed(2)}) ·{" "}
+              {selectedPublisherObj.total_games} all-time games ({selectedPublisherObj.free_games} Free ·{" "}
+              {selectedPublisherObj.paid_games} Paid) · Median Paid $
+              {Number(selectedPublisherObj.median_paid_price || 0).toFixed(2)} ·{" "}
               {Number(selectedPublisherObj.total_reviews || 0).toLocaleString()} reviews
             </div>
           </div>
@@ -1544,6 +1472,13 @@ export default function AmazonIntelligenceView() {
                 {mode}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => setSelectedPublisher("all")}
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-surface-solid text-text-main border border-border-subtle"
+            >
+              Show All Accounts
+            </button>
           </div>
         </div>
       )}
@@ -1553,10 +1488,10 @@ export default function AmazonIntelligenceView() {
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-text-main">
-              Extracted Amazon Appstore Listings ({filteredGames.length.toLocaleString()})
+              Games ({filteredGames.length.toLocaleString()})
             </h2>
             <p className="text-xs text-text-muted">
-              Click any game row to open its full metadata and compare free vs. paid sibling titles from the same publisher.
+              Click any game row to inspect its details and compare free vs. paid sibling titles from that publisher.
             </p>
           </div>
 
@@ -1566,9 +1501,7 @@ export default function AmazonIntelligenceView() {
               onChange={(e) => setSelectedPublisher(e.target.value)}
               className="rounded-xl bg-input-bg border border-border-subtle px-3 py-2 text-xs text-text-main"
             >
-              <option value="all">
-                All Accounts in View ({visiblePublishers.length})
-              </option>
+              <option value="all">All Accounts in View ({visiblePublishers.length})</option>
               {visiblePublishers.map((p) => (
                 <option key={p.id} value={p.publisher_name}>
                   {getDisplayName(p.publisher_name)} ({p.total_games})
@@ -1621,7 +1554,7 @@ export default function AmazonIntelligenceView() {
                   <th className="py-3 px-3 text-right">Price</th>
                   <th className="py-3 px-3 text-right">Rating</th>
                   <th className="py-3 px-3 text-right">Reviews</th>
-                  <th className="py-3 px-4 text-right">Release Date</th>
+                  <th className="py-3 px-4 text-right">Launch Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle">
@@ -1679,7 +1612,7 @@ export default function AmazonIntelligenceView() {
                       {g.review_count ? Number(g.review_count).toLocaleString() : "0"}
                     </td>
                     <td className="py-2.5 px-4 text-right font-mono text-text-muted">
-                      {g.release_date ? String(g.release_date).slice(0, 10) : "—"}
+                      {g.release_date ? String(g.release_date).slice(0, 10) : "Unknown"}
                     </td>
                   </tr>
                 ))}
@@ -1689,21 +1622,23 @@ export default function AmazonIntelligenceView() {
         )}
       </div>
 
-      {/* CREATE / EDIT COMPETITOR LIST MODAL */}
+      {/* ===================================================================== */}
+      {/* MODAL 1: MANAGE COMPETITOR LISTS (z-[100])                            */}
+      {/* Supports switching between ANY existing list OR creating a new list,  */}
+      {/* and links directly to Add & Scan New Accounts into that list.         */}
+      {/* ===================================================================== */}
       {listModal && (
         <div
           onClick={() => setListModal(null)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
         >
           <form
             onClick={(e) => e.stopPropagation()}
-            onSubmit={handleSaveListModal}
-            className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+            onSubmit={(e) => handleSaveListModal(e, false)}
+            className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
           >
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-text-main">
-                {listModal.mode === "create" ? "Create New Competitor List" : "Edit Competitor List & Accounts"}
-              </h3>
+              <h3 className="text-base font-semibold text-text-main">Manage Competitor Lists</h3>
               <button
                 type="button"
                 onClick={() => setListModal(null)}
@@ -1713,6 +1648,23 @@ export default function AmazonIntelligenceView() {
               </button>
             </div>
 
+            {/* Switch between any existing list or "+ Create New List" */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
+              <select
+                value={listModal.mode === "create" ? "new" : listModal.listId}
+                onChange={(e) => handleSelectListInModal(e.target.value)}
+                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs font-semibold text-text-main"
+              >
+                <option value="new">+ Create New Competitor List</option>
+                {(overview.lists || []).map((l) => (
+                  <option key={l.id} value={l.id}>
+                    Edit List: {l.name} ({l.account_count} accounts)
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-text-muted">List Name</label>
               <input
@@ -1720,7 +1672,7 @@ export default function AmazonIntelligenceView() {
                 required
                 value={listModal.name}
                 onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
-                placeholder="e.g. Competitor Group A"
+                placeholder="e.g. Ozi Tech"
                 className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
               />
             </div>
@@ -1739,7 +1691,7 @@ export default function AmazonIntelligenceView() {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-medium text-text-muted">
-                  Select Accounts in this List ({(listModal.publisherIds || []).length} selected)
+                  Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
                 </span>
                 <div className="flex items-center gap-2">
                   <button
@@ -1764,7 +1716,7 @@ export default function AmazonIntelligenceView() {
                 </div>
               </div>
 
-              <div className="max-h-56 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+              <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
                 {(overview.publishers || []).map((p) => {
                   const checked = (listModal.publisherIds || []).includes(p.id);
                   const disp = getDisplayName(p.publisher_name);
@@ -1801,6 +1753,21 @@ export default function AmazonIntelligenceView() {
               </div>
             </div>
 
+            {/* Direct Link to Add & Scan New Amazon Accounts into this list */}
+            <div className="p-3 rounded-xl bg-electric-blue/10 border border-electric-blue/25 flex items-center justify-between gap-3">
+              <div className="text-xs text-text-main">
+                Want to scan <strong>brand-new Amazon links</strong> into this list?
+              </div>
+              <button
+                type="button"
+                disabled={!listModal.name.trim() || isSavingList}
+                onClick={(e) => handleSaveListModal(e, true)}
+                className="px-3 py-1.5 rounded-lg bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shrink-0 disabled:opacity-50"
+              >
+                {listModal.mode === "create" ? "Create List & Add New Links →" : "Save & Add New Links →"}
+              </button>
+            </div>
+
             <div className="flex items-center justify-between gap-2 pt-2">
               {listModal.mode === "edit" ? (
                 <button
@@ -1826,7 +1793,7 @@ export default function AmazonIntelligenceView() {
                   disabled={isSavingList}
                   className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
                 >
-                  {isSavingList ? "Saving..." : "Save List"}
+                  {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create Empty / Selected List" : "Save List"}
                 </button>
               </div>
             </div>
@@ -1834,11 +1801,184 @@ export default function AmazonIntelligenceView() {
         </div>
       )}
 
-      {/* RENAME ACCOUNT & ASSIGN LISTS MODAL */}
+      {/* ===================================================================== */}
+      {/* MODAL 2: ADD & SCAN AMAZON ACCOUNTS (z-[100])                         */}
+      {/* Dedicated flow to paste URLs, validate, pick destination list, & scan */}
+      {/* ===================================================================== */}
+      {showScannerModal && (
+        <div
+          onClick={() => setShowScannerModal(false)}
+          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Amazon Publisher Links</h3>
+                <p className="text-xs text-text-muted">
+                  Paste one or more Amazon publisher links, choose a destination list, and scan.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowScannerModal(false)}
+                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-text-muted">Amazon Appstore Publisher URLs (one per line)</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const text = SAMPLE_LINKS.join("\n");
+                  setLinksInput(text);
+                  handleValidateLinks(text);
+                }}
+                className="text-[11px] font-medium text-electric-blue hover:underline"
+              >
+                Load 16 Benchmark Links
+              </button>
+            </div>
+
+            <textarea
+              rows={5}
+              value={linksInput}
+              onChange={(e) => setLinksInput(e.target.value)}
+              placeholder="https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGames%2BStop%2BStudio&search-type=ss"
+              className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
+            />
+
+            {/* Destination List Picker */}
+            <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
+              <div className="text-xs font-semibold text-text-main">
+                Assign Scanned Accounts to Competitor List(s)
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {(overview.lists || []).map((list) => {
+                  const checked = scanTargetListIds.includes(list.id);
+                  return (
+                    <button
+                      key={list.id}
+                      type="button"
+                      onClick={() =>
+                        setScanTargetListIds((prev) =>
+                          checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
+                        )
+                      }
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
+                        checked
+                          ? "bg-amber-500/20 text-amber-300 border-amber-400"
+                          : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">
+                        {checked ? "check_box" : "check_box_outline_blank"}
+                      </span>
+                      {list.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
+                <input
+                  type="text"
+                  value={scanNewListName}
+                  onChange={(e) => setScanNewListName(e.target.value)}
+                  placeholder="e.g. Ozi Tech"
+                  className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
+                />
+              </div>
+            </div>
+
+            {validationResult && (
+              <div className="border border-border-subtle rounded-xl overflow-hidden">
+                <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-text-main">
+                    Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
+                    {validationResult.invalidCount} Invalid
+                  </span>
+                  {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveInvalidAndDuplicates}
+                      className="text-[11px] text-amber-400 font-semibold hover:underline"
+                    >
+                      Clean Invalid/Duplicates
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
+                  {validationResult.validation.map((item) => (
+                    <div key={item.index} className="px-4 py-2 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-medium text-text-main truncate">
+                          {item.valid ? item.publisher : item.input}
+                        </div>
+                        <div className="text-[10px] text-text-muted truncate">
+                          {item.valid ? item.normalizedUrl : item.error}
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
+                          !item.valid
+                            ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
+                            : item.duplicate
+                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                            : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                        }`}
+                      >
+                        {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-2">
+              <button
+                type="button"
+                disabled={!linksInput.trim() || isValidating}
+                onClick={() => handleValidateLinks(linksInput)}
+                className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
+              >
+                {isValidating ? "Validating..." : "Validate Links"}
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowScannerModal(false)}
+                  className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!linksInput.trim() || scanStatus.running}
+                  onClick={() => handleStartScan()}
+                  className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
+                >
+                  {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* MODAL 3: RENAME ACCOUNT & ASSIGN LISTS (z-[100])                      */}
+      {/* ===================================================================== */}
       {editingPublisher && (
         <div
           onClick={() => setEditingPublisher(null)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
         >
           <form
             onClick={(e) => e.stopPropagation()}
@@ -1910,18 +2050,16 @@ export default function AmazonIntelligenceView() {
                       type="button"
                       onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
                       className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
-                      title="Removes account from the currently selected list while keeping all its games and history in Atlas"
                     >
                       Remove from "{activeListObj.name}"
                     </button>
                   )}
                   <button
                     type="button"
-                    onClick={() => handleDeletePublisherFromAtlas(editingPublisher)}
+                    onClick={() => setConfirmDeletePub(editingPublisher)}
                     className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
-                    title="Permanently deletes this account and its games from Atlas"
                   >
-                    Delete Account from Atlas
+                    Delete from Atlas
                   </button>
                 </div>
 
@@ -1942,19 +2080,56 @@ export default function AmazonIntelligenceView() {
                   </button>
                 </div>
               </div>
-              <p className="text-[10px] text-text-muted">
-                Unchecking a list (or clicking "Remove from list") keeps the account and its games in Atlas. "Delete Account from Atlas" removes it completely.
-              </p>
             </div>
           </form>
         </div>
       )}
 
-      {/* GAME & PUBLISHER FUNNEL DETAIL DRAWER */}
+      {/* ===================================================================== */}
+      {/* CONFIRMATION DIALOG (z-[110] — sits above all modals & drawers)       */}
+      {/* ===================================================================== */}
+      {confirmDeletePub && (
+        <div
+          onClick={() => setConfirmDeletePub(null)}
+          className="fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+          >
+            <h4 className="text-sm font-semibold text-text-main">
+              Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
+            </h4>
+            <p className="text-xs text-text-muted">
+              This will permanently remove the publisher and its extracted games from Atlas. If you only want to remove it from a Competitor List, uncheck the list instead.
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeletePub(null)}
+                className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
+                className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
+              >
+                Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================================== */}
+      {/* GAME & PUBLISHER FUNNEL DETAIL DRAWER (z-[90] — above z-[70] header)  */}
+      {/* ===================================================================== */}
       {activeGameDrawer && (
         <div
           onClick={() => setActiveGameDrawer(null)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end"
+          className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -1966,7 +2141,7 @@ export default function AmazonIntelligenceView() {
                   <img
                     src={activeGameDrawer.icon}
                     alt=""
-                    className="w-16 h-16 rounded-2xl object-cover border border-border-subtle"
+                    className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
                   />
                 )}
                 <div>
@@ -1982,15 +2157,13 @@ export default function AmazonIntelligenceView() {
                       : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
                   </span>
                   <h3 className="text-base font-semibold text-text-main mt-1">{activeGameDrawer.title}</h3>
-                  <div className="text-xs text-text-muted">
-                    {getDisplayName(activeGameDrawer.publisher_name)}
-                  </div>
+                  <div className="text-xs text-text-muted">{getDisplayName(activeGameDrawer.publisher_name)}</div>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setActiveGameDrawer(null)}
-                className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted"
+                className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
               >
                 <span className="material-symbols-outlined">close</span>
               </button>
@@ -2002,15 +2175,15 @@ export default function AmazonIntelligenceView() {
                 <div className="text-xs font-mono font-semibold text-text-main mt-0.5">{activeGameDrawer.asin}</div>
               </div>
               <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Rating & Reviews</div>
+                <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
                 <div className="text-xs font-semibold text-text-main mt-0.5">
                   ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
                 </div>
               </div>
               <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Release Date</div>
+                <div className="text-[10px] text-text-muted">Amazon Launch Date</div>
                 <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                  {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "—"}
+                  {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
                 </div>
               </div>
             </div>

@@ -255,6 +255,18 @@ async function newScanContext(chromium, options = {}) {
     { name: 'i18n-prefs', value: 'USD', domain: '.amazon.com', path: '/' },
     { name: 'lc-main', value: 'en_US', domain: '.amazon.com', path: '/' }
   ]);
+  // Warm up the Amazon session once so search endpoints receive established session cookies.
+  if (options.warmup !== false) {
+    const warmPage = await context.newPage();
+    try {
+      await warmPage.goto('https://www.amazon.com/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await sleep(1200);
+    } catch {
+      // Non-fatal: proceed even if homepage warmup times out.
+    } finally {
+      await warmPage.close().catch(() => {});
+    }
+  }
   return { browser, context };
 }
 
@@ -297,22 +309,37 @@ async function scanPublisher(context, validated, options = {}) {
       let parsed = null;
       let blocked = null;
 
-      // Up to 3 attempts per page (interstitial challenges can need a moment).
-      while (attempt < 3) {
+      // Bounded 2 attempts per page with tight timeouts so a slow/blocked page never hangs a batch.
+      while (attempt < 2) {
         attempt += 1;
+        if (attempt > 1) {
+          onProgress({
+            publisher: validated.publisher,
+            page: result.pagesRead + 1,
+            found: byAsin.size,
+            reportedTotal: result.reportedTotal,
+            phase: 'retrying',
+            attempt
+          });
+          // Re-warm homepage briefly before retry if Amazon served a 503 or empty challenge page
+          try {
+            await page.goto(`https://${validated.host}/`, { waitUntil: 'domcontentloaded', timeout: 12000 });
+            await sleep(1000);
+          } catch {}
+        }
         try {
-          const resp = await page.goto(nextUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          const resp = await page.goto(nextUrl, { waitUntil: 'domcontentloaded', timeout: 22000 });
           httpStatus = resp ? resp.status() : 200;
           try {
-            await page.waitForSelector('div[data-component-type="s-search-result"], #captchacharacters, .a-no-results, #noResultsTitle', { timeout: 15000 });
+            await page.waitForSelector('div[data-component-type="s-search-result"], #captchacharacters, .a-no-results, #noResultsTitle', { timeout: 8000 });
           } catch {
             // If an interstitial auto-reloaded the page, wait briefly for the reload to settle.
-            await sleep(2500);
+            await sleep(1500);
           }
           html = await page.content();
         } catch (err) {
           result.statusDetail = `navigation error: ${err.message}`;
-          await sleep(jitter(2500, 4500));
+          await sleep(jitter(1200, 2200));
           continue;
         }
         parsed = parseListingHtml(html, validated.host);
@@ -323,7 +350,7 @@ async function scanPublisher(context, validated, options = {}) {
         blocked = detectBlock(html, httpStatus);
         if (blocked && (blocked !== 'HTTP 503' || attempt >= 2)) break; // stop immediately on captcha/429, allow 1 retry on transient 503
         if (/no results|did not match any/i.test(html)) break;
-        await sleep(jitter(2500, 4500)); // transient/interstitial page; retry
+        await sleep(jitter(1200, 2200)); // transient/interstitial page; retry once
       }
 
       if (blocked) {
