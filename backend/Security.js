@@ -254,6 +254,24 @@ async function initializeAuthStorage(pool) {
     "SELECT COUNT(*)::int AS count FROM users WHERE role = 'admin'"
   )).rows[0]?.count || 0);
 
+  // Ensure default view-only account exists if configured or requested
+  const viewUsername = String(process.env.ATLAS_BOOTSTRAP_USER_USERNAME || "user").trim();
+  const viewPassword = String(process.env.ATLAS_BOOTSTRAP_USER_PASSWORD || "user123");
+  if (viewUsername && viewPassword) {
+    const existingViewUser = (await pool.query(
+      "SELECT id FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1",
+      [viewUsername]
+    )).rows[0];
+    if (!existingViewUser) {
+      const viewHash = await hashPassword(viewPassword);
+      await pool.query(
+        "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'view-only')",
+        [viewUsername, viewHash]
+      );
+      console.log("👤 [AUTH] Bootstrapped view-only account: " + viewUsername);
+    }
+  }
+
   if (adminCount > 0) return;
 
   const username = String(process.env.ATLAS_BOOTSTRAP_ADMIN_USERNAME || "").trim();
