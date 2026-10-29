@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
+import { KeywordPanel } from "./AtlasIntelligenceLayer.jsx";
 
 const SAMPLE_PLAY_LINKS = [
   "https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio",
@@ -173,8 +175,12 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
   const [countryBatchScope, setCountryBatchScope] = useState("all"); // 'all' | 'list' | 'publisher'
   const [countryBatchSkipDays, setCountryBatchSkipDays] = useState(7);
 
-  // Single-game refresh state
+  // Single-game refresh state + Drawer video assets & Keyword Intelligence
   const [refreshingPkg, setRefreshingPkg] = useState(null);
+  const [drawerVideos, setDrawerVideos] = useState([]);
+  const [drawerVideosLoading, setDrawerVideosLoading] = useState(false);
+  const drawerVideosCacheRef = useRef(new Map());
+  const [keywordTarget, setKeywordTarget] = useState(null);
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
 
@@ -265,10 +271,53 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
     return () => clearInterval(iv);
   }, [scanStatus.running, scanStatus.startedAt, scanStatus.finishedAt]);
 
+  // Fetch Video Creatives when a game is opened in the Drawer
+  useEffect(() => {
+    const pkg = activeGameDrawer?.package_name;
+    if (!pkg) {
+      setDrawerVideos([]);
+      setDrawerVideosLoading(false);
+      return;
+    }
+
+    const cached = drawerVideosCacheRef.current.get(pkg);
+    if (cached && cached.expiresAt > Date.now()) {
+      setDrawerVideos(cached.data);
+      setDrawerVideosLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setDrawerVideos([]);
+    setDrawerVideosLoading(true);
+
+    fetcher(`${API_BASE}/api/video-assets?packageName=${encodeURIComponent(pkg)}`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((payload) => {
+        const list = Array.isArray(payload) ? payload : [];
+        drawerVideosCacheRef.current.set(pkg, {
+          expiresAt: Date.now() + 20000,
+          data: list
+        });
+        if (!cancelled) setDrawerVideos(list);
+      })
+      .catch(() => {
+        if (!cancelled) setDrawerVideos([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDrawerVideosLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeGameDrawer?.package_name, fetcher]);
+
   // Keyboard Escape dismissal & body scroll lock when modals/drawer are open
   useEffect(() => {
     const anyOpen = Boolean(
       activeGameDrawer ||
+        keywordTarget ||
         showScannerModal ||
         showSheetModal ||
         showCountryBatchModal ||
@@ -281,7 +330,8 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
     document.body.style.overflow = "hidden";
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
-        if (confirmDeletePub) setConfirmDeletePub(null);
+        if (keywordTarget) setKeywordTarget(null);
+        else if (confirmDeletePub) setConfirmDeletePub(null);
         else if (editingPublisher) setEditingPublisher(null);
         else if (listModal) setListModal(null);
         else if (showCountryBatchModal) setShowCountryBatchModal(false);
@@ -297,6 +347,7 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
     };
   }, [
     activeGameDrawer,
+    keywordTarget,
     showScannerModal,
     showSheetModal,
     showCountryBatchModal,
@@ -2070,927 +2121,1029 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
       </div>
 
       {/* ===================================================================== */}
-      {/* MODAL 1: MANAGE COMPETITOR LISTS (z-[100])                            */}
+      {/* PORTAL MODALS & DRAWERS (Rendered at document.body above header z-50) */}
       {/* ===================================================================== */}
-      {listModal && (
-        <div
-          onClick={() => setListModal(null)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={(e) => handleSaveListModal(e, false)}
-            className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+
+      {/* MODAL 1: MANAGE COMPETITOR LISTS (z-[100]) */}
+      {listModal &&
+        createPortal(
+          <div
+            onClick={() => setListModal(null)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-text-main">Manage Play Store Competitor Lists</h3>
-              <button
-                type="button"
-                onClick={() => setListModal(null)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
-              <select
-                value={listModal.mode === "create" ? "new" : listModal.listId}
-                onChange={(e) => handleSelectListInModal(e.target.value)}
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs font-semibold text-text-main"
-              >
-                <option value="new">+ Create New Competitor List</option>
-                {(overview.lists || []).map((l) => (
-                  <option key={l.id} value={l.id}>
-                    Edit List: {l.name} ({l.account_count} accounts)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">List Name</label>
-              <input
-                type="text"
-                required
-                value={listModal.name}
-                onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
-                placeholder="e.g. Top Simulation Competitors"
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">Notes / Description (Optional)</label>
-              <input
-                type="text"
-                value={listModal.description || ""}
-                onChange={(e) => setListModal({ ...listModal, description: e.target.value })}
-                placeholder="Optional notes about this competitor group..."
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-text-muted">
-                  Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setListModal({
-                        ...listModal,
-                        publisherIds: (overview.publishers || []).map((p) => p.id)
-                      })
-                    }
-                    className="text-[11px] text-electric-blue hover:underline"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setListModal({ ...listModal, publisherIds: [] })}
-                    className="text-[11px] text-text-muted hover:underline"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
-                {(overview.publishers || []).map((p) => {
-                  const checked = (listModal.publisherIds || []).includes(p.id);
-                  const disp = getDisplayName(p.publisher_name);
-                  return (
-                    <label
-                      key={p.id}
-                      className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg text-xs"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            const cur = listModal.publisherIds || [];
-                            setListModal({
-                              ...listModal,
-                              publisherIds: checked ? cur.filter((id) => id !== p.id) : [...cur, p.id]
-                            });
-                          }}
-                        />
-                        <div className="min-w-0">
-                          <div className="font-medium text-text-main truncate">{disp}</div>
-                          {disp !== p.publisher_name && (
-                            <div className="text-[10px] text-text-muted truncate">Play Store: {p.publisher_name}</div>
-                          )}
-                        </div>
-                      </div>
-                      <span className="text-[11px] font-mono text-text-muted shrink-0">
-                        {p.total_games} games · {formatCompactNumber(p.total_installs)} inst
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-electric-blue/10 border border-electric-blue/25 flex items-center justify-between gap-3">
-              <div className="text-xs text-text-main">
-                Want to scan <strong>brand-new Play Store developer links</strong> into this list?
-              </div>
-              <button
-                type="button"
-                disabled={!listModal.name.trim() || isSavingList}
-                onClick={(e) => handleSaveListModal(e, true)}
-                className="px-3 py-1.5 rounded-lg bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shrink-0 disabled:opacity-50"
-              >
-                {listModal.mode === "create" ? "Create List & Add New Links →" : "Save & Add New Links →"}
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between gap-2 pt-2">
-              {listModal.mode === "edit" ? (
-                <button
-                  type="button"
-                  onClick={() => handleDeleteList(listModal.listId)}
-                  className="px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25"
-                >
-                  Delete List
-                </button>
-              ) : (
-                <div />
-              )}
-              <div className="flex items-center gap-2">
+            <form
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={(e) => handleSaveListModal(e, false)}
+              className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-text-main">Manage Play Store Competitor Lists</h3>
                 <button
                   type="button"
                   onClick={() => setListModal(null)}
-                  className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingList}
-                  className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                >
-                  {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create List" : "Save List"}
+                  <span className="material-symbols-outlined">close</span>
                 </button>
               </div>
-            </div>
-          </form>
-        </div>
-      )}
 
-      {/* ===================================================================== */}
-      {/* MODAL 2: ADD & SCAN PLAY STORE PUBLISHER LINKS (z-[100])              */}
-      {/* ===================================================================== */}
-      {showScannerModal && (
-        <div
-          onClick={() => setShowScannerModal(false)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Play Store Publisher Links</h3>
-                <p className="text-xs text-text-muted">
-                  Paste Play Store developer URLs (`/store/apps/developer?id=...` or `/store/apps/dev?id=...`) or publisher names.
-                </p>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
+                <select
+                  value={listModal.mode === "create" ? "new" : listModal.listId}
+                  onChange={(e) => handleSelectListInModal(e.target.value)}
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs font-semibold text-text-main"
+                >
+                  <option value="new">+ Create New Competitor List</option>
+                  {(overview.lists || []).map((l) => (
+                    <option key={l.id} value={l.id}>
+                      Edit List: {l.name} ({l.account_count} accounts)
+                    </option>
+                  ))}
+                </select>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowScannerModal(false)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
 
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-text-muted">Play Store Developer URLs or Names (one per line)</span>
-              <button
-                type="button"
-                onClick={() => {
-                  const text = SAMPLE_PLAY_LINKS.join("\n");
-                  setLinksInput(text);
-                  handleValidateLinks(text);
-                }}
-                className="text-[11px] font-medium text-electric-blue hover:underline"
-              >
-                Load Sample Links
-              </button>
-            </div>
-
-            <textarea
-              rows={5}
-              value={linksInput}
-              onChange={(e) => setLinksInput(e.target.value)}
-              placeholder="https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio"
-              className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
-            />
-
-            <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
-              <div className="text-xs font-semibold text-text-main">
-                Assign Scanned Accounts to Competitor List(s)
-              </div>
-              <div className="flex flex-wrap items-center gap-2 max-h-28 overflow-y-auto">
-                {(overview.lists || []).map((list) => {
-                  const checked = scanTargetListIds.includes(list.id);
-                  return (
-                    <button
-                      key={list.id}
-                      type="button"
-                      onClick={() =>
-                        setScanTargetListIds((prev) =>
-                          checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
-                        )
-                      }
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
-                        checked
-                          ? "bg-emerald-500/20 text-emerald-300 border-emerald-400"
-                          : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                      }`}
-                    >
-                      <span className="material-symbols-outlined text-[14px]">
-                        {checked ? "check_box" : "check_box_outline_blank"}
-                      </span>
-                      {list.name}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">List Name</label>
                 <input
                   type="text"
-                  value={scanNewListName}
-                  onChange={(e) => setScanNewListName(e.target.value)}
-                  placeholder="e.g. NewCompetitorGroup"
-                  className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
+                  required
+                  value={listModal.name}
+                  onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
+                  placeholder="e.g. Top Simulation Competitors"
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
                 />
               </div>
-            </div>
 
-            {validationResult && (
-              <div className="border border-border-subtle rounded-xl overflow-hidden">
-                <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-semibold text-text-main">
-                    Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
-                    {validationResult.invalidCount} Invalid
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">Notes / Description (Optional)</label>
+                <input
+                  type="text"
+                  value={listModal.description || ""}
+                  onChange={(e) => setListModal({ ...listModal, description: e.target.value })}
+                  placeholder="Optional notes about this competitor group..."
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-text-muted">
+                    Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
                   </span>
-                  {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={handleRemoveInvalidAndDuplicates}
-                      className="text-[11px] text-amber-400 font-semibold hover:underline"
+                      onClick={() =>
+                        setListModal({
+                          ...listModal,
+                          publisherIds: (overview.publishers || []).map((p) => p.id)
+                        })
+                      }
+                      className="text-[11px] text-electric-blue hover:underline"
                     >
-                      Clean Invalid/Duplicates
+                      Select All
                     </button>
-                  )}
-                </div>
-                <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
-                  {validationResult.validation.map((item, idx) => (
-                    <div key={idx} className="px-4 py-2 flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-medium text-text-main truncate">
-                          {item.valid ? item.publisher : item.raw}
-                        </div>
-                        <div className="text-[10px] text-text-muted truncate">
-                          {item.valid ? item.normalizedUrl : item.reason}
-                        </div>
-                      </div>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
-                          !item.valid
-                            ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
-                            : item.duplicate
-                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                            : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                        }`}
-                      >
-                        {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between gap-2 pt-2">
-              <button
-                type="button"
-                disabled={!linksInput.trim() || isValidating}
-                onClick={() => handleValidateLinks(linksInput)}
-                className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
-              >
-                {isValidating ? "Validating..." : "Validate Links"}
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowScannerModal(false)}
-                  className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={!linksInput.trim() || scanStatus.running}
-                  onClick={() => handleStartScan()}
-                  className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
-                >
-                  {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* MODAL 3: ONE-WAY GOOGLE SHEET IMPORTER (z-[100])                      */}
-      {/* ===================================================================== */}
-      {showSheetModal && (
-        <div
-          onClick={() => setShowSheetModal(false)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-main">
-                  One-Way Google Sheet Importer ("Competitor Analysis")
-                </h3>
-                <p className="text-xs text-text-muted">
-                  Import competitor columns and Play Store publisher links from Google Sheets into PostgreSQL.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSheetModal(false)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            {isLoadingSheet ? (
-              <div className="py-10 text-center text-xs text-text-muted">
-                Reading "Competitor Analysis" tab from Google Sheets...
-              </div>
-            ) : sheetPreview ? (
-              <>
-                <div className="grid grid-cols-3 gap-2.5 text-center">
-                  <div className="bg-input-bg rounded-xl p-3">
-                    <div className="text-[10px] text-text-muted">Competitor Columns</div>
-                    <div className="text-base font-semibold text-text-main mt-0.5">{sheetPreview.totalColumns}</div>
-                  </div>
-                  <div className="bg-input-bg rounded-xl p-3">
-                    <div className="text-[10px] text-text-muted">Unique Publishers</div>
-                    <div className="text-base font-semibold text-text-main mt-0.5">
-                      {sheetPreview.uniquePublishersCount}
-                    </div>
-                  </div>
-                  <div className="bg-input-bg rounded-xl p-3">
-                    <div className="text-[10px] text-emerald-400">New to Atlas</div>
-                    <div className="text-base font-semibold text-emerald-400 mt-0.5">
-                      +{sheetPreview.newPublishersCount}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setListModal({ ...listModal, publisherIds: [] })}
+                      className="text-[11px] text-text-muted hover:underline"
+                    >
+                      Clear
+                    </button>
                   </div>
                 </div>
 
-                <div className="max-h-56 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40 text-xs">
-                  {(sheetPreview.columns || []).map((col) => {
-                    const checked = sheetSelectedLists.includes(col.listName);
+                <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+                  {(overview.publishers || []).map((p) => {
+                    const checked = (listModal.publisherIds || []).includes(p.id);
+                    const disp = getDisplayName(p.publisher_name);
                     return (
                       <label
-                        key={col.listName}
-                        className="px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg"
+                        key={p.id}
+                        className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg text-xs"
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <input
                             type="checkbox"
                             checked={checked}
-                            onChange={() =>
-                              setSheetSelectedLists((prev) =>
-                                checked ? prev.filter((n) => n !== col.listName) : [...prev, col.listName]
-                              )
-                            }
+                            onChange={() => {
+                              const cur = listModal.publisherIds || [];
+                              setListModal({
+                                ...listModal,
+                                publisherIds: checked ? cur.filter((id) => id !== p.id) : [...cur, p.id]
+                              });
+                            }}
                           />
                           <div className="min-w-0">
-                            <div className="font-semibold text-text-main truncate">{col.listName}</div>
-                            {col.adsId && <div className="text-[10px] font-mono text-text-muted">{col.adsId}</div>}
+                            <div className="font-medium text-text-main truncate">{disp}</div>
+                            {disp !== p.publisher_name && (
+                              <div className="text-[10px] text-text-muted truncate">Play Store: {p.publisher_name}</div>
+                            )}
                           </div>
                         </div>
-                        <div className="text-right font-mono text-[11px] shrink-0">
-                          <span className="text-text-main">{col.accountCount} accounts</span>
-                          {col.newAccountCount > 0 && (
-                            <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px]">
-                              +{col.newAccountCount} new
-                            </span>
-                          )}
-                        </div>
+                        <span className="text-[11px] font-mono text-text-muted shrink-0">
+                          {p.total_games} games · {formatCompactNumber(p.total_installs)} inst
+                        </span>
                       </label>
                     );
                   })}
                 </div>
+              </div>
 
-                <label className="inline-flex items-center gap-2 text-xs text-text-main cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={sheetAutoScanNew}
-                    onChange={(e) => setSheetAutoScanNew(e.target.checked)}
-                  />
-                  <span>Immediately scan newly imported Play Store publisher accounts</span>
-                </label>
+              <div className="p-3 rounded-xl bg-electric-blue/10 border border-electric-blue/25 flex items-center justify-between gap-3">
+                <div className="text-xs text-text-main">
+                  Want to scan <strong>brand-new Play Store developer links</strong> into this list?
+                </div>
+                <button
+                  type="button"
+                  disabled={!listModal.name.trim() || isSavingList}
+                  onClick={(e) => handleSaveListModal(e, true)}
+                  className="px-3 py-1.5 rounded-lg bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shrink-0 disabled:opacity-50"
+                >
+                  {listModal.mode === "create" ? "Create List & Add New Links →" : "Save & Add New Links →"}
+                </button>
+              </div>
 
-                {sheetImportResult && (
-                  <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs">
-                    Imported {sheetImportResult.publishersCreated} new publisher(s) and added{" "}
-                    {sheetImportResult.membershipsAdded} list membership(s).
-                  </div>
+              <div className="flex items-center justify-between gap-2 pt-2">
+                {listModal.mode === "edit" ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteList(listModal.listId)}
+                    className="px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25"
+                  >
+                    Delete List
+                  </button>
+                ) : (
+                  <div />
                 )}
-
-                <div className="flex items-center justify-end gap-2 pt-2">
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowSheetModal(false)}
-                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-                  >
-                    Close
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isImportingSheet || sheetSelectedLists.length === 0}
-                    onClick={handleConfirmSheetImport}
-                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                  >
-                    {isImportingSheet ? "Importing..." : `Import Selected (${sheetSelectedLists.length} Lists)`}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="py-8 text-center text-xs text-urgent-red">
-                Could not load Google Sheet preview. Check credentials.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* MODAL 4: BATCH COUNTRY AVAILABILITY SCANNER (z-[100])                 */}
-      {/* ===================================================================== */}
-      {showCountryBatchModal && (
-        <div
-          onClick={() => setShowCountryBatchModal(false)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-main">Resumable Batch Country Scanner</h3>
-                <p className="text-xs text-text-muted">
-                  Queue 176-country Play Store availability scans in the background with Pause/Resume support.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowCountryBatchModal(false)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-2 text-xs">
-              <label className="font-medium text-text-muted">Select Scan Scope</label>
-              <label className="p-3 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center gap-2.5 cursor-pointer">
-                <input
-                  type="radio"
-                  name="cqScope"
-                  checked={countryBatchScope === "all"}
-                  onChange={() => setCountryBatchScope("all")}
-                />
-                <div>
-                  <div className="font-semibold text-text-main">
-                    All Play Store Games in Atlas ({overview.summary.uniqueGames})
-                  </div>
-                  <div className="text-[10px] text-text-muted">
-                    Ordered by highest installs first
-                  </div>
-                </div>
-              </label>
-
-              {activeListObj && (
-                <label className="p-3 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center gap-2.5 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="cqScope"
-                    checked={countryBatchScope === "list"}
-                    onChange={() => setCountryBatchScope("list")}
-                  />
-                  <div>
-                    <div className="font-semibold text-text-main">
-                      Active Competitor List: "{activeListObj.name}" ({activeListObj.unique_games} games)
-                    </div>
-                  </div>
-                </label>
-              )}
-
-              {selectedPublisherObj && (
-                <label className="p-3 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center gap-2.5 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="cqScope"
-                    checked={countryBatchScope === "publisher"}
-                    onChange={() => setCountryBatchScope("publisher")}
-                  />
-                  <div>
-                    <div className="font-semibold text-text-main">
-                      Active Publisher: "{getDisplayName(selectedPublisherObj.publisher_name)}" (
-                      {selectedPublisherObj.total_games} games)
-                    </div>
-                  </div>
-                </label>
-              )}
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">
-                Skip games already scanned within the last N days:
-              </label>
-              <select
-                value={countryBatchSkipDays}
-                onChange={(e) => setCountryBatchSkipDays(Number(e.target.value))}
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              >
-                <option value={7}>Skip games scanned in last 7 days (Recommended)</option>
-                <option value={14}>Skip games scanned in last 14 days</option>
-                <option value={30}>Skip games scanned in last 30 days</option>
-                <option value={0}>Force re-scan all games in scope (0 days)</option>
-              </select>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowCountryBatchModal(false)}
-                className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={countryQueueStatus.running}
-                onClick={() => handleStartCountryQueue()}
-                className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-              >
-                {countryQueueStatus.running ? "Queue Running..." : "Start Country Batch Queue"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* MODAL 5: RENAME ACCOUNT & ASSIGN LISTS (z-[100])                      */}
-      {/* ===================================================================== */}
-      {editingPublisher && (
-        <div
-          onClick={() => setEditingPublisher(null)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={handleSavePublisherModal}
-            className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-main">Rename Account &amp; Lists</h3>
-                <p className="text-[11px] text-text-muted">Play Store Publisher: {editingPublisher.publisher_name}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEditingPublisher(null)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">
-                Custom Display Name (Leave blank to use original Play Store name)
-              </label>
-              <input
-                type="text"
-                value={editingPublisher.display_name}
-                onChange={(e) => setEditingPublisher({ ...editingPublisher, display_name: e.target.value })}
-                placeholder={editingPublisher.publisher_name}
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-medium text-text-muted">
-                Competitor Lists (Account can belong to multiple lists)
-              </label>
-              <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
-                {(overview.lists || []).map((list) => {
-                  const checked = (editingPublisher.list_ids || []).includes(list.id);
-                  return (
-                    <label
-                      key={list.id}
-                      className="px-3.5 py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-input-bg text-xs"
-                    >
-                      <span className="text-text-main font-medium">{list.name}</span>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          const cur = editingPublisher.list_ids || [];
-                          setEditingPublisher({
-                            ...editingPublisher,
-                            list_ids: checked ? cur.filter((id) => id !== list.id) : [...cur, list.id]
-                          });
-                        }}
-                      />
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
-                    >
-                      Remove from "{activeListObj.name}"
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDeletePub(editingPublisher)}
-                    className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
-                  >
-                    Delete from Atlas
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2 ml-auto">
-                  <button
-                    type="button"
-                    onClick={() => setEditingPublisher(null)}
+                    onClick={() => setListModal(null)}
                     className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={isSavingPublisher}
+                    disabled={isSavingList}
                     className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
                   >
-                    {isSavingPublisher ? "Saving..." : "Save Changes"}
+                    {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create List" : "Save List"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+
+      {/* MODAL 2: ADD & SCAN PLAY STORE PUBLISHER LINKS (z-[100]) */}
+      {showScannerModal &&
+        createPortal(
+          <div
+            onClick={() => setShowScannerModal(false)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Play Store Publisher Links</h3>
+                  <p className="text-xs text-text-muted">
+                    Paste Play Store developer URLs (`/store/apps/developer?id=...` or `/store/apps/dev?id=...`) or publisher names.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowScannerModal(false)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-text-muted">Play Store Developer URLs or Names (one per line)</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const text = SAMPLE_PLAY_LINKS.join("\n");
+                    setLinksInput(text);
+                    handleValidateLinks(text);
+                  }}
+                  className="text-[11px] font-medium text-electric-blue hover:underline"
+                >
+                  Load Sample Links
+                </button>
+              </div>
+
+              <textarea
+                rows={5}
+                value={linksInput}
+                onChange={(e) => setLinksInput(e.target.value)}
+                placeholder="https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio"
+                className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
+              />
+
+              <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
+                <div className="text-xs font-semibold text-text-main">
+                  Assign Scanned Accounts to Competitor List(s)
+                </div>
+                <div className="flex flex-wrap items-center gap-2 max-h-28 overflow-y-auto">
+                  {(overview.lists || []).map((list) => {
+                    const checked = scanTargetListIds.includes(list.id);
+                    return (
+                      <button
+                        key={list.id}
+                        type="button"
+                        onClick={() =>
+                          setScanTargetListIds((prev) =>
+                            checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
+                          checked
+                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-400"
+                            : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[14px]">
+                          {checked ? "check_box" : "check_box_outline_blank"}
+                        </span>
+                        {list.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
+                  <input
+                    type="text"
+                    value={scanNewListName}
+                    onChange={(e) => setScanNewListName(e.target.value)}
+                    placeholder="e.g. NewCompetitorGroup"
+                    className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
+                  />
+                </div>
+              </div>
+
+              {validationResult && (
+                <div className="border border-border-subtle rounded-xl overflow-hidden">
+                  <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-text-main">
+                      Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
+                      {validationResult.invalidCount} Invalid
+                    </span>
+                    {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveInvalidAndDuplicates}
+                        className="text-[11px] text-amber-400 font-semibold hover:underline"
+                      >
+                        Clean Invalid/Duplicates
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
+                    {validationResult.validation.map((item, idx) => (
+                      <div key={idx} className="px-4 py-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium text-text-main truncate">
+                            {item.valid ? item.publisher : item.raw}
+                          </div>
+                          <div className="text-[10px] text-text-muted truncate">
+                            {item.valid ? item.normalizedUrl : item.reason}
+                          </div>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
+                            !item.valid
+                              ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
+                              : item.duplicate
+                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                              : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                          }`}
+                        >
+                          {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={!linksInput.trim() || isValidating}
+                  onClick={() => handleValidateLinks(linksInput)}
+                  className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
+                >
+                  {isValidating ? "Validating..." : "Validate Links"}
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowScannerModal(false)}
+                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!linksInput.trim() || scanStatus.running}
+                    onClick={() => handleStartScan()}
+                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
+                  >
+                    {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
                   </button>
                 </div>
               </div>
             </div>
-          </form>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
 
-      {/* ===================================================================== */}
-      {/* CONFIRMATION DIALOG (z-[110] — sits above all modals & drawers)       */}
-      {/* ===================================================================== */}
-      {confirmDeletePub && (
-        <div
-          onClick={() => setConfirmDeletePub(null)}
-          className="fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
-        >
+      {/* MODAL 3: ONE-WAY GOOGLE SHEET IMPORTER (z-[100]) */}
+      {showSheetModal &&
+        createPortal(
           <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+            onClick={() => setShowSheetModal(false)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
           >
-            <h4 className="text-sm font-semibold text-text-main">
-              Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
-            </h4>
-            <p className="text-xs text-text-muted">
-              This removes the publisher record from Play Store Intelligence. If you only want to remove it from a Competitor List, uncheck the list instead.
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDeletePub(null)}
-                className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
-                className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
-              >
-                Delete Permanently
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* GAME DETAIL DRAWER (z-[90] — sits above z-[70] top navigation bar)    */}
-      {/* ===================================================================== */}
-      {activeGameDrawer && (
-        <div
-          onClick={() => setActiveGameDrawer(null)}
-          className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3.5">
-                {activeGameDrawer.icon && (
-                  <img
-                    src={activeGameDrawer.icon}
-                    alt=""
-                    className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
-                  />
-                )}
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between">
                 <div>
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                      activeGameDrawer.pricing === "free"
-                        ? "bg-emerald-500/15 text-emerald-400"
-                        : "bg-amber-500/15 text-amber-400"
-                    }`}
-                  >
-                    {activeGameDrawer.pricing === "free"
-                      ? "Free Play Store Title"
-                      : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
-                  </span>
-                  <h3 className="text-base font-semibold text-text-main mt-1">{activeGameDrawer.title}</h3>
-                  <div className="text-xs text-text-muted">{getDisplayName(activeGameDrawer.publisher_name)}</div>
+                  <h3 className="text-base font-semibold text-text-main">
+                    One-Way Google Sheet Importer ("Competitor Analysis")
+                  </h3>
+                  <p className="text-xs text-text-muted">
+                    Import competitor columns and Play Store publisher links from Google Sheets into PostgreSQL.
+                  </p>
                 </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveGameDrawer(null)}
-                className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Package Name</div>
-                <div className="text-[11px] font-mono font-semibold text-text-main mt-0.5 truncate" title={activeGameDrawer.package_name}>
-                  {activeGameDrawer.package_name}
-                </div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Real Installs</div>
-                <div className="text-xs font-mono font-semibold text-emerald-400 mt-0.5">
-                  {activeGameDrawer.real_installs != null
-                    ? Number(activeGameDrawer.real_installs).toLocaleString()
-                    : activeGameDrawer.installs || Number(activeGameDrawer.min_installs || 0).toLocaleString()}
-                </div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Daily Velocity</div>
-                <div className="text-xs font-mono font-semibold text-electric-blue mt-0.5">
-                  {Number(activeGameDrawer.installs_delta_1d) > 0
-                    ? `+${Number(activeGameDrawer.installs_delta_1d).toLocaleString()} / day`
-                    : "—"}
-                </div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
-                <div className="text-xs font-semibold text-text-main mt-0.5">
-                  ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
-                </div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Play Launch Date</div>
-                <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                  {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
-                </div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">First Seen in Atlas</div>
-                <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                  {activeGameDrawer.first_seen_at ? String(activeGameDrawer.first_seen_at).slice(0, 10) : "—"}
-                </div>
-              </div>
-            </div>
-
-            {/* 1-Click Actions inside Drawer */}
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                disabled={refreshingPkg === activeGameDrawer.package_name}
-                onClick={(e) => handleRefreshSingleGame(activeGameDrawer.package_name, e)}
-                className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[16px]">refresh</span>
-                {refreshingPkg === activeGameDrawer.package_name ? "Refreshing..." : "Refresh Telemetry"}
-              </button>
-
-              {activeGameDrawer.country_scan ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    if (onOpenCountryScan) onOpenCountryScan(activeGameDrawer.package_name);
-                  }}
-                  className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
+                  onClick={() => setShowSheetModal(false)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
                 >
-                  <span className="material-symbols-outlined text-[16px]">public</span>
-                  Live in {activeGameDrawer.country_scan.liveCount}/176 Countries
+                  <span className="material-symbols-outlined">close</span>
                 </button>
+              </div>
+
+              {isLoadingSheet ? (
+                <div className="py-10 text-center text-xs text-text-muted">
+                  Reading "Competitor Analysis" tab from Google Sheets...
+                </div>
+              ) : sheetPreview ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2.5 text-center">
+                    <div className="bg-input-bg rounded-xl p-3">
+                      <div className="text-[10px] text-text-muted">Competitor Columns</div>
+                      <div className="text-base font-semibold text-text-main mt-0.5">{sheetPreview.totalColumns}</div>
+                    </div>
+                    <div className="bg-input-bg rounded-xl p-3">
+                      <div className="text-[10px] text-text-muted">Unique Publishers</div>
+                      <div className="text-base font-semibold text-text-main mt-0.5">
+                        {sheetPreview.uniquePublishersCount}
+                      </div>
+                    </div>
+                    <div className="bg-input-bg rounded-xl p-3">
+                      <div className="text-[10px] text-emerald-400">New to Atlas</div>
+                      <div className="text-base font-semibold text-emerald-400 mt-0.5">
+                        +{sheetPreview.newPublishersCount}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="max-h-56 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40 text-xs">
+                    {(sheetPreview.columns || []).map((col) => {
+                      const checked = sheetSelectedLists.includes(col.listName);
+                      return (
+                        <label
+                          key={col.listName}
+                          className="px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setSheetSelectedLists((prev) =>
+                                  checked ? prev.filter((n) => n !== col.listName) : [...prev, col.listName]
+                                )
+                              }
+                            />
+                            <div className="min-w-0">
+                              <div className="font-semibold text-text-main truncate">{col.listName}</div>
+                              {col.adsId && <div className="text-[10px] font-mono text-text-muted">{col.adsId}</div>}
+                            </div>
+                          </div>
+                          <div className="text-right font-mono text-[11px] shrink-0">
+                            <span className="text-text-main">{col.accountCount} accounts</span>
+                            {col.newAccountCount > 0 && (
+                              <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px]">
+                                +{col.newAccountCount} new
+                              </span>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <label className="inline-flex items-center gap-2 text-xs text-text-main cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sheetAutoScanNew}
+                      onChange={(e) => setSheetAutoScanNew(e.target.checked)}
+                    />
+                    <span>Immediately scan newly imported Play Store publisher accounts</span>
+                  </label>
+
+                  {sheetImportResult && (
+                    <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs">
+                      Imported {sheetImportResult.publishersCreated} new publisher(s) and added{" "}
+                      {sheetImportResult.membershipsAdded} list membership(s).
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowSheetModal(false)}
+                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    >
+                      Close
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isImportingSheet || sheetSelectedLists.length === 0}
+                      onClick={handleConfirmSheetImport}
+                      className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+                    >
+                      {isImportingSheet ? "Importing..." : `Import Selected (${sheetSelectedLists.length} Lists)`}
+                    </button>
+                  </div>
+                </>
               ) : (
+                <div className="py-8 text-center text-xs text-urgent-red">
+                  Could not load Google Sheet preview. Check credentials.
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* MODAL 4: BATCH COUNTRY AVAILABILITY SCANNER (z-[100]) */}
+      {showCountryBatchModal &&
+        createPortal(
+          <div
+            onClick={() => setShowCountryBatchModal(false)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-text-main">Resumable Batch Country Scanner</h3>
+                  <p className="text-xs text-text-muted">
+                    Queue 176-country Play Store availability scans in the background with Pause/Resume support.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCountryBatchModal(false)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-2 text-xs">
+                <label className="font-medium text-text-muted">Select Scan Scope</label>
+                <label className="p-3 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="cqScope"
+                    checked={countryBatchScope === "all"}
+                    onChange={() => setCountryBatchScope("all")}
+                  />
+                  <div>
+                    <div className="font-semibold text-text-main">
+                      All Play Store Games in Atlas ({overview.summary.uniqueGames})
+                    </div>
+                    <div className="text-[10px] text-text-muted">
+                      Ordered by highest installs first
+                    </div>
+                  </div>
+                </label>
+
+                {activeListObj && (
+                  <label className="p-3 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="cqScope"
+                      checked={countryBatchScope === "list"}
+                      onChange={() => setCountryBatchScope("list")}
+                    />
+                    <div>
+                      <div className="font-semibold text-text-main">
+                        Active Competitor List: "{activeListObj.name}" ({activeListObj.unique_games} games)
+                      </div>
+                    </div>
+                  </label>
+                )}
+
+                {selectedPublisherObj && (
+                  <label className="p-3 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center gap-2.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="cqScope"
+                      checked={countryBatchScope === "publisher"}
+                      onChange={() => setCountryBatchScope("publisher")}
+                    />
+                    <div>
+                      <div className="font-semibold text-text-main">
+                        Active Publisher: "{getDisplayName(selectedPublisherObj.publisher_name)}" (
+                        {selectedPublisherObj.total_games} games)
+                      </div>
+                    </div>
+                  </label>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">
+                  Skip games already scanned within the last N days:
+                </label>
+                <select
+                  value={countryBatchSkipDays}
+                  onChange={(e) => setCountryBatchSkipDays(Number(e.target.value))}
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
+                >
+                  <option value={7}>Skip games scanned in last 7 days (Recommended)</option>
+                  <option value={14}>Skip games scanned in last 14 days</option>
+                  <option value={30}>Skip games scanned in last 30 days</option>
+                  <option value={0}>Force re-scan all games in scope (0 days)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCountryBatchModal(false)}
+                  className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                >
+                  Cancel
+                </button>
                 <button
                   type="button"
                   disabled={countryQueueStatus.running}
-                  onClick={() =>
-                    handleStartCountryQueue({
-                      scope: "single",
-                      packageName: activeGameDrawer.package_name,
-                      skipDays: 0
-                    })
-                  }
-                  className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  onClick={() => handleStartCountryQueue()}
+                  className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
                 >
-                  <span className="material-symbols-outlined text-[16px]">public</span>
-                  Scan 176 Countries
+                  {countryQueueStatus.running ? "Queue Running..." : "Start Country Batch Queue"}
                 </button>
-              )}
+              </div>
             </div>
+          </div>,
+          document.body
+        )}
 
-            <a
-              href={activeGameDrawer.url}
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-2.5 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-2"
+      {/* MODAL 5: RENAME ACCOUNT & ASSIGN LISTS (z-[100]) */}
+      {editingPublisher &&
+        createPortal(
+          <div
+            onClick={() => setEditingPublisher(null)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <form
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={handleSavePublisherModal}
+              className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
             >
-              Open Listing on Google Play Store
-              <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-            </a>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-text-main">Rename Account &amp; Lists</h3>
+                  <p className="text-[11px] text-text-muted">Play Store Publisher: {editingPublisher.publisher_name}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingPublisher(null)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
 
-            {(() => {
-              const siblings = (gamesByPublisher.get(activeGameDrawer.publisher_name) || []).filter(
-                (g) => g.package_name !== activeGameDrawer.package_name
-              );
-              const dispPub = getDisplayName(activeGameDrawer.publisher_name);
-              return (
-                <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
-                  <h4 className="text-xs font-semibold text-emerald-400">
-                    Other Games by {dispPub} ({siblings.length})
-                  </h4>
-                  <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto">
-                    {siblings.slice(0, 25).map((s) => (
-                      <button
-                        key={s.package_name}
-                        type="button"
-                        onClick={() => setActiveGameDrawer(s)}
-                        className="p-2 rounded-lg bg-input-bg hover:bg-emerald-500/10 flex items-center justify-between gap-2 text-left text-xs"
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">
+                  Custom Display Name (Leave blank to use original Play Store name)
+                </label>
+                <input
+                  type="text"
+                  value={editingPublisher.display_name}
+                  onChange={(e) => setEditingPublisher({ ...editingPublisher, display_name: e.target.value })}
+                  placeholder={editingPublisher.publisher_name}
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-medium text-text-muted">
+                  Competitor Lists (Account can belong to multiple lists)
+                </label>
+                <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+                  {(overview.lists || []).map((list) => {
+                    const checked = (editingPublisher.list_ids || []).includes(list.id);
+                    return (
+                      <label
+                        key={list.id}
+                        className="px-3.5 py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-input-bg text-xs"
                       >
-                        <div className="flex items-center gap-2 min-w-0">
-                          {s.icon && <img src={s.icon} alt="" className="w-6 h-6 rounded object-cover shrink-0" />}
-                          <span className="truncate text-text-main font-medium">{s.title}</span>
-                        </div>
-                        <span className="font-mono text-emerald-400 shrink-0 text-[11px]">
-                          {formatCompactNumber(s.real_installs ?? s.min_installs)} inst ·{" "}
-                          {s.release_date ? String(s.release_date).slice(0, 10) : "—"}
-                        </span>
+                        <span className="text-text-main font-medium">{list.name}</span>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const cur = editingPublisher.list_ids || [];
+                            setEditingPublisher({
+                              ...editingPublisher,
+                              list_ids: checked ? cur.filter((id) => id !== list.id) : [...cur, list.id]
+                            });
+                          }}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
+                      >
+                        Remove from "{activeListObj.name}"
                       </button>
-                    ))}
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeletePub(editingPublisher)}
+                      className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
+                    >
+                      Delete from Atlas
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPublisher(null)}
+                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingPublisher}
+                      className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+                    >
+                      {isSavingPublisher ? "Saving..." : "Save Changes"}
+                    </button>
                   </div>
                 </div>
-              );
-            })()}
-          </div>
-        </div>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+
+      {/* CONFIRMATION DIALOG (z-[110] — sits above all modals & drawers) */}
+      {confirmDeletePub &&
+        createPortal(
+          <div
+            onClick={() => setConfirmDeletePub(null)}
+            className="atlas-google-shell fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+            >
+              <h4 className="text-sm font-semibold text-text-main">
+                Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
+              </h4>
+              <p className="text-xs text-text-muted">
+                This removes the publisher record from Play Store Intelligence. If you only want to remove it from a Competitor List, uncheck the list instead.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeletePub(null)}
+                  className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
+                  className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
+                >
+                  Delete Permanently
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* GAME DETAIL DRAWER (z-[90] via Portal — sits cleanly in front of z-50 top header) */}
+      {activeGameDrawer &&
+        createPortal(
+          <div
+            onClick={() => setActiveGameDrawer(null)}
+            className="atlas-google-shell fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
+          >
+            <aside
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  {activeGameDrawer.icon && (
+                    <img
+                      src={activeGameDrawer.icon}
+                      alt=""
+                      className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                        activeGameDrawer.pricing === "free"
+                          ? "bg-emerald-500/15 text-emerald-400"
+                          : "bg-amber-500/15 text-amber-400"
+                      }`}
+                    >
+                      {activeGameDrawer.pricing === "free"
+                        ? "Free Play Store Title"
+                        : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
+                    </span>
+                    <h3 className="text-base font-semibold text-text-main mt-1 truncate">{activeGameDrawer.title}</h3>
+                    <div className="text-xs text-text-muted truncate">{getDisplayName(activeGameDrawer.publisher_name)}</div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveGameDrawer(null)}
+                  className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Package Name</div>
+                  <div className="text-[11px] font-mono font-semibold text-text-main mt-0.5 truncate" title={activeGameDrawer.package_name}>
+                    {activeGameDrawer.package_name}
+                  </div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Real Installs</div>
+                  <div className="text-xs font-mono font-semibold text-emerald-400 mt-0.5">
+                    {activeGameDrawer.real_installs != null
+                      ? Number(activeGameDrawer.real_installs).toLocaleString()
+                      : activeGameDrawer.installs || Number(activeGameDrawer.min_installs || 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Daily Velocity</div>
+                  <div className="text-xs font-mono font-semibold text-electric-blue mt-0.5">
+                    {Number(activeGameDrawer.installs_delta_1d) > 0
+                      ? `+${Number(activeGameDrawer.installs_delta_1d).toLocaleString()} / day`
+                      : "—"}
+                  </div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
+                  <div className="text-xs font-semibold text-text-main mt-0.5">
+                    ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
+                  </div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Play Launch Date</div>
+                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
+                    {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
+                  </div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">First Seen in Atlas</div>
+                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
+                    {activeGameDrawer.first_seen_at ? String(activeGameDrawer.first_seen_at).slice(0, 10) : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* 1-Click Actions inside Drawer: Refresh, Country Scan, Keywords, and Play Store Link */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={refreshingPkg === activeGameDrawer.package_name}
+                  onClick={(e) => handleRefreshSingleGame(activeGameDrawer.package_name, e)}
+                  className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px]">refresh</span>
+                  {refreshingPkg === activeGameDrawer.package_name ? "Refreshing..." : "Refresh Telemetry"}
+                </button>
+
+                {activeGameDrawer.country_scan ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onOpenCountryScan) onOpenCountryScan(activeGameDrawer.package_name);
+                    }}
+                    className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">public</span>
+                    Live in {activeGameDrawer.country_scan.liveCount}/176 Countries
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={countryQueueStatus.running}
+                    onClick={() =>
+                      handleStartCountryQueue({
+                        scope: "single",
+                        packageName: activeGameDrawer.package_name,
+                        skipDays: 0
+                      })
+                    }
+                    className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">public</span>
+                    Scan 176 Countries
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  data-atlas-keywords="1"
+                  onClick={() =>
+                    setKeywordTarget({
+                      packageName: activeGameDrawer.package_name,
+                      title: activeGameDrawer.title
+                    })
+                  }
+                  className="py-2.5 px-3 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue hover:text-electric-blue transition flex items-center justify-center gap-1.5"
+                >
+                  <span className="material-symbols-outlined text-[16px]">key</span>
+                  Keywords Intelligence
+                </button>
+
+                <a
+                  href={activeGameDrawer.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="py-2.5 px-3 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-1.5"
+                >
+                  Open on Play Store
+                  <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                </a>
+              </div>
+
+              {/* Video Creatives Section (when applicable) */}
+              {(drawerVideosLoading || drawerVideos.length > 0) && (
+                <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="text-xs font-semibold text-electric-blue flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px]">video_library</span>
+                      Video Creatives
+                    </h4>
+                    {!drawerVideosLoading && (
+                      <span className="font-mono text-[10px] text-text-muted bg-input-bg px-2.5 py-0.5 rounded-full border border-border-subtle">
+                        {drawerVideos.length} found
+                      </span>
+                    )}
+                  </div>
+
+                  {drawerVideosLoading ? (
+                    <div className="h-24 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center justify-center gap-2 text-xs text-text-muted">
+                      <span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
+                      Loading video creatives...
+                    </div>
+                  ) : (
+                    <div className="flex overflow-x-auto gap-3 pb-2 snap-x snap-mandatory custom-scrollbar">
+                      {drawerVideos.map((asset) => {
+                        const watchUrl = asset.youtubeUrl || (!asset.mediaUrlExpired ? asset.mediaUrl : null);
+                        const thumbnail = asset.thumbnailUrl || activeGameDrawer.header_image || activeGameDrawer.icon;
+                        return (
+                          <a
+                            key={asset.assetKey || asset.id}
+                            href={watchUrl || "#"}
+                            target={watchUrl ? "_blank" : undefined}
+                            rel={watchUrl ? "noreferrer" : undefined}
+                            onClick={(e) => {
+                              if (!watchUrl) e.preventDefault();
+                            }}
+                            className="group/video relative w-[180px] h-[110px] shrink-0 rounded-xl overflow-hidden snap-start border border-border-subtle bg-black shadow-sm"
+                            title={watchUrl ? "Watch video creative" : "Video link unavailable"}
+                          >
+                            {thumbnail ? (
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={thumbnail}
+                                alt="Video creative"
+                                className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/video:scale-[1.03] transition-transform duration-200"
+                              />
+                            ) : (
+                              <div className="absolute inset-0 flex items-center justify-center text-white/60">
+                                <span className="material-symbols-outlined text-[28px]">movie</span>
+                              </div>
+                            )}
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/10 to-black/10" />
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="w-9 h-9 rounded-full bg-black/60 border border-white/25 backdrop-blur-sm text-white flex items-center justify-center">
+                                <span className="material-symbols-outlined text-[22px] ml-0.5">play_arrow</span>
+                              </span>
+                            </div>
+                            <div className="absolute left-2.5 right-2.5 bottom-2 flex items-center justify-between gap-2 text-white">
+                              <span className="text-[9px] font-medium truncate">
+                                {asset.source === "youtube" ? "YouTube" : "Direct video"}
+                              </span>
+                              <span className="text-[8px] bg-black/60 rounded-full px-1.5 py-0.5 shrink-0">
+                                {Number(asset.adCount) || 0} ads
+                              </span>
+                            </div>
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {(() => {
+                const siblings = (gamesByPublisher.get(activeGameDrawer.publisher_name) || []).filter(
+                  (g) => g.package_name !== activeGameDrawer.package_name
+                );
+                const dispPub = getDisplayName(activeGameDrawer.publisher_name);
+                return (
+                  <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+                    <h4 className="text-xs font-semibold text-emerald-400">
+                      Other Games by {dispPub} ({siblings.length})
+                    </h4>
+                    <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto">
+                      {siblings.slice(0, 25).map((s) => (
+                        <button
+                          key={s.package_name}
+                          type="button"
+                          onClick={() => setActiveGameDrawer(s)}
+                          className="p-2 rounded-lg bg-input-bg hover:bg-emerald-500/10 flex items-center justify-between gap-2 text-left text-xs"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            {s.icon && <img src={s.icon} alt="" className="w-6 h-6 rounded object-cover shrink-0" />}
+                            <span className="truncate text-text-main font-medium">{s.title}</span>
+                          </div>
+                          <span className="font-mono text-emerald-400 shrink-0 text-[11px]">
+                            {formatCompactNumber(s.real_installs ?? s.min_installs)} inst ·{" "}
+                            {s.release_date ? String(s.release_date).slice(0, 10) : "—"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+            </aside>
+          </div>,
+          document.body
+        )}
+
+      {/* KEYWORD INTELLIGENCE MODAL (z-[130] via Portal) */}
+      {keywordTarget && (
+        <KeywordPanel
+          packageName={keywordTarget.packageName}
+          title={keywordTarget.title}
+          onClose={() => setKeywordTarget(null)}
+        />
       )}
     </div>
   );

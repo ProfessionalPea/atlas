@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
 
 const SAMPLE_LINKS = [
@@ -1627,634 +1628,644 @@ export default function AmazonIntelligenceView() {
       {/* Supports switching between ANY existing list OR creating a new list,  */}
       {/* and links directly to Add & Scan New Accounts into that list.         */}
       {/* ===================================================================== */}
-      {listModal && (
-        <div
-          onClick={() => setListModal(null)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={(e) => handleSaveListModal(e, false)}
-            className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+      {listModal &&
+        createPortal(
+          <div
+            onClick={() => setListModal(null)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-text-main">Manage Competitor Lists</h3>
-              <button
-                type="button"
-                onClick={() => setListModal(null)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            {/* Switch between any existing list or "+ Create New List" */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
-              <select
-                value={listModal.mode === "create" ? "new" : listModal.listId}
-                onChange={(e) => handleSelectListInModal(e.target.value)}
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs font-semibold text-text-main"
-              >
-                <option value="new">+ Create New Competitor List</option>
-                {(overview.lists || []).map((l) => (
-                  <option key={l.id} value={l.id}>
-                    Edit List: {l.name} ({l.account_count} accounts)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">List Name</label>
-              <input
-                type="text"
-                required
-                value={listModal.name}
-                onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
-                placeholder="e.g. Ozi Tech"
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">Notes / Description (Optional)</label>
-              <input
-                type="text"
-                value={listModal.description || ""}
-                onChange={(e) => setListModal({ ...listModal, description: e.target.value })}
-                placeholder="Optional notes about this competitor group..."
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-text-muted">
-                  Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setListModal({
-                        ...listModal,
-                        publisherIds: (overview.publishers || []).map((p) => p.id)
-                      })
-                    }
-                    className="text-[11px] text-electric-blue hover:underline"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setListModal({ ...listModal, publisherIds: [] })}
-                    className="text-[11px] text-text-muted hover:underline"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
-                {(overview.publishers || []).map((p) => {
-                  const checked = (listModal.publisherIds || []).includes(p.id);
-                  const disp = getDisplayName(p.publisher_name);
-                  return (
-                    <label
-                      key={p.id}
-                      className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg text-xs"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            const cur = listModal.publisherIds || [];
-                            setListModal({
-                              ...listModal,
-                              publisherIds: checked ? cur.filter((id) => id !== p.id) : [...cur, p.id]
-                            });
-                          }}
-                        />
-                        <div className="min-w-0">
-                          <div className="font-medium text-text-main truncate">{disp}</div>
-                          {disp !== p.publisher_name && (
-                            <div className="text-[10px] text-text-muted truncate">Amazon: {p.publisher_name}</div>
-                          )}
-                        </div>
-                      </div>
-                      <span className="text-[11px] font-mono text-text-muted shrink-0">
-                        {p.total_games} games ({p.free_games}F / {p.paid_games}P)
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Direct Link to Add & Scan New Amazon Accounts into this list */}
-            <div className="p-3 rounded-xl bg-electric-blue/10 border border-electric-blue/25 flex items-center justify-between gap-3">
-              <div className="text-xs text-text-main">
-                Want to scan <strong>brand-new Amazon links</strong> into this list?
-              </div>
-              <button
-                type="button"
-                disabled={!listModal.name.trim() || isSavingList}
-                onClick={(e) => handleSaveListModal(e, true)}
-                className="px-3 py-1.5 rounded-lg bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shrink-0 disabled:opacity-50"
-              >
-                {listModal.mode === "create" ? "Create List & Add New Links →" : "Save & Add New Links →"}
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between gap-2 pt-2">
-              {listModal.mode === "edit" ? (
-                <button
-                  type="button"
-                  onClick={() => handleDeleteList(listModal.listId)}
-                  className="px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25"
-                >
-                  Delete List
-                </button>
-              ) : (
-                <div />
-              )}
-              <div className="flex items-center gap-2">
+            <form
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={(e) => handleSaveListModal(e, false)}
+              className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-text-main">Manage Competitor Lists</h3>
                 <button
                   type="button"
                   onClick={() => setListModal(null)}
-                  className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingList}
-                  className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                >
-                  {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create Empty / Selected List" : "Save List"}
+                  <span className="material-symbols-outlined">close</span>
                 </button>
               </div>
-            </div>
-          </form>
-        </div>
-      )}
 
-      {/* ===================================================================== */}
-      {/* MODAL 2: ADD & SCAN AMAZON ACCOUNTS (z-[100])                         */}
-      {/* Dedicated flow to paste URLs, validate, pick destination list, & scan */}
-      {/* ===================================================================== */}
-      {showScannerModal && (
-        <div
-          onClick={() => setShowScannerModal(false)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Amazon Publisher Links</h3>
-                <p className="text-xs text-text-muted">
-                  Paste one or more Amazon publisher links, choose a destination list, and scan.
-                </p>
+              {/* Switch between any existing list or "+ Create New List" */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
+                <select
+                  value={listModal.mode === "create" ? "new" : listModal.listId}
+                  onChange={(e) => handleSelectListInModal(e.target.value)}
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs font-semibold text-text-main"
+                >
+                  <option value="new">+ Create New Competitor List</option>
+                  {(overview.lists || []).map((l) => (
+                    <option key={l.id} value={l.id}>
+                      Edit List: {l.name} ({l.account_count} accounts)
+                    </option>
+                  ))}
+                </select>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowScannerModal(false)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
 
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-text-muted">Amazon Appstore Publisher URLs (one per line)</span>
-              <button
-                type="button"
-                onClick={() => {
-                  const text = SAMPLE_LINKS.join("\n");
-                  setLinksInput(text);
-                  handleValidateLinks(text);
-                }}
-                className="text-[11px] font-medium text-electric-blue hover:underline"
-              >
-                Load 16 Benchmark Links
-              </button>
-            </div>
-
-            <textarea
-              rows={5}
-              value={linksInput}
-              onChange={(e) => setLinksInput(e.target.value)}
-              placeholder="https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGames%2BStop%2BStudio&search-type=ss"
-              className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
-            />
-
-            {/* Destination List Picker */}
-            <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
-              <div className="text-xs font-semibold text-text-main">
-                Assign Scanned Accounts to Competitor List(s)
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {(overview.lists || []).map((list) => {
-                  const checked = scanTargetListIds.includes(list.id);
-                  return (
-                    <button
-                      key={list.id}
-                      type="button"
-                      onClick={() =>
-                        setScanTargetListIds((prev) =>
-                          checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
-                        )
-                      }
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
-                        checked
-                          ? "bg-amber-500/20 text-amber-300 border-amber-400"
-                          : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                      }`}
-                    >
-                      <span className="material-symbols-outlined text-[14px]">
-                        {checked ? "check_box" : "check_box_outline_blank"}
-                      </span>
-                      {list.name}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">List Name</label>
                 <input
                   type="text"
-                  value={scanNewListName}
-                  onChange={(e) => setScanNewListName(e.target.value)}
+                  required
+                  value={listModal.name}
+                  onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
                   placeholder="e.g. Ozi Tech"
-                  className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
                 />
               </div>
-            </div>
 
-            {validationResult && (
-              <div className="border border-border-subtle rounded-xl overflow-hidden">
-                <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="font-semibold text-text-main">
-                    Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
-                    {validationResult.invalidCount} Invalid
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">Notes / Description (Optional)</label>
+                <input
+                  type="text"
+                  value={listModal.description || ""}
+                  onChange={(e) => setListModal({ ...listModal, description: e.target.value })}
+                  placeholder="Optional notes about this competitor group..."
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-text-muted">
+                    Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
                   </span>
-                  {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={handleRemoveInvalidAndDuplicates}
-                      className="text-[11px] text-amber-400 font-semibold hover:underline"
+                      onClick={() =>
+                        setListModal({
+                          ...listModal,
+                          publisherIds: (overview.publishers || []).map((p) => p.id)
+                        })
+                      }
+                      className="text-[11px] text-electric-blue hover:underline"
                     >
-                      Clean Invalid/Duplicates
+                      Select All
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => setListModal({ ...listModal, publisherIds: [] })}
+                      className="text-[11px] text-text-muted hover:underline"
+                    >
+                      Clear
+                    </button>
+                  </div>
                 </div>
-                <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
-                  {validationResult.validation.map((item) => (
-                    <div key={item.index} className="px-4 py-2 flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-medium text-text-main truncate">
-                          {item.valid ? item.publisher : item.input}
-                        </div>
-                        <div className="text-[10px] text-text-muted truncate">
-                          {item.valid ? item.normalizedUrl : item.error}
-                        </div>
-                      </div>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
-                          !item.valid
-                            ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
-                            : item.duplicate
-                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                            : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                        }`}
+
+                <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+                  {(overview.publishers || []).map((p) => {
+                    const checked = (listModal.publisherIds || []).includes(p.id);
+                    const disp = getDisplayName(p.publisher_name);
+                    return (
+                      <label
+                        key={p.id}
+                        className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg text-xs"
                       >
-                        {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
-                      </span>
-                    </div>
-                  ))}
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const cur = listModal.publisherIds || [];
+                              setListModal({
+                                ...listModal,
+                                publisherIds: checked ? cur.filter((id) => id !== p.id) : [...cur, p.id]
+                              });
+                            }}
+                          />
+                          <div className="min-w-0">
+                            <div className="font-medium text-text-main truncate">{disp}</div>
+                            {disp !== p.publisher_name && (
+                              <div className="text-[10px] text-text-muted truncate">Amazon: {p.publisher_name}</div>
+                            )}
+                          </div>
+                        </div>
+                        <span className="text-[11px] font-mono text-text-muted shrink-0">
+                          {p.total_games} games ({p.free_games}F / {p.paid_games}P)
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
-            )}
 
-            <div className="flex items-center justify-between gap-2 pt-2">
-              <button
-                type="button"
-                disabled={!linksInput.trim() || isValidating}
-                onClick={() => handleValidateLinks(linksInput)}
-                className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
-              >
-                {isValidating ? "Validating..." : "Validate Links"}
-              </button>
-              <div className="flex items-center gap-2">
+              {/* Direct Link to Add & Scan New Amazon Accounts into this list */}
+              <div className="p-3 rounded-xl bg-electric-blue/10 border border-electric-blue/25 flex items-center justify-between gap-3">
+                <div className="text-xs text-text-main">
+                  Want to scan <strong>brand-new Amazon links</strong> into this list?
+                </div>
                 <button
                   type="button"
-                  onClick={() => setShowScannerModal(false)}
-                  className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  disabled={!listModal.name.trim() || isSavingList}
+                  onClick={(e) => handleSaveListModal(e, true)}
+                  className="px-3 py-1.5 rounded-lg bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shrink-0 disabled:opacity-50"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={!linksInput.trim() || scanStatus.running}
-                  onClick={() => handleStartScan()}
-                  className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
-                >
-                  {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
+                  {listModal.mode === "create" ? "Create List & Add New Links →" : "Save & Add New Links →"}
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* ===================================================================== */}
-      {/* MODAL 3: RENAME ACCOUNT & ASSIGN LISTS (z-[100])                      */}
-      {/* ===================================================================== */}
-      {editingPublisher && (
-        <div
-          onClick={() => setEditingPublisher(null)}
-          className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <form
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={handleSavePublisherModal}
-            className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-main">Rename Account &amp; Lists</h3>
-                <p className="text-[11px] text-text-muted">Amazon Brand: {editingPublisher.publisher_name}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEditingPublisher(null)}
-                className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-text-muted">
-                Custom Display Name (Leave blank to use original Amazon name)
-              </label>
-              <input
-                type="text"
-                value={editingPublisher.display_name}
-                onChange={(e) => setEditingPublisher({ ...editingPublisher, display_name: e.target.value })}
-                placeholder={editingPublisher.publisher_name}
-                className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-medium text-text-muted">
-                Competitor Lists (Account can belong to multiple lists)
-              </label>
-              <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
-                {(overview.lists || []).map((list) => {
-                  const checked = (editingPublisher.list_ids || []).includes(list.id);
-                  return (
-                    <label
-                      key={list.id}
-                      className="px-3.5 py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-input-bg text-xs"
-                    >
-                      <span className="text-text-main font-medium">{list.name}</span>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => {
-                          const cur = editingPublisher.list_ids || [];
-                          setEditingPublisher({
-                            ...editingPublisher,
-                            list_ids: checked ? cur.filter((id) => id !== list.id) : [...cur, list.id]
-                          });
-                        }}
-                      />
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
-                    >
-                      Remove from "{activeListObj.name}"
-                    </button>
-                  )}
+              <div className="flex items-center justify-between gap-2 pt-2">
+                {listModal.mode === "edit" ? (
                   <button
                     type="button"
-                    onClick={() => setConfirmDeletePub(editingPublisher)}
-                    className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
+                    onClick={() => handleDeleteList(listModal.listId)}
+                    className="px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25"
                   >
-                    Delete from Atlas
+                    Delete List
                   </button>
-                </div>
-
-                <div className="flex items-center gap-2 ml-auto">
+                ) : (
+                  <div />
+                )}
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setEditingPublisher(null)}
+                    onClick={() => setListModal(null)}
                     className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    disabled={isSavingPublisher}
+                    disabled={isSavingList}
                     className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
                   >
-                    {isSavingPublisher ? "Saving..." : "Save Changes"}
+                    {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create Empty / Selected List" : "Save List"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
+
+      {/* ===================================================================== */}
+      {/* MODAL 2: ADD & SCAN AMAZON ACCOUNTS (z-[100])                         */}
+      {/* Dedicated flow to paste URLs, validate, pick destination list, & scan */}
+      {/* ===================================================================== */}
+      {showScannerModal &&
+        createPortal(
+          <div
+            onClick={() => setShowScannerModal(false)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Amazon Publisher Links</h3>
+                  <p className="text-xs text-text-muted">
+                    Paste one or more Amazon publisher links, choose a destination list, and scan.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowScannerModal(false)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-text-muted">Amazon Appstore Publisher URLs (one per line)</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const text = SAMPLE_LINKS.join("\n");
+                    setLinksInput(text);
+                    handleValidateLinks(text);
+                  }}
+                  className="text-[11px] font-medium text-electric-blue hover:underline"
+                >
+                  Load 16 Benchmark Links
+                </button>
+              </div>
+
+              <textarea
+                rows={5}
+                value={linksInput}
+                onChange={(e) => setLinksInput(e.target.value)}
+                placeholder="https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGames%2BStop%2BStudio&search-type=ss"
+                className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
+              />
+
+              {/* Destination List Picker */}
+              <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
+                <div className="text-xs font-semibold text-text-main">
+                  Assign Scanned Accounts to Competitor List(s)
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(overview.lists || []).map((list) => {
+                    const checked = scanTargetListIds.includes(list.id);
+                    return (
+                      <button
+                        key={list.id}
+                        type="button"
+                        onClick={() =>
+                          setScanTargetListIds((prev) =>
+                            checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
+                          )
+                        }
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
+                          checked
+                            ? "bg-amber-500/20 text-amber-300 border-amber-400"
+                            : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[14px]">
+                          {checked ? "check_box" : "check_box_outline_blank"}
+                        </span>
+                        {list.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
+                  <input
+                    type="text"
+                    value={scanNewListName}
+                    onChange={(e) => setScanNewListName(e.target.value)}
+                    placeholder="e.g. Ozi Tech"
+                    className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
+                  />
+                </div>
+              </div>
+
+              {validationResult && (
+                <div className="border border-border-subtle rounded-xl overflow-hidden">
+                  <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-text-main">
+                      Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
+                      {validationResult.invalidCount} Invalid
+                    </span>
+                    {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveInvalidAndDuplicates}
+                        className="text-[11px] text-amber-400 font-semibold hover:underline"
+                      >
+                        Clean Invalid/Duplicates
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
+                    {validationResult.validation.map((item) => (
+                      <div key={item.index} className="px-4 py-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium text-text-main truncate">
+                            {item.valid ? item.publisher : item.input}
+                          </div>
+                          <div className="text-[10px] text-text-muted truncate">
+                            {item.valid ? item.normalizedUrl : item.error}
+                          </div>
+                        </div>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
+                            !item.valid
+                              ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
+                              : item.duplicate
+                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                              : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                          }`}
+                        >
+                          {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={!linksInput.trim() || isValidating}
+                  onClick={() => handleValidateLinks(linksInput)}
+                  className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
+                >
+                  {isValidating ? "Validating..." : "Validate Links"}
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowScannerModal(false)}
+                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!linksInput.trim() || scanStatus.running}
+                    onClick={() => handleStartScan()}
+                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
+                  >
+                    {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
                   </button>
                 </div>
               </div>
             </div>
-          </form>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
+
+      {/* ===================================================================== */}
+      {/* MODAL 3: RENAME ACCOUNT & ASSIGN LISTS (z-[100])                      */}
+      {/* ===================================================================== */}
+      {editingPublisher &&
+        createPortal(
+          <div
+            onClick={() => setEditingPublisher(null)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <form
+              onClick={(e) => e.stopPropagation()}
+              onSubmit={handleSavePublisherModal}
+              className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-text-main">Rename Account &amp; Lists</h3>
+                  <p className="text-[11px] text-text-muted">Amazon Brand: {editingPublisher.publisher_name}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingPublisher(null)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-muted">
+                  Custom Display Name (Leave blank to use original Amazon name)
+                </label>
+                <input
+                  type="text"
+                  value={editingPublisher.display_name}
+                  onChange={(e) => setEditingPublisher({ ...editingPublisher, display_name: e.target.value })}
+                  placeholder={editingPublisher.publisher_name}
+                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="text-xs font-medium text-text-muted">
+                  Competitor Lists (Account can belong to multiple lists)
+                </label>
+                <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+                  {(overview.lists || []).map((list) => {
+                    const checked = (editingPublisher.list_ids || []).includes(list.id);
+                    return (
+                      <label
+                        key={list.id}
+                        className="px-3.5 py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-input-bg text-xs"
+                      >
+                        <span className="text-text-main font-medium">{list.name}</span>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const cur = editingPublisher.list_ids || [];
+                            setEditingPublisher({
+                              ...editingPublisher,
+                              list_ids: checked ? cur.filter((id) => id !== list.id) : [...cur, list.id]
+                            });
+                          }}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
+                      >
+                        Remove from "{activeListObj.name}"
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeletePub(editingPublisher)}
+                      className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
+                    >
+                      Delete from Atlas
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      type="button"
+                      onClick={() => setEditingPublisher(null)}
+                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingPublisher}
+                      className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+                    >
+                      {isSavingPublisher ? "Saving..." : "Save Changes"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
 
       {/* ===================================================================== */}
       {/* CONFIRMATION DIALOG (z-[110] — sits above all modals & drawers)       */}
       {/* ===================================================================== */}
-      {confirmDeletePub && (
-        <div
-          onClick={() => setConfirmDeletePub(null)}
-          className="fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
-        >
+      {confirmDeletePub &&
+        createPortal(
           <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+            onClick={() => setConfirmDeletePub(null)}
+            className="atlas-google-shell fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
           >
-            <h4 className="text-sm font-semibold text-text-main">
-              Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
-            </h4>
-            <p className="text-xs text-text-muted">
-              This will permanently remove the publisher and its extracted games from Atlas. If you only want to remove it from a Competitor List, uncheck the list instead.
-            </p>
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDeletePub(null)}
-                className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
-                className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
-              >
-                Delete Permanently
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================================================================== */}
-      {/* GAME & PUBLISHER FUNNEL DETAIL DRAWER (z-[90] — above z-[70] header)  */}
-      {/* ===================================================================== */}
-      {activeGameDrawer && (
-        <div
-          onClick={() => setActiveGameDrawer(null)}
-          className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3.5">
-                {activeGameDrawer.icon && (
-                  <img
-                    src={activeGameDrawer.icon}
-                    alt=""
-                    className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
-                  />
-                )}
-                <div>
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                      activeGameDrawer.pricing === "free"
-                        ? "bg-emerald-500/15 text-emerald-400"
-                        : "bg-amber-500/15 text-amber-400"
-                    }`}
-                  >
-                    {activeGameDrawer.pricing === "free"
-                      ? "Free User-Acquisition Title"
-                      : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
-                  </span>
-                  <h3 className="text-base font-semibold text-text-main mt-1">{activeGameDrawer.title}</h3>
-                  <div className="text-xs text-text-muted">{getDisplayName(activeGameDrawer.publisher_name)}</div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveGameDrawer(null)}
-                className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2.5">
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">ASIN</div>
-                <div className="text-xs font-mono font-semibold text-text-main mt-0.5">{activeGameDrawer.asin}</div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
-                <div className="text-xs font-semibold text-text-main mt-0.5">
-                  ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
-                </div>
-              </div>
-              <div className="bg-input-bg rounded-xl p-3">
-                <div className="text-[10px] text-text-muted">Amazon Launch Date</div>
-                <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                  {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
-                </div>
-              </div>
-            </div>
-
-            <a
-              href={activeGameDrawer.url}
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-2.5 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-2"
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
             >
-              Open Listing on Amazon Appstore
-              <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-            </a>
+              <h4 className="text-sm font-semibold text-text-main">
+                Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
+              </h4>
+              <p className="text-xs text-text-muted">
+                This will permanently remove the publisher and its extracted games from Atlas. If you only want to remove it from a Competitor List, uncheck the list instead.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeletePub(null)}
+                  className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
+                  className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
+                >
+                  Delete Permanently
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
 
-            {(() => {
-              const siblings = gamesByPublisher.get(activeGameDrawer.publisher_name) || [];
-              const paidSiblings = siblings.filter((g) => g.pricing === "paid" && g.asin !== activeGameDrawer.asin);
-              const freeSiblings = siblings.filter((g) => g.pricing === "free" && g.asin !== activeGameDrawer.asin);
-              const dispPub = getDisplayName(activeGameDrawer.publisher_name);
-              return (
-                <div className="flex flex-col gap-4 border-t border-border-subtle pt-4">
+      {/* ===================================================================== */}
+      {/* GAME & PUBLISHER FUNNEL DETAIL DRAWER (z-[90] — above z-50 header)    */}
+      {/* ===================================================================== */}
+      {activeGameDrawer &&
+        createPortal(
+          <div
+            onClick={() => setActiveGameDrawer(null)}
+            className="atlas-google-shell fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3.5">
+                  {activeGameDrawer.icon && (
+                    <img
+                      src={activeGameDrawer.icon}
+                      alt=""
+                      className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
+                    />
+                  )}
                   <div>
-                    <h4 className="text-xs font-semibold text-amber-400">
-                      {dispPub}’s Paid Titles ({paidSiblings.length})
-                    </h4>
-                    <p className="text-[11px] text-text-muted mb-2">
-                      Candidate paid games potentially promoted by this publisher’s free catalogue:
-                    </p>
-                    <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
-                      {paidSiblings.slice(0, 15).map((s) => (
-                        <button
-                          key={s.asin}
-                          type="button"
-                          onClick={() => setActiveGameDrawer(s)}
-                          className="p-2 rounded-lg bg-input-bg hover:bg-amber-500/10 flex items-center justify-between gap-2 text-left text-xs"
-                        >
-                          <span className="truncate text-text-main font-medium">{s.title}</span>
-                          <span className="font-mono text-amber-400 shrink-0">
-                            ${Number(s.price || 0).toFixed(2)} · {s.review_count || 0} rev
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <h4 className="text-xs font-semibold text-emerald-400">
-                      {dispPub}’s Top Free Titles ({freeSiblings.length})
-                    </h4>
-                    <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto mt-1.5">
-                      {freeSiblings.slice(0, 15).map((s) => (
-                        <button
-                          key={s.asin}
-                          type="button"
-                          onClick={() => setActiveGameDrawer(s)}
-                          className="p-2 rounded-lg bg-input-bg hover:bg-emerald-500/10 flex items-center justify-between gap-2 text-left text-xs"
-                        >
-                          <span className="truncate text-text-main font-medium">{s.title}</span>
-                          <span className="font-mono text-emerald-400 shrink-0">
-                            FREE · {Number(s.review_count || 0).toLocaleString()} rev
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                        activeGameDrawer.pricing === "free"
+                          ? "bg-emerald-500/15 text-emerald-400"
+                          : "bg-amber-500/15 text-amber-400"
+                      }`}
+                    >
+                      {activeGameDrawer.pricing === "free"
+                        ? "Free User-Acquisition Title"
+                        : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
+                    </span>
+                    <h3 className="text-base font-semibold text-text-main mt-1">{activeGameDrawer.title}</h3>
+                    <div className="text-xs text-text-muted">{getDisplayName(activeGameDrawer.publisher_name)}</div>
                   </div>
                 </div>
-              );
-            })()}
-          </div>
-        </div>
-      )}
+                <button
+                  type="button"
+                  onClick={() => setActiveGameDrawer(null)}
+                  className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
+                >
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">ASIN</div>
+                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">{activeGameDrawer.asin}</div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
+                  <div className="text-xs font-semibold text-text-main mt-0.5">
+                    ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
+                  </div>
+                </div>
+                <div className="bg-input-bg rounded-xl p-3">
+                  <div className="text-[10px] text-text-muted">Amazon Launch Date</div>
+                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
+                    {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
+                  </div>
+                </div>
+              </div>
+
+              <a
+                href={activeGameDrawer.url}
+                target="_blank"
+                rel="noreferrer"
+                className="w-full py-2.5 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-2"
+              >
+                Open Listing on Amazon Appstore
+                <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+              </a>
+
+              {(() => {
+                const siblings = gamesByPublisher.get(activeGameDrawer.publisher_name) || [];
+                const paidSiblings = siblings.filter((g) => g.pricing === "paid" && g.asin !== activeGameDrawer.asin);
+                const freeSiblings = siblings.filter((g) => g.pricing === "free" && g.asin !== activeGameDrawer.asin);
+                const dispPub = getDisplayName(activeGameDrawer.publisher_name);
+                return (
+                  <div className="flex flex-col gap-4 border-t border-border-subtle pt-4">
+                    <div>
+                      <h4 className="text-xs font-semibold text-amber-400">
+                        {dispPub}’s Paid Titles ({paidSiblings.length})
+                      </h4>
+                      <p className="text-[11px] text-text-muted mb-2">
+                        Candidate paid games potentially promoted by this publisher’s free catalogue:
+                      </p>
+                      <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+                        {paidSiblings.slice(0, 15).map((s) => (
+                          <button
+                            key={s.asin}
+                            type="button"
+                            onClick={() => setActiveGameDrawer(s)}
+                            className="p-2 rounded-lg bg-input-bg hover:bg-amber-500/10 flex items-center justify-between gap-2 text-left text-xs"
+                          >
+                            <span className="truncate text-text-main font-medium">{s.title}</span>
+                            <span className="font-mono text-amber-400 shrink-0">
+                              ${Number(s.price || 0).toFixed(2)} · {s.review_count || 0} rev
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="text-xs font-semibold text-emerald-400">
+                        {dispPub}’s Top Free Titles ({freeSiblings.length})
+                      </h4>
+                      <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto mt-1.5">
+                        {freeSiblings.slice(0, 15).map((s) => (
+                          <button
+                            key={s.asin}
+                            type="button"
+                            onClick={() => setActiveGameDrawer(s)}
+                            className="p-2 rounded-lg bg-input-bg hover:bg-emerald-500/10 flex items-center justify-between gap-2 text-left text-xs"
+                          >
+                            <span className="truncate text-text-main font-medium">{s.title}</span>
+                            <span className="font-mono text-emerald-400 shrink-0">
+                              FREE · {Number(s.review_count || 0).toLocaleString()} rev
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

@@ -413,7 +413,7 @@ function VideoLibrary({ onClose }) {
   );
 }
 
-function KeywordPanel({ packageName, title, onClose }) {
+export function KeywordPanel({ packageName, title, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -649,7 +649,7 @@ export default function AtlasIntelligenceLayer() {
         if (!actions || actions.querySelector('[data-atlas-keywords="1"]')) continue;
         const packageName = new URL(playLink.href).searchParams.get('id');
         if (!packageName) continue;
-        const title = drawer.querySelector('h1')?.textContent?.trim() || packageName;
+        const title = drawer.querySelector('h1, h3')?.textContent?.trim() || packageName;
         const button = document.createElement('button');
         button.type = 'button';
         button.dataset.atlasKeywords = '1';
