@@ -4,6 +4,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
+import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 
 // NGROK URL / API base live in apiConfig.js (shared by all modules)
 import { API_BASE } from "./apiConfig.js";
@@ -2594,6 +2595,7 @@ function App() {
         <nav className="w-full flex flex-col items-center gap-1 px-2">
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+            { id: "playStore", icon: "shop", label: "Play Store" },
             { id: "directory", icon: "dataset", label: "Directory" },
             { id: "amazon", icon: "storefront", label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
@@ -3812,6 +3814,11 @@ function App() {
             </motion.div>
           )}
 
+          {/* PLAY STORE INTELLIGENCE TAB */}
+          {activeTab === "playStore" && (
+            <PlayStoreIntelligenceView onOpenCountryScan={(pkg) => handleViewSavedCountryScan(pkg)} />
+          )}
+
           {/* AMAZON APPSTORE INTELLIGENCE TAB */}
           {activeTab === "amazon" && (
             <AmazonIntelligenceView />
@@ -3824,6 +3831,7 @@ function App() {
         <div className="h-[72px] flex items-center justify-around">
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+            { id: "playStore", icon: "shop", label: "Play Store" },
             { id: "directory", icon: "dataset", label: "Directory" },
             { id: "amazon", icon: "storefront", label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },

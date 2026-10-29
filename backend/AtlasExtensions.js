@@ -26,6 +26,11 @@ const {
   initializeAmazonStorage,
   registerAmazonRoutes
 } = require('./AmazonIntelligence');
+const {
+  initializePlayStoreStorage,
+  registerPlayStoreRoutes,
+  syncLegacyAccountsAndCompetitors
+} = require('./PlayStoreIntelligence');
 
 const extensionPool = getDatabasePool();
 
@@ -69,6 +74,9 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
         return function atlasScanStatusBridge(req, res, next) {
           const originalJson = res.json.bind(res);
           res.json = body => {
+            if (body?.isComplete && typeof syncLegacyAccountsAndCompetitors === 'function') {
+              void syncLegacyAccountsAndCompetitors(extensionPool).catch(() => {});
+            }
             res.json = originalJson;
             return originalJson(mergeScanStatus(body));
           };
@@ -89,7 +97,8 @@ async function initialize() {
     await initializeVideoMetadata(extensionPool);
     await initializePlayTelemetryStorage(extensionPool);
     await initializeAmazonStorage(extensionPool);
-    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry + Amazon storage ready.');
+    await initializePlayStoreStorage(extensionPool);
+    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry + Amazon + Play Store Intelligence storage ready.');
   } catch (error) {
     initialized = false;
     console.error('⚠️ [Atlas Intelligence] Initialization failed:', error.message);
@@ -105,6 +114,7 @@ express.application.listen = function atlasExtensionListen(...args) {
     registerVideoLifecycleRoutes({ app: this, pool: extensionPool });
     registerPlayTelemetryRoutes({ app: this, pool: extensionPool });
     registerAmazonRoutes({ app: this, pool: extensionPool });
+    registerPlayStoreRoutes({ app: this, pool: extensionPool });
   }
   void initialize();
   return originalListen.apply(this, args);

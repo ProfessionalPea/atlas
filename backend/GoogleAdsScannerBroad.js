@@ -862,6 +862,55 @@ async function scanCompetitor(
       const adId = idArray[i];
       inspectedCreativeIds.add(adId);
       accounting.markInspected();
+
+      // Paginated Fast-Path: Before opening a full Playwright tab for `adId`, check if `SearchCreatives`
+      // already gave us a lightweight `ads/preview/content.js` URL for this creative. Fetching it via HTTP
+      // takes ~150ms vs ~3-6s for a full browser tab and often reveals the Android package ID immediately!
+      if (previewUrlsByCreative.has(adId)) {
+        const fastPackages = new Set();
+        const fastVideos = new Map();
+        for (const previewUrl of previewUrlsByCreative.get(adId)) {
+          try {
+            const previewRes = await fetch(previewUrl, { signal: AbortSignal.timeout(3500) });
+            if (previewRes.ok) {
+              const previewBody = await previewRes.text();
+              for (const pkg of extractBroadPackages(previewBody)) fastPackages.add(pkg);
+              if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(previewBody)) {
+                for (const asset of extractVideoAssets(previewBody)) mergeVideoAsset(fastVideos, asset);
+              }
+            }
+          } catch {}
+        }
+        if (fastPackages.size > 0) {
+          const uniqueInAd = [...fastPackages];
+          const packageAccounting = accounting.recordPackages(uniqueInAd);
+          sourceDiscoveryTotals.responseBody += uniqueInAd.length;
+          for (const pkg of uniqueInAd) globallyDiscovered.add(String(pkg).trim().toLowerCase());
+          const videoAssets = [...fastVideos.values()];
+          for (const pkg of uniqueInAd) {
+            results.push({
+              creativeId: adId,
+              package: pkg,
+              discoveredPackages: uniqueInAd,
+              videoAssets: uniqueInAd.length === 1 ? videoAssets : []
+            });
+            await onPackageFound(pkg);
+          }
+          emitProgress(
+            accounting.getSnapshot().adsInspected,
+            maxAdsToInspect,
+            `> Ad ${i + 1} (fast preview): discovered ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}; ` +
+              accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found' +
+              (packageAccounting.isDuplicateAd ? ' (duplicate creative)' : '')
+          );
+          if (accounting.hasReachedTarget()) {
+            scanStopReason = 'target_reached';
+            break;
+          }
+          continue;
+        }
+      }
+
       const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
       const adPage = await context.newPage();
       const discovered = new Set();
