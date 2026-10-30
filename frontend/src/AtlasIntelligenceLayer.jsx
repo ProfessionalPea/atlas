@@ -646,7 +646,7 @@ export default function AtlasIntelligenceLayer() {
         const drawer = playLink.closest('aside');
         if (!drawer) continue;
         const actions = playLink.parentElement;
-        if (!actions || actions.querySelector('[data-atlas-keywords="1"]')) continue;
+        if (!actions || actions.querySelector('[data-atlas-keywords="1"]') || drawer.querySelector('[data-atlas-keywords="1"]')) continue;
         const packageName = new URL(playLink.href).searchParams.get('id');
         if (!packageName) continue;
         const title = drawer.querySelector('h1, h3')?.textContent?.trim() || packageName;

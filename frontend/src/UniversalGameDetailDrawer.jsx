@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { API_BASE } from "./apiConfig.js";
 import { KeywordPanel } from "./AtlasIntelligenceLayer.jsx";
-
-const API_BASE = "";
 
 function formatCompactNumber(val) {
   const n = Number(val);
@@ -60,12 +60,12 @@ export default function UniversalGameDetailDrawer({
     let active = true;
     setVideosLoading(true);
 
+    const token = localStorage.getItem("atlas_auth_token") || localStorage.getItem("atlas_token") || "";
+
     fetch(`${API_BASE}/api/video-assets?packageName=${encodeURIComponent(pkg)}`, {
       headers: {
         Accept: "application/json",
-        ...(localStorage.getItem("atlas_token")
-          ? { "x-atlas-token": localStorage.getItem("atlas_token") }
-          : {})
+        ...(token ? { "x-atlas-token": token, Authorization: `Bearer ${token}` } : {})
       }
     })
       .then((res) => (res.ok ? res.json() : []))
@@ -136,13 +136,24 @@ export default function UniversalGameDetailDrawer({
   return (
     <>
       {createPortal(
-        <div
-          onClick={onClose}
-          className="atlas-google-shell fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
-        >
-          <aside
+        <div className="fixed inset-0 z-[90] flex justify-end">
+          {/* Translucent backdrop with blur (does not inherit opaque solid .atlas-google-shell background) */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            onClick={onClose}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+          />
+
+          <motion.aside
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "tween", duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl custom-scrollbar"
+            className="atlas-google-shell relative z-10 w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl custom-scrollbar"
           >
             {/* Header: Icon, Badge, Title, Publisher, Close */}
             <div className="flex items-start justify-between gap-3">
@@ -239,7 +250,7 @@ export default function UniversalGameDetailDrawer({
               <button
                 type="button"
                 disabled={isRefreshing}
-                onClick={(e) => onRefreshTelemetry && onRefreshTelemetry(game.package_name, e)}
+                onClick={(e) => onRefreshTelemetry && onRefreshTelemetry(game, e)}
                 className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
               >
                 <span
@@ -267,6 +278,7 @@ export default function UniversalGameDetailDrawer({
             <div className="grid grid-cols-2 gap-2.5">
               <button
                 type="button"
+                data-atlas-keywords="1"
                 onClick={() =>
                   setKeywordTarget({
                     packageName: game.package_name,
@@ -408,7 +420,7 @@ export default function UniversalGameDetailDrawer({
                 </div>
               </div>
             )}
-          </aside>
+          </motion.aside>
         </div>,
         document.body
       )}

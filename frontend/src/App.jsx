@@ -1989,7 +1989,7 @@ function App() {
   }, []);
 
   const handleRefreshGameTelemetry = useCallback(async (game) => {
-    const pkg = game?.package_name;
+    const pkg = typeof game === "string" ? game : game?.package_name;
     if (!pkg) return;
     setTelemetryRefreshingPkg(pkg);
     try {
@@ -4028,17 +4028,19 @@ function App() {
         })()}
       </AnimatePresence>
 
-      {isDrawerOpen && selectedGame && (
-        <UniversalGameDetailDrawer
-          game={selectedGame}
-          onClose={closeDrawer}
-          onSelectGame={(sibling) => setSelectedGame(sibling)}
-          onRefreshTelemetry={handleRefreshGameTelemetry}
-          isRefreshing={telemetryRefreshingPkg === selectedGame.package_name}
-          onOpenCountryScan={(pkg) => handleStartCountryScan(pkg)}
-          allGames={trending}
-        />
-      )}
+      <AnimatePresence>
+        {isDrawerOpen && selectedGame && (
+          <UniversalGameDetailDrawer
+            game={selectedGame}
+            onClose={closeDrawer}
+            onSelectGame={(sibling) => setSelectedGame(sibling)}
+            onRefreshTelemetry={handleRefreshGameTelemetry}
+            isRefreshing={telemetryRefreshingPkg === selectedGame.package_name}
+            onOpenCountryScan={(pkg) => handleStartCountryScan(pkg)}
+            allGames={trending}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {countryScanModalOpen && (

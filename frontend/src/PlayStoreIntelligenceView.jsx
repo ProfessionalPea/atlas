@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence } from "framer-motion";
 import { API_BASE } from "./apiConfig";
 import { KeywordPanel } from "./AtlasIntelligenceLayer.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
@@ -2873,17 +2874,19 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
         )}
 
       {/* UNIVERSAL GAME DETAIL DRAWER (z-[90] via Portal — sits cleanly in front of z-50 top header) */}
-      {activeGameDrawer && (
-        <UniversalGameDetailDrawer
-          game={activeGameDrawer}
-          onClose={() => setActiveGameDrawer(null)}
-          onSelectGame={(sibling) => setActiveGameDrawer(sibling)}
-          onRefreshTelemetry={handleRefreshSingleGame}
-          isRefreshing={refreshingPkg === activeGameDrawer.package_name}
-          onOpenCountryScan={onOpenCountryScan}
-          allGames={games}
-        />
-      )}
+      <AnimatePresence>
+        {activeGameDrawer && (
+          <UniversalGameDetailDrawer
+            game={activeGameDrawer}
+            onClose={() => setActiveGameDrawer(null)}
+            onSelectGame={(sibling) => setActiveGameDrawer(sibling)}
+            onRefreshTelemetry={handleRefreshSingleGame}
+            isRefreshing={refreshingPkg === activeGameDrawer.package_name}
+            onOpenCountryScan={onOpenCountryScan}
+            allGames={overview?.games || []}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
