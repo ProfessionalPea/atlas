@@ -2,7 +2,6 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useSta
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "./lib/utils";
-import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
@@ -18,14 +17,6 @@ const COUNTRY_SCAN_ANNOUNCED_KEY = "atlas_country_scan_announced";
 const CHART_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6"];
 const FADE_UP = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } };
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-const DIRECTORY_GAME_SORT_OPTIONS = [
-  { id: "activity", label: "Ad Activity" },
-  { id: "installs", label: "Installs" },
-  { id: "newest", label: "Newest" },
-  { id: "rating", label: "Rating" },
-  { id: "az", label: "A–Z" },
-];
 
 const COUNTRY_STATE_META = {
   live: { label: "Live", icon: "check_circle", className: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" },
@@ -619,14 +610,10 @@ function App() {
   const [trending, setTrending] = useState([]);
   const [historyData, setHistoryData] = useState({ data: [], lines: [] });
 
-  const [directorySearch, setDirectorySearch] = useState("");
-  const deferredDirectorySearch = useDeferredValue(directorySearch);
-  const [directoryFilter, setDirectoryFilter] = useState("all"); 
-  const [directoryGameSort, setDirectoryGameSort] = useState("activity");
+  const [globalSearchQuery, setGlobalSearchQuery] = useState("");
+  const deferredGlobalSearchQuery = useDeferredValue(globalSearchQuery);
+  const [playStoreSearchQuery, setPlayStoreSearchQuery] = useState("");
   const [suspendedGames, setSuspendedGames] = useState([]);
-  const [pubSort, setPubSort] = useState("installs"); 
-  const [pubFilterNew, setPubFilterNew] = useState(false); 
-  const [pubFilterComp, setPubFilterComp] = useState("all");
 
   const [expandedNodes, setExpandedNodes] = useState({});
 
@@ -1355,7 +1342,7 @@ function App() {
   }, [activeStatPanel, deferredStatPanelSearch, statCompetitors, statPublishers, statGames]);
 
   const globalSearchResults = useMemo(() => {
-    const query = deferredDirectorySearch.trim().toLowerCase();
+    const query = deferredGlobalSearchQuery.trim().toLowerCase();
     if (query.length < 2) return { games: [], publishers: [], competitors: [] };
 
     const games = statGames.filter((game) =>
@@ -1375,7 +1362,7 @@ function App() {
     ).slice(0, 4);
 
     return { games, publishers, competitors };
-  }, [deferredDirectorySearch, statGames, statPublishers, statCompetitors]);
+  }, [deferredGlobalSearchQuery, statGames, statPublishers, statCompetitors]);
 
   const globalSearchResultCount =
     globalSearchResults.games.length +
@@ -1400,73 +1387,6 @@ function App() {
       return getGameIdentity(a).localeCompare(getGameIdentity(b));
     });
   }, [visibleTrending, trendingSort]);
-
-  const searchLower = deferredDirectorySearch.toLowerCase();
-
-  const filteredGames = useMemo(() => {
-    if (!searchLower) return visibleTrending;
-    return visibleTrending.filter(g => 
-      (g.title || "").toLowerCase().includes(searchLower) || (g.publisher_name || "").toLowerCase().includes(searchLower) || (g.package_name || "").toLowerCase().includes(searchLower)
-    );
-  }, [visibleTrending, searchLower]);
-
-  const sortedDirectoryGames = useMemo(() => {
-    const games = [...filteredGames];
-
-    const getReleaseTime = getGameReleaseTime;
-
-    games.sort((a, b) => {
-      let difference = 0;
-
-      if (directoryGameSort === "activity") {
-        difference = (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0);
-      } else if (directoryGameSort === "installs") {
-        difference = getInstallCount(b) - getInstallCount(a);
-      } else if (directoryGameSort === "newest") {
-        difference = getReleaseTime(b) - getReleaseTime(a);
-      } else if (directoryGameSort === "rating") {
-        difference = (Number(b.rating) || 0) - (Number(a.rating) || 0);
-      } else if (directoryGameSort === "az") {
-        return (a.title || a.package_name || "").localeCompare(b.title || b.package_name || "");
-      }
-
-      if (difference !== 0) return difference;
-      return (a.title || a.package_name || "").localeCompare(b.title || b.package_name || "");
-    });
-
-    return games;
-  }, [filteredGames, directoryGameSort]);
-
-  const filteredCompetitors = useMemo(() => {
-    if (!searchLower) return visibleCompetitorTree;
-    return visibleCompetitorTree.filter(c => 
-      (c.name || "").toLowerCase().includes(searchLower) || (c.ads_id || "").toLowerCase().includes(searchLower)
-    );
-  }, [visibleCompetitorTree, searchLower]);
-
-  const processedAccounts = useMemo(() => {
-    const accounts = [];
-    visibleCompetitorTree.forEach(comp => {
-      (comp.accounts || []).forEach(acc => {
-        if (!searchLower || (acc.publisher_name || "").toLowerCase().includes(searchLower) || (comp.name || "").toLowerCase().includes(searchLower)) {
-          let totalGames = acc.games ? acc.games.length : 0;
-          let totalInstalls = (acc.games || []).reduce((sum, g) => sum + parseInstalls(g.installs), 0);
-          let recentGame = hasRecentGame(acc.games);
-          accounts.push({ ...acc, competitorName: comp.name, competitorId: comp.id, totalGames, totalInstalls, recentGame });
-        }
-      });
-    });
-
-    return accounts.filter(acc => {
-      if (pubFilterNew && !acc.recentGame) return false;
-      if (pubFilterComp !== 'all' && acc.competitorId.toString() !== pubFilterComp.toString()) return false;
-      return true;
-    }).sort((a, b) => {
-      if (pubSort === 'games') return b.totalGames - a.totalGames;
-      if (pubSort === 'installs') return b.totalInstalls - a.totalInstalls;
-      return a.publisher_name.localeCompare(b.publisher_name); 
-    });
-  }, [visibleCompetitorTree, searchLower, pubFilterNew, pubFilterComp, pubSort]);
 
   const handleSaveSettings = async (e) => {
     e.preventDefault(); 
@@ -2134,18 +2054,6 @@ function App() {
     );
   }, [countryScanLibrary, deferredCountryLibrarySearch]);
 
-  const visibleSuspendedGames = useMemo(() => {
-    const query = deferredDirectorySearch.trim().toLowerCase();
-    if (!query) return suspendedGames;
-
-    return suspendedGames.filter(item => {
-      const game = item.game || {};
-      return String(item.appTitle || game.title || "").toLowerCase().includes(query) ||
-        String(item.packageName || game.package_name || "").toLowerCase().includes(query) ||
-        String(item.publisherName || game.publisher_name || "").toLowerCase().includes(query);
-    });
-  }, [suspendedGames, deferredDirectorySearch]);
-
   const countryPerformanceRows = useMemo(() => {
     const query = deferredCountryScanSearch.trim().toLowerCase();
     const rows = (countryScanData?.results || [])
@@ -2259,10 +2167,9 @@ function App() {
     setIsDrawerOpen(true);
   }, []);
 
-  const openDirectoryFromSearch = useCallback((filter, value) => {
-    if (value) setDirectorySearch(value);
-    setDirectoryFilter(filter);
-    setActiveTab("directory");
+  const openPlayStoreFromSearch = useCallback((value) => {
+    if (value) setPlayStoreSearchQuery(value);
+    setActiveTab("playStore");
     setActiveDropdown(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
@@ -2415,26 +2322,24 @@ function App() {
             <div className="flex items-center h-11 rounded-full bg-input-bg border border-transparent focus-within:border-electric-blue/30 focus-within:bg-surface-solid transition-colors px-4 gap-3">
               <span className="material-symbols-outlined text-text-muted text-[20px]">search</span>
               <input
-                value={directorySearch}
-                onFocus={() => { if (directorySearch.trim().length >= 2) setActiveDropdown("globalSearch"); }}
+                value={globalSearchQuery}
+                onFocus={() => { if (globalSearchQuery.trim().length >= 2) setActiveDropdown("globalSearch"); }}
                 onChange={(e) => {
                   const value = e.target.value;
-                  setDirectorySearch(value);
+                  setGlobalSearchQuery(value);
                   setActiveDropdown(value.trim().length >= 2 ? "globalSearch" : null);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    setActiveTab('directory');
-                    setDirectoryFilter('all');
-                    setActiveDropdown(null);
+                    openPlayStoreFromSearch(globalSearchQuery.trim());
                   }
                   if (e.key === 'Escape') setActiveDropdown(null);
                 }}
                 placeholder="Search games, publishers, competitors, packages..."
                 className="flex-1 min-w-0 bg-transparent outline-none text-sm text-text-main placeholder:text-text-muted/80"
               />
-              {directorySearch ? (
-                <button type="button" onClick={() => { setDirectorySearch(""); setActiveDropdown(null); }} className="w-7 h-7 rounded-full hover:bg-surface-glass flex items-center justify-center text-text-muted" aria-label="Clear search">
+              {globalSearchQuery ? (
+                <button type="button" onClick={() => { setGlobalSearchQuery(""); setActiveDropdown(null); }} className="w-7 h-7 rounded-full hover:bg-surface-glass flex items-center justify-center text-text-muted" aria-label="Clear search">
                   <span className="material-symbols-outlined text-[17px]">close</span>
                 </button>
               ) : (
@@ -2443,7 +2348,7 @@ function App() {
             </div>
 
             <AnimatePresence>
-              {activeDropdown === "globalSearch" && directorySearch.trim().length >= 2 && (
+              {activeDropdown === "globalSearch" && globalSearchQuery.trim().length >= 2 && (
                 <motion.div
                   initial={{ opacity: 0, y: -4, scale: 0.99 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -2452,7 +2357,7 @@ function App() {
                   className="absolute top-[52px] left-0 right-0 bg-surface-solid border border-border-subtle rounded-[20px] shadow-xl overflow-hidden z-[70]"
                 >
                   {globalSearchResultCount === 0 ? (
-                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for “{directorySearch.trim()}”.</div>
+                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for “{globalSearchQuery.trim()}”.</div>
                   ) : (
                     <div className="max-h-[430px] overflow-y-auto custom-scrollbar py-2">
                       {globalSearchResults.games.length > 0 && (
@@ -2485,7 +2390,7 @@ function App() {
                             <button
                               type="button"
                               key={`search-pub-${publisher.competitorId}-${publisher.id ?? publisher.publisher_name}-${index}`}
-                              onClick={() => openDirectoryFromSearch("publishers", publisher.publisher_name)}
+                              onClick={() => openPlayStoreFromSearch(publisher.publisher_name)}
                               className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
                             >
                               <span className="material-symbols-outlined text-text-muted text-[20px]">business</span>
@@ -2505,7 +2410,7 @@ function App() {
                             <button
                               type="button"
                               key={`search-comp-${competitor.id ?? competitor.name}`}
-                              onClick={() => openDirectoryFromSearch("competitors", competitor.name)}
+                              onClick={() => openPlayStoreFromSearch(competitor.name)}
                               className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
                             >
                               <span className="material-symbols-outlined text-text-muted text-[20px]">domain</span>
@@ -2520,10 +2425,10 @@ function App() {
 
                       <button
                         type="button"
-                        onClick={() => openDirectoryFromSearch("all", directorySearch.trim())}
+                        onClick={() => openPlayStoreFromSearch(globalSearchQuery.trim())}
                         className="w-full border-t border-border-subtle px-4 py-3 text-left text-xs font-medium text-electric-blue hover:bg-input-bg transition-colors flex items-center justify-between"
                       >
-                        View all results in Directory
+                        View results in Play Store Intelligence
                         <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
                       </button>
                     </div>
@@ -2597,7 +2502,6 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "playStore", icon: "shop", label: "Play Store" },
-            { id: "directory", icon: "dataset", label: "Directory" },
             { id: "amazon", icon: "storefront", label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
@@ -3055,353 +2959,6 @@ function App() {
             </motion.div>
           )}
 
-          {/* DIRECTORY SEARCH TAB */}
-          {activeTab === "directory" && (
-            <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-6 md:gap-8">
-              <div>
-                <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
-                  Master Directory {viewMode === 'latest' && <span className="inline-flex items-center align-middle text-emerald-metric text-xs ml-2 font-medium bg-emerald-metric/10 px-2.5 py-1 rounded-full border border-emerald-metric/15"><span className="inline-block w-1.5 h-1.5 rounded-full bg-current align-middle mr-1.5" aria-hidden="true" />Latest</span>}
-                </h1>
-                <p className="font-body-sm md:font-body-md text-text-muted mt-1">
-                  Full database index of all intercepted competitors, publishers, and games.
-                </p>
-              </div>
-
-              <div className="sticky top-16 md:top-20 z-20 bg-bg-base/95 backdrop-blur-xl py-3 -mx-3 sm:-mx-6 lg:-mx-8 px-3 sm:px-6 lg:px-8 border-b border-border-subtle flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm transition-colors">
-                <div className="flex overflow-x-auto items-center gap-2 custom-scrollbar flex-1 min-w-0">
-                  {[
-                    { id: "all", label: `All (${filteredGames.length + processedAccounts.length + filteredCompetitors.length})` },
-                    { id: "games", label: `Games (${filteredGames.length})` },
-                    { id: "suspended", label: `Suspended (${visibleSuspendedGames.length})` },
-                    { id: "publishers", label: `Publishers (${processedAccounts.length})` },
-                    { id: "competitors", label: `Competitors (${filteredCompetitors.length})` }
-                  ].map(tab => (
-                    <button 
-                      key={tab.id} 
-                      onClick={() => setDirectoryFilter(tab.id)} 
-                      className={cn(
-                        "px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex-shrink-0", 
-                        directoryFilter === tab.id ? "bg-electric-blue text-white" : "bg-surface-glass text-text-muted hover:text-text-main border border-border-subtle shadow-sm"
-                      )}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="relative w-full md:w-80 flex-shrink-0">
-                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">search</span>
-                  <input 
-                    value={directorySearch} 
-                    onChange={(e) => setDirectorySearch(e.target.value)} 
-                    placeholder="Search games, packages..." 
-                    className="w-full bg-surface-solid border border-border-subtle rounded-xl py-2.5 pl-10 pr-9 outline-none focus:ring-2 focus:ring-electric-blue/50 text-text-main shadow-sm font-body-sm transition-shadow text-xs md:text-sm" 
-                  />
-                  {directorySearch && (
-                    <button onClick={() => setDirectorySearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main">
-                      <span className="material-symbols-outlined text-[18px]">close</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {directoryFilter === "suspended" && visibleSuspendedGames.length > 0 && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
-                      <span className="material-symbols-outlined text-urgent-red text-[18px]">block</span>
-                      Suspended games
-                    </h3>
-                    <span className="text-[10px] text-text-muted">Preserved snapshots · reversible</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
-                    {visibleSuspendedGames.map(item => {
-                      const game = item.game || {};
-                      const countryCounts = item.countryScan?.scan?.counts || {};
-                      const suspendedGame = {
-                        ...game,
-                        id: item.gameId || game.id,
-                        title: item.appTitle || game.title,
-                        package_name: item.packageName || game.package_name,
-                        publisher_name: item.publisherName || game.publisher_name,
-                        is_suspended: true,
-                        publisher_url: item.publisherUrl,
-                        suspension_country_scan: item.countryScan || null
-                      };
-
-                      return (
-                        <motion.div
-                          whileHover={{ y: -1 }}
-                          key={item.suspensionId || item.packageName}
-                          onClick={() => handleGameClick(suspendedGame)}
-                          className="bg-surface-glass rounded-2xl border border-urgent-red/25 overflow-hidden shadow-sm hover:border-urgent-red/45 transition-colors cursor-pointer group flex flex-col relative"
-                        >
-                          <div className="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full bg-urgent-red/90 text-white text-[9px] font-medium flex items-center gap-1">
-                            <span className="material-symbols-outlined text-[13px]">block</span>
-                            Suspended
-                          </div>
-
-                          {game.header_image ? (
-                            <div className="h-24 md:h-32 w-full overflow-hidden bg-input-bg relative">
-                              <img loading="lazy" decoding="async" src={game.header_image} alt={suspendedGame.title} className="w-full h-full object-cover opacity-70 grayscale-[20%]" />
-                            </div>
-                          ) : <div className="h-14 bg-urgent-red/5" />}
-
-                          <div className="p-4 flex-1 flex flex-col">
-                            <div className="flex items-start gap-3">
-                              <div className="w-12 h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0">
-                                {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt={suspendedGame.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted h-full flex items-center justify-center">sports_esports</span>}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <h4 className="text-sm font-semibold text-text-main truncate">{suspendedGame.title}</h4>
-                                <p className="text-[10px] text-text-muted mt-0.5 truncate">{suspendedGame.publisher_name || "Unknown publisher"}</p>
-                                <p className="text-[9px] text-text-muted mt-1 font-mono truncate">{suspendedGame.package_name}</p>
-                                <div className="mt-2">
-                                  <PaidBadge item={suspendedGame} compact />
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-2 mt-4">
-                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
-                                <div className="text-[9px] text-text-muted">Rating</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "—"}</div>
-                              </div>
-                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
-                                <div className="text-[9px] text-text-muted">Installs</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "—"}</div>
-                              </div>
-                              <div className="rounded-xl bg-input-bg px-2.5 py-2">
-                                <div className="text-[9px] text-text-muted">Ads</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.ad_count) || 0}</div>
-                              </div>
-                            </div>
-
-                            {item.countryScan?.scan && (
-                              <div className="mt-3 flex flex-wrap gap-1.5">
-                                {[
-                                  ["live", countryCounts.live || 0],
-                                  ["pre_register", countryCounts.pre_register || 0],
-                                  ["unavailable", countryCounts.unavailable || 0],
-                                  ["unknown", countryCounts.unknown || 0]
-                                ].filter(([, count]) => Number(count) > 0).map(([state, count]) => {
-                                  const meta = getCountryStateMeta(state);
-                                  return <span key={state} className={cn("px-2 py-1 rounded-full border text-[9px] font-medium", meta.className)}>{count} {meta.label}</span>;
-                                })}
-                              </div>
-                            )}
-
-                            <div className="mt-4 pt-3 border-t border-border-subtle flex items-center justify-between gap-2">
-                              <div className="text-[9px] text-text-muted min-w-0">
-                                <div>{item.suspendedAt ? `Suspended ${new Date(item.suspendedAt).toLocaleString()}` : "Suspended"}</div>
-                                {item.markedBy && <div className="mt-0.5">by {item.markedBy}</div>}
-                              </div>
-
-                              <div className="flex items-center gap-1.5 flex-shrink-0">
-                                {item.publisherUrl && (
-                                  <a
-                                    href={item.publisherUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    onClick={event => event.stopPropagation()}
-                                    className="w-9 h-9 rounded-full border border-border-subtle bg-input-bg text-text-muted hover:text-electric-blue flex items-center justify-center"
-                                    title="Open publisher on Google Play"
-                                  >
-                                    <span className="material-symbols-outlined text-[17px]">storefront</span>
-                                  </a>
-                                )}
-                                {isAdmin && (
-                                  <button
-                                    type="button"
-                                    onClick={event => handleRestoreSuspendedGame(item, event)}
-                                    disabled={!item.gameId}
-                                    className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-40 flex items-center gap-1.5"
-                                  >
-                                    <span className="material-symbols-outlined text-[16px]">undo</span>
-                                    Restore
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {(directoryFilter === "all" || directoryFilter === "games") && filteredGames.length > 0 && (
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3">
-                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
-                      <span className="material-symbols-outlined text-electric-blue text-[18px]">sports_esports</span> Mobile Games
-                    </h3>
-
-                    <div className="relative self-start sm:self-auto">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveDropdown(activeDropdown === "gameSort" ? null : "gameSort");
-                        }}
-                        className="h-9 px-3 rounded-xl bg-surface-solid border border-border-subtle text-text-main hover:bg-input-bg transition-colors flex items-center gap-2 text-[10px] md:text-xs font-medium min-w-[138px] justify-between"
-                        title="Sort directory games"
-                      >
-                        <span className="flex items-center gap-1.5 min-w-0">
-                          <span className="material-symbols-outlined text-[15px] text-electric-blue">sort</span>
-                          <span className="truncate">{DIRECTORY_GAME_SORT_OPTIONS.find(option => option.id === directoryGameSort)?.label || "Ad Activity"}</span>
-                        </span>
-                        <span className="material-symbols-outlined text-[15px] text-text-muted">expand_more</span>
-                      </button>
-
-                      <AnimatePresence>
-                        {activeDropdown === "gameSort" && (
-                          <motion.div
-                            variants={dropDownAnim}
-                            initial="hidden"
-                            animate="show"
-                            exit="exit"
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute top-full right-0 mt-1 w-44 bg-surface-solid border border-border-subtle rounded-lg shadow-xl overflow-hidden z-50 py-1"
-                          >
-                            {DIRECTORY_GAME_SORT_OPTIONS.map(option => (
-                              <button
-                                key={option.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setDirectoryGameSort(option.id);
-                                  setActiveDropdown(null);
-                                }}
-                                className={cn(
-                                  "w-full text-left px-3 py-2 text-xs font-medium transition-colors",
-                                  directoryGameSort === option.id
-                                    ? "bg-electric-blue/10 text-electric-blue"
-                                    : "text-text-muted hover:text-text-main hover:bg-input-bg"
-                                )}
-                              >
-                                {option.label}
-                              </button>
-                            ))}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
-                    {sortedDirectoryGames.map(game => (
-                      <motion.div whileHover={{ y: -1 }} key={game.id || game.package_name} className="relative">
-                        <GameIntelligenceCard
-                          game={game}
-                          onClick={() => handleGameClick(game)}
-                          onDelete={handleDeleteGame}
-                          onRefreshTelemetry={handleRefreshGameTelemetry}
-                          isAdmin={isAdmin}
-                          isScanning={isScanning}
-                          isRefreshing={telemetryRefreshingPkg === game.package_name}
-                        />
-                      </motion.div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {(directoryFilter === "all" || directoryFilter === "publishers") && processedAccounts.length > 0 && (
-                <div className="space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 md:gap-4">
-                    <h3 className="text-xs text-text-muted font-medium flex items-center gap-2">
-                      <span className="material-symbols-outlined text-electric-blue text-[18px]">folder</span> Publisher accounts
-                    </h3>
-                    
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="relative">
-                        <div onClick={(e) => { e.stopPropagation(); setActiveDropdown(activeDropdown === 'pubGroup' ? null : 'pubGroup'); }}
-                             className="bg-surface-glass backdrop-blur-xl text-text-main border border-border-subtle text-[9px] md:text-[10px] font-bold rounded-lg px-2 md:px-3 py-1.5 outline-none shadow-sm cursor-pointer flex items-center justify-between gap-2 w-[120px] md:min-w-[140px] hover:border-text-muted transition-colors">
-                          <span className="truncate">{pubFilterComp === 'all' ? 'All Groups' : competitorTree.find(c => c.id.toString() === pubFilterComp.toString())?.name || 'All Groups'}</span>
-                          <span className="material-symbols-outlined text-[14px]">expand_more</span>
-                        </div>
-                        <AnimatePresence>
-                          {activeDropdown === 'pubGroup' && (
-                            <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" className="absolute top-full right-0 md:left-0 mt-1 w-48 bg-surface-solid border border-border-subtle rounded-lg shadow-xl max-h-48 overflow-y-auto custom-scrollbar z-50 py-1">
-                               <div onClick={() => { setPubFilterComp('all'); setActiveDropdown(null); }} className="px-3 py-2 text-[10px] font-medium hover:bg-input-bg cursor-pointer">All Groups</div>
-                               {competitorTree.map(c => (
-                                 <div key={c.id} onClick={() => { setPubFilterComp(c.id); setActiveDropdown(null); }} className="px-3 py-2 text-[10px] font-medium hover:bg-input-bg cursor-pointer truncate">
-                                   {c.name}
-                                 </div>
-                               ))}
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-
-                      <button onClick={() => setPubFilterNew(!pubFilterNew)} className={cn("px-2 py-1.5 rounded-lg text-[9px] md:text-[10px] font-medium border transition-colors shadow-sm flex items-center gap-1", pubFilterNew ? "bg-electric-blue/10 text-electric-blue border-electric-blue/20" : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main")}>
-                        <span className="material-symbols-outlined text-[12px] md:text-[14px]">local_fire_department</span> 7d
-                      </button>
-                      <div className="flex bg-surface-glass backdrop-blur-xl rounded-lg border border-border-subtle p-0.5 shadow-sm">
-                        {[ { id: 'name', label: 'A-Z' }, { id: 'games', label: 'Games' }].map(btn => (
-                          <button key={btn.id} onClick={() => setPubSort(btn.id)} className={cn("px-2 py-1 text-[9px] md:text-[10px] font-medium rounded-md transition-all", pubSort === btn.id ? "bg-primary-container text-on-primary-container" : "text-text-muted hover:text-text-main")}>{btn.label}</button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
-                    {processedAccounts.map(acc => {
-                      const encoded = encodeURIComponent(acc.publisher_name).replace(/%20/g, '+');
-                      return (
-                        <motion.div whileHover={{ y: -2 }} key={acc.id} className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-xl p-3 md:p-4 shadow-sm flex flex-col justify-between hover:shadow-lg transition-all gap-3 relative overflow-hidden group">
-                          <div className="flex justify-between items-start min-w-0 relative z-10">
-                            <div className="min-w-0 pr-2">
-                              <h5 className="font-body-sm md:font-body-md font-semibold text-text-main truncate">{acc.publisher_name}</h5>
-                              <p className="font-body-xs text-[10px] md:text-sm text-text-muted truncate">Group: <span className="text-text-main">{acc.competitorName}</span></p>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              {isAdmin && (
-                                <button onClick={(e) => handleNukePublisherData(e, acc.id, acc.publisher_name)} className="text-text-muted hover:text-urgent-red p-1 md:p-1.5 hover:bg-surface-solid rounded-lg transition-colors flex-shrink-0 border border-transparent hover:border-border-subtle shadow-sm" title="Delete publisher data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
-                              )}
-                              <a href={`https://play.google.com/store/apps/developer?id=${encoded}`} target="_blank" rel="noreferrer" className="text-text-muted hover:text-electric-blue p-1 md:p-1.5 hover:bg-surface-solid rounded-lg transition-colors flex-shrink-0 border border-transparent hover:border-border-subtle shadow-sm"><span className="material-symbols-outlined text-[16px] md:text-[18px]">open_in_new</span></a>
-                            </div>
-                          </div>
-                          
-                          <div className="flex items-center gap-2 border-t border-border-subtle/50 pt-2 md:pt-3 relative z-10">
-                            <span className="text-[9px] md:text-[10px] font-medium bg-input-bg text-text-muted border border-border-subtle px-1.5 md:px-2 py-0.5 rounded-full">{acc.totalGames} Games</span>
-                            <span className="text-[9px] md:text-[10px] font-medium bg-input-bg text-text-muted border border-border-subtle px-1.5 md:px-2 py-0.5 rounded-full">{formatInstalls(acc.totalInstalls)} Installs</span>
-                            {acc.recentGame && <span className="text-[9px] md:text-[10px] font-medium bg-electric-blue/10 text-electric-blue px-1.5 md:px-2 py-0.5 rounded-full ml-auto flex items-center gap-1"><span className="material-symbols-outlined text-[12px]">schedule</span>Recent</span>}
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {(directoryFilter === "all" || directoryFilter === "competitors") && filteredCompetitors.length > 0 && (
-                <div className="space-y-4">
-                  <h3 className="text-xs text-text-muted font-medium flex items-center gap-2"><span className="material-symbols-outlined text-primary text-[18px]">corporate_fare</span> Competitor Entities</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
-                    {filteredCompetitors.map(comp => (
-                      <motion.div whileHover={{ y: -2 }} key={comp.id} className="bg-surface-glass backdrop-blur-xl border border-border-subtle rounded-xl p-4 md:p-5 shadow-sm flex items-center justify-between hover:shadow-md transition-all group">
-                        <div className="min-w-0 pr-4">
-                          <h4 className="font-body-sm md:font-body-md font-semibold text-text-main truncate">{comp.name}</h4>
-                          <p className="font-mono text-[10px] md:text-xs text-text-muted mt-0.5 md:mt-1 truncate">{comp.ads_id || "Direct Target"}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {isAdmin && (
-                            <button onClick={(e) => handleNukeCompetitorData(e, comp.id, comp.name)} className="text-text-muted hover:text-urgent-red p-1.5 rounded-lg transition-colors border border-transparent hover:border-border-subtle hover:bg-surface-solid opacity-0 group-hover:opacity-100" title="Delete group data"><span className="material-symbols-outlined text-[16px] md:text-[18px]">delete</span></button>
-                          )}
-                          {isAdmin && (
-                            <button onClick={() => { setSelectedSource(`comp_${comp.id}`); setActiveTab("dashboard"); window.scrollTo(0,0); }} className="bg-surface-solid hover:bg-electric-blue hover:text-white border border-border-subtle px-3 py-1.5 md:px-4 md:py-2 rounded-lg md:rounded-xl text-[10px] md:text-xs font-bold transition-all shadow-sm">Target</button>
-                          )}
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </motion.div>
-          )}
-
           {/* COUNTRY SCAN LIBRARY TAB */}
           {activeTab === "countryScans" && (
             <motion.div
@@ -3817,7 +3374,10 @@ function App() {
 
           {/* PLAY STORE INTELLIGENCE TAB */}
           {activeTab === "playStore" && (
-            <PlayStoreIntelligenceView onOpenCountryScan={(pkg) => handleViewSavedCountryScan(pkg)} />
+            <PlayStoreIntelligenceView
+              onOpenCountryScan={(pkg) => handleViewSavedCountryScan(pkg)}
+              initialSearchQuery={playStoreSearchQuery}
+            />
           )}
 
           {/* AMAZON APPSTORE INTELLIGENCE TAB */}
@@ -3833,7 +3393,6 @@ function App() {
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "playStore", icon: "shop", label: "Play Store" },
-            { id: "directory", icon: "dataset", label: "Directory" },
             { id: "amazon", icon: "storefront", label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },

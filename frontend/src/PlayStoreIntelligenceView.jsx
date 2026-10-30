@@ -88,7 +88,10 @@ function getPublisherSyncState(pub) {
   };
 }
 
-export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
+export default function PlayStoreIntelligenceView({
+  onOpenCountryScan,
+  initialSearchQuery = ""
+}) {
   const fetcher = useCallback((url, options = {}) => {
     const token = localStorage.getItem("atlas_auth_token");
     return fetch(url, {
@@ -127,8 +130,14 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
   const [selectedListId, setSelectedListId] = useState("all"); // "all" | "ungrouped" | number
   const [selectedPublisher, setSelectedPublisher] = useState("all");
   const [selectedPricing, setSelectedPricing] = useState("all"); // all | free | paid
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery || "");
   const [sortBy, setSortBy] = useState("installs"); // installs | delta | release | first_seen | reviews | rating
+
+  useEffect(() => {
+    if (initialSearchQuery) {
+      setSearchQuery(initialSearchQuery);
+    }
+  }, [initialSearchQuery]);
 
   // Launch Duration / Date Filter state (separating Play Store Launch Date vs. First Discovered in Atlas)
   const [dateBasis, setDateBasis] = useState("release_date"); // "release_date" | "first_seen_at"
