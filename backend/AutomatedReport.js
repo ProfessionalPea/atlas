@@ -32,8 +32,11 @@ function installEmailRetirementGuard() {
 
     express.application[method] = function retiredEmailRouteGuard(path, ...handlers) {
       if (typeof path === "string" && EMAIL_ROUTE.test(path)) {
-        // Do not register the legacy saved-recipient endpoints at all.
-        return this;
+        // Return clean empty payload so frontend requests don't error out with 404
+        if (method === "get") {
+          return original.call(this, path, (_req, res) => res.json([]));
+        }
+        return original.call(this, path, (_req, res) => res.json({ success: true, retired: true }));
       }
 
       if (method === "post" && path === "/api/scan") {

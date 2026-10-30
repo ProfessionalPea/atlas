@@ -433,7 +433,21 @@ function parseInputLinks(raw) {
   return String(raw || '').split(/[\r\n]+/).map((s) => s.trim()).filter(Boolean);
 }
 
+// In-memory TTL cache for /api/amazon/overview so repeated tab switches and page reloads respond in <5ms
+let amazonOverviewCache = { payload: null, expiresAt: 0 };
+function invalidateAmazonOverviewCache() {
+  amazonOverviewCache = { payload: null, expiresAt: 0 };
+}
+
 function registerAmazonRoutes({ app, pool }) {
+  // Invalidate overview cache automatically whenever any Amazon mutation runs
+  app.use('/api/amazon', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'OPTIONS') {
+      res.on('finish', () => invalidateAmazonOverviewCache());
+    }
+    next();
+  });
+
   app.post('/api/amazon/validate', (req, res) => {
     const links = parseInputLinks(req.body?.links || req.body?.urls || '');
     const validation = validateBatch(links);
@@ -449,8 +463,14 @@ function registerAmazonRoutes({ app, pool }) {
     });
   });
 
-  app.get('/api/amazon/overview', async (_req, res) => {
+  app.get('/api/amazon/overview', async (req, res) => {
     try {
+      res.set('Cache-Control', 'no-store');
+      const forceFresh = req.query?.fresh === '1';
+      if (!forceFresh && amazonOverviewCache.payload && amazonOverviewCache.expiresAt > Date.now()) {
+        return res.json(amazonOverviewCache.payload);
+      }
+
       const [pubsRes, gamesRes, snapsRes, listsRes, membershipsRes] = await Promise.all([
         pool.query(`
           SELECT *
@@ -566,7 +586,7 @@ function registerAmazonRoutes({ app, pool }) {
       const unknownGames = uniqueGamesArr.filter((g) => g.pricing === 'unknown').length;
       const totalReviews = uniqueGamesArr.reduce((s, g) => s + (Number(g.review_count) || 0), 0);
 
-      res.json({
+      const payload = {
         summary: {
           publisherCount: publishers.length,
           listCount: lists.length,
@@ -583,7 +603,12 @@ function registerAmazonRoutes({ app, pool }) {
         publishers,
         games,
         snapshots: snapsRes.rows
-      });
+      };
+      amazonOverviewCache = {
+        payload,
+        expiresAt: Date.now() + 90000
+      };
+      res.json(payload);
     } catch (err) {
       console.error('[Amazon Overview Error]:', err);
       res.status(500).json({ error: 'Failed to load Amazon intelligence overview.' });
@@ -751,6 +776,7 @@ function registerAmazonRoutes({ app, pool }) {
                 failedLinks: [...failedLinks],
                 log: `> ${r.status === 'complete' || gamesCount > 0 ? '✔' : '⚠'} ${r.publisher} (${r.status}${r.statusDetail ? ': ' + r.statusDetail : ''}): saved ${gamesCount} games (${r.stats?.free || 0} free, ${r.stats?.paid || 0} paid).`
               };
+              invalidateAmazonOverviewCache();
             }
           }
         );
@@ -781,6 +807,7 @@ function registerAmazonRoutes({ app, pool }) {
                 : `> 🎉 Amazon scan complete! Synchronized ${savedGamesTotal} games across ${doneCount} publisher(s).`
           };
         }
+        invalidateAmazonOverviewCache();
       } catch (err) {
         console.error('[Amazon Batch Scan Error]:', err);
         amazonScanStatus = {

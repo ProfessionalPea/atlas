@@ -105,10 +105,10 @@ function createDatabaseConfig() {
 function getDatabasePool() {
   if (sharedPool) return sharedPool;
 
-  const requestedMax = Number(process.env.ATLAS_DB_POOL_MAX || 10);
-  const max = Number.isInteger(requestedMax) && requestedMax >= 1 && requestedMax <= 20
+  const requestedMax = Number(process.env.ATLAS_DB_POOL_MAX || 18);
+  const max = Number.isInteger(requestedMax) && requestedMax >= 1 && requestedMax <= 30
     ? requestedMax
-    : 10;
+    : 18;
 
   const connectionConfig = process.env.DATABASE_URL
     ? createDatabaseConfig()

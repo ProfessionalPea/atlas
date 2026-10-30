@@ -1266,6 +1266,7 @@ async function processCountryBatchLoop(pool) {
           countryBatchQueue.currentCountryCode = p.currentCountry || null;
         });
         countryBatchQueue.completedPackages += 1;
+        invalidatePlayOverviewCache();
         countryBatchQueue.log = `> ✔ [${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title}: Live in ${res.counts.live}/${COUNTRY_CODES.length} countries.`;
       } catch (err) {
         countryBatchQueue.completedPackages += 1;
@@ -1292,7 +1293,20 @@ async function processCountryBatchLoop(pool) {
   }
 }
 
+// In-memory TTL cache for /api/play/overview so repeated tab switches and page reloads respond in <5ms
+let playOverviewCache = { payload: null, expiresAt: 0 };
+function invalidatePlayOverviewCache() {
+  playOverviewCache = { payload: null, expiresAt: 0 };
+}
+
 function registerPlayStoreRoutes({ app, pool }) {
+  // Invalidate overview cache automatically whenever any Play Store mutation runs
+  app.use('/api/play', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'OPTIONS') {
+      res.on('finish', () => invalidatePlayOverviewCache());
+    }
+    next();
+  });
   // 1. Validate Play Store publisher links
   app.post('/api/play/validate', (req, res) => {
     const links = parseInputLinks(req.body?.links || req.body?.urls || '');
@@ -1310,9 +1324,14 @@ function registerPlayStoreRoutes({ app, pool }) {
   });
 
   // 2. Full Play Store Intelligence Overview
-  app.get('/api/play/overview', async (_req, res) => {
+  app.get('/api/play/overview', async (req, res) => {
     try {
       res.set('Cache-Control', 'no-store');
+      const forceFresh = req.query?.fresh === '1';
+      if (!forceFresh && playOverviewCache.payload && playOverviewCache.expiresAt > Date.now()) {
+        return res.json(playOverviewCache.payload);
+      }
+
       const [pubsRes, listsRes, membershipsRes, gamesRes, snapsRes, countryLatestRes] = await Promise.all([
         pool.query(`
           SELECT *
@@ -1340,8 +1359,6 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.rating,
             g.ratings_count,
             g.icon,
-            g.header_image,
-            g.short_description,
             g.installs,
             g.installs_tier,
             g.min_installs,
@@ -1516,7 +1533,7 @@ function registerPlayStoreRoutes({ app, pool }) {
       const totalReviews = uniqueGamesArr.reduce((s, g) => s + (Number(g.review_count) || 0), 0);
       const countryScannedGames = uniqueGamesArr.filter((g) => Boolean(g.country_scan)).length;
 
-      res.json({
+      const payload = {
         summary: {
           publisherCount: publishers.length,
           listCount: lists.length,
@@ -1534,7 +1551,12 @@ function registerPlayStoreRoutes({ app, pool }) {
         publishers,
         games,
         snapshots: snapsRes.rows
-      });
+      };
+      playOverviewCache = {
+        payload,
+        expiresAt: Date.now() + 90000
+      };
+      res.json(payload);
     } catch (err) {
       console.error('[Play Overview Error]:', err);
       res.status(500).json({ error: 'Failed to load Play Store intelligence overview.' });
@@ -1857,6 +1879,7 @@ function registerPlayStoreRoutes({ app, pool }) {
             failedLinks: [...failedLinks],
             log: `> ${result.status === 'complete' ? '✔' : '⚠'} [${doneCount}/${validTargets.length}] ${result.publisher}: ${gamesCount} games (${newCount} newly discovered).`
           };
+          invalidatePlayOverviewCache();
         }
 
         if (activePlayScanCancelled) {
