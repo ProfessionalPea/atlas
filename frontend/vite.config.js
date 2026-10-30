@@ -46,40 +46,6 @@ function atlasProductPolishBridge() {
       if (normalizedId.endsWith('/src/App.jsx')) {
         let next = code
 
-        // Replace the dense multi-series telemetry chart with a compact,
-        // decision-oriented change summary and remove the chart dependency from
-        // the main bundle.
-        next = replaceRequired(
-          next,
-          'import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";',
-          '',
-          'remove Recharts import'
-        )
-        next = replaceRequired(
-          next,
-          'import { cn } from "./lib/utils";',
-          'import { cn } from "./lib/utils";\nimport CompetitivePulse from "./CompetitivePulse.jsx";',
-          'import CompetitivePulse'
-        )
-        next = replaceRequired(
-          next,
-          /const CHART_COLORS = \[[^\n]+\];\r?\n/,
-          '',
-          'remove chart palette'
-        )
-        next = replaceRequired(
-          next,
-          /const DashboardTelemetry = memo\(function DashboardTelemetry\([\s\S]*?\r?\n\}\);\r?\n\r?\nconst TrendingTargets/,
-          'const TrendingTargets',
-          'remove telemetry component'
-        )
-        next = replaceRequired(
-          next,
-          '<DashboardTelemetry historyData={historyData} isDarkMode={isDarkMode} />',
-          '<CompetitivePulse historyData={historyData} />',
-          'render discovery pulse'
-        )
-
         // The testing-era reset control is no longer part of the production
         // scan workflow.
         next = replaceRequired(

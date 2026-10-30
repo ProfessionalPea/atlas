@@ -1,10 +1,40 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { cn } from "./lib/utils";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
+
+// Authentic platform SVG brand marks
+function GooglePlayIcon({ className = "w-5 h-5" }) {
+  return (
+    <svg viewBox="0 0 512 512" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M48.8 19.3C44.7 23.5 42.4 29.8 42.4 38v436c0 8.2 2.3 14.5 6.4 18.7l2.1 1.9L295.3 250v-5.2L50.9 17.4l-2.1 1.9z" fill="#00C1A6"/>
+      <path d="M377.3 332.2l-82-82v-5.2l82-82 1.8 1 97.4 55.4c27.8 15.8 27.8 41.7 0 57.5l-97.4 55.4-1.8 0.9z" fill="#FFCE00"/>
+      <path d="M295.3 244.6L50.9 1.9C47.8 -1.2 43.4 -0.5 40.5 2.4l254.8 242.2z" fill="#0083FF"/>
+      <path d="M295.3 267.4L40.5 509.6c2.9 2.9 7.3 3.6 10.4 0.5l244.4-242.7z" fill="#FF3333"/>
+    </svg>
+  );
+}
+
+function AmazonAppstoreIcon({ className = "w-5 h-5" }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M13.9 14.8c-.8.7-1.8 1.1-2.9 1.1-1.6 0-2.8-.8-3.4-1.8-.4-.7-.5-1.5-.5-2.5 0-2.2 1.4-3.8 3.8-3.8.9 0 1.8.2 2.5.6v-.6c0-1.1-.7-1.7-2-1.7-.8 0-1.6.3-2.3.8l-.7-1.2C9.4 5.1 10.6 4.6 12 4.6c2.4 0 3.8 1.2 3.8 3.4v5.4c0 .5.1.9.2 1.2h-1.8c-.1-.3-.2-.7-.3-1zm-.5-1.5v-2.3c-.6-.3-1.3-.5-2-.5-1.4 0-2.2.8-2.2 2.1 0 1.2.7 1.9 1.9 1.9.9 0 1.7-.5 2.3-1.2z"
+        fill="currentColor"
+      />
+      <path
+        d="M19.4 18.2c-2.4 1.8-5.8 2.8-9.4 2.8-4.4 0-8.2-1.4-10-3.6-.2-.2 0-.5.2-.4 3.7 2.1 8 3.3 12.4 3.3 3.5 0 7-1 9.9-2.7.4-.2.7.2.4.5l-3.5.1z"
+        fill="#FF9900"
+      />
+      <path
+        d="M20.5 16.9c-.3-.4-1.9-.2-2.8 0-.3 0-.3-.3 0-.5 1.5-1 4-1.2 4.4-.7.4.4-.1 3-1.5 4.1-.3.2-.5.1-.4-.2.4-.8.6-2.3.3-2.7z"
+        fill="#FF9900"
+      />
+    </svg>
+  );
+}
 
 // NGROK URL / API base live in apiConfig.js (shared by all modules)
 import { API_BASE } from "./apiConfig.js";
@@ -14,7 +44,6 @@ const AUTH_USER_KEY = "atlas_auth_user";
 const COUNTRY_SCAN_JOB_KEY = "atlas_country_scan_job";
 const COUNTRY_SCAN_ANNOUNCED_KEY = "atlas_country_scan_announced";
 
-const CHART_COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6"];
 const FADE_UP = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } };
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -209,133 +238,6 @@ function getCompetitorForGame(game, competitorTree) {
   }
   return null;
 }
-
-function processHistoryData(rawHistory) {
-  if (!rawHistory || rawHistory.length === 0) return { data: [], lines: [] };
-
-  const datesMap = {};
-  const competitorNames = new Set();
-
-  rawHistory.forEach((row) => {
-    const d = new Date(row.scan_date);
-    const shortDate = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    if (!datesMap[shortDate]) {
-      datesMap[shortDate] = { date: shortDate, _time: d.getTime(), raw: {} };
-    }
-    if (row.name) {
-      datesMap[shortDate].raw[row.name] = Number(row.total_ads) || 0;
-      competitorNames.add(row.name);
-    }
-  });
-
-  const sortedDates = Object.values(datesMap).sort((a, b) => a._time - b._time);
-  const lines = Array.from(competitorNames);
-  const lastKnownValues = {};
-
-  const normalizedData = sortedDates.map((entry) => {
-    const point = { date: entry.date };
-    lines.forEach((name) => {
-      if (entry.raw[name] !== undefined) {
-        lastKnownValues[name] = entry.raw[name];
-        point[name] = entry.raw[name];
-      } else if (lastKnownValues[name] !== undefined) {
-        point[name] = lastKnownValues[name];
-      } else {
-        point[name] = 0;
-      }
-    });
-    return point;
-  });
-
-  return { data: normalizedData, lines };
-}
-
-const DashboardTelemetry = memo(function DashboardTelemetry({ historyData, isDarkMode }) {
-  return (
-    <motion.section
-      variants={FADE_UP}
-      className="w-full bg-surface-solid border border-border-subtle rounded-[24px] shadow-sm p-4 md:p-6 h-[340px] md:h-[420px] flex flex-col overflow-hidden"
-    >
-      <div className="flex items-start justify-between gap-4 mb-4 md:mb-6">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-electric-blue text-[21px]">monitoring</span>
-            <h2 className="text-sm md:text-base font-semibold text-text-main tracking-tight">Game Discovery Telemetry</h2>
-          </div>
-          <p className="text-[11px] md:text-xs text-text-muted mt-1 ml-0 md:ml-[29px]">Total unique games discovered per competitor over time</p>
-        </div>
-        <div className="flex items-center gap-2 rounded-full bg-input-bg border border-border-subtle px-3 py-1.5 text-[10px] md:text-xs text-text-muted flex-shrink-0">
-          <span className="w-2 h-2 rounded-full bg-electric-blue"></span>
-          Live data
-        </div>
-      </div>
-
-      <div className="flex-1 w-full min-h-0">
-        {historyData.data.length > 0 ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={historyData.data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
-              <defs>
-                {historyData.lines.map((competitorName, index) => (
-                  <linearGradient key={competitorName} id={`color${index}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0.18}/>
-                    <stop offset="95%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0}/>
-                  </linearGradient>
-                ))}
-              </defs>
-              <CartesianGrid strokeDasharray="2 5" vertical={false} stroke={isDarkMode ? '#3c4043' : '#e5e7eb'} />
-              <XAxis
-                dataKey="date"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: isDarkMode ? '#9aa0a6' : '#6b7280', fontSize: 10, fontFamily: 'Inter, sans-serif' }}
-                dy={10}
-              />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: isDarkMode ? '#9aa0a6' : '#6b7280', fontSize: 10, fontFamily: 'Inter, sans-serif' }}
-              />
-              <Tooltip
-                itemSorter={(item) => -Number(item.value || 0)}
-                cursor={{ stroke: isDarkMode ? '#5f6368' : '#d1d5db', strokeDasharray: '4 4' }}
-                contentStyle={{
-                  backgroundColor: isDarkMode ? '#303134' : '#ffffff',
-                  border: `1px solid ${isDarkMode ? '#5f6368' : '#e5e7eb'}`,
-                  borderRadius: '14px',
-                  color: isDarkMode ? '#e8eaed' : '#202124',
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
-                  padding: '10px 12px',
-                }}
-                itemStyle={{ fontSize: '12px', fontWeight: 600 }}
-                labelStyle={{ color: isDarkMode ? '#bdc1c6' : '#5f6368', marginBottom: '6px', fontSize: '11px' }}
-              />
-              {historyData.lines.map((competitorName, index) => (
-                <Area
-                  key={competitorName}
-                  connectNulls
-                  type="monotone"
-                  dataKey={competitorName}
-                  stroke={CHART_COLORS[index % CHART_COLORS.length]}
-                  strokeWidth={2.5}
-                  fillOpacity={1}
-                  fill={`url(#color${index})`}
-                  activeDot={{ r: 4, strokeWidth: 2, stroke: isDarkMode ? '#202124' : '#ffffff' }}
-                />
-              ))}
-            </AreaChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center text-text-muted">
-            <div className="w-12 h-12 rounded-full bg-input-bg flex items-center justify-center mb-3">
-              <span className="material-symbols-outlined text-2xl">show_chart</span>
-            </div>
-            <p className="text-xs">Run scans to build telemetry.</p>
-          </div>
-        )}
-      </div>
-    </motion.section>
-  );
-});
 
 const TrendingTargets = memo(function TrendingTargets({
   sortedTrending,
@@ -608,7 +510,6 @@ function App() {
   const [stats, setStats] = useState({ competitors: 0, accounts: 0, games: 0 });
   const [competitorTree, setCompetitorTree] = useState([]);
   const [trending, setTrending] = useState([]);
-  const [historyData, setHistoryData] = useState({ data: [], lines: [] });
 
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const deferredGlobalSearchQuery = useDeferredValue(globalSearchQuery);
@@ -794,7 +695,6 @@ function App() {
       fetchJson(`${API_BASE}/api/lists`).then(data => setTargetLists(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/saved-competitors`).then(data => setSavedCompetitors(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/emails`).then(data => setEmailLists(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/competitor-history`).then(data => setHistoryData(processHistoryData(Array.isArray(data) ? data : []))),
       fetchJson(`${API_BASE}/api/settings`).then(data => { if (data && !data.error) setSettings(prev => ({ ...prev, ...data })); }),
       fetchJson(`${API_BASE}/api/country-scans`).then(data => setCountryScanLibrary(Array.isArray(data) ? data : [])),
       fetchJson(`${API_BASE}/api/suspended-games`).then(data => setSuspendedGames(Array.isArray(data) ? data : [])),
@@ -2501,8 +2401,8 @@ function App() {
         <nav className="w-full flex flex-col items-center gap-1 px-2">
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
-            { id: "playStore", icon: "shop", label: "Play Store" },
-            { id: "amazon", icon: "storefront", label: "Amazon" },
+            { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
+            { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
@@ -2517,7 +2417,11 @@ function App() {
                 "w-14 h-8 rounded-full flex items-center justify-center transition-colors",
                 activeTab === tab.id ? "bg-primary-container text-on-primary-container" : "text-text-muted group-hover:bg-input-bg group-hover:text-text-main"
               )}>
-                <span className="material-symbols-outlined text-[21px]">{tab.icon}</span>
+                {tab.customIcon ? (
+                  <tab.customIcon className="w-5 h-5 flex-shrink-0" />
+                ) : (
+                  <span className="material-symbols-outlined text-[21px]">{tab.icon}</span>
+                )}
               </span>
               <span className={cn("text-[9px] font-medium", activeTab === tab.id ? "text-text-main" : "text-text-muted")}>{tab.label}</span>
             </button>
@@ -2931,8 +2835,6 @@ function App() {
                   );
                 })}
               </div>
-
-              <DashboardTelemetry historyData={historyData} isDarkMode={isDarkMode} />
 
               <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-5">
                 <TrendingTargets
@@ -3377,12 +3279,15 @@ function App() {
             <PlayStoreIntelligenceView
               onOpenCountryScan={(pkg) => handleViewSavedCountryScan(pkg)}
               initialSearchQuery={playStoreSearchQuery}
+              isAdmin={isAdmin}
             />
           )}
 
           {/* AMAZON APPSTORE INTELLIGENCE TAB */}
           {activeTab === "amazon" && (
-            <AmazonIntelligenceView />
+            <AmazonIntelligenceView
+              isAdmin={isAdmin}
+            />
           )}
 
         </main>
@@ -3392,8 +3297,8 @@ function App() {
         <div className="h-[72px] flex items-center justify-around">
           {[
             { id: "dashboard", icon: "dashboard", label: "Dashboard" },
-            { id: "playStore", icon: "shop", label: "Play Store" },
-            { id: "amazon", icon: "storefront", label: "Amazon" },
+            { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
+            { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
             { id: "countryScans", icon: "public", label: "Country Scans" },
             { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
@@ -3403,7 +3308,11 @@ function App() {
                 "w-14 h-8 rounded-full flex items-center justify-center transition-colors",
                 activeTab === tab.id ? "bg-primary-container text-on-primary-container" : "text-text-muted"
               )}>
-                <span className="material-symbols-outlined text-[20px]">{tab.icon}</span>
+                {tab.customIcon ? (
+                  <tab.customIcon className="w-5 h-5 flex-shrink-0" />
+                ) : (
+                  <span className="material-symbols-outlined text-[20px]">{tab.icon}</span>
+                )}
               </span>
               <span className={cn("text-[9px] font-medium", activeTab === tab.id ? "text-text-main" : "text-text-muted")}>{tab.label}</span>
             </button>
@@ -3597,6 +3506,7 @@ function App() {
             isRefreshing={telemetryRefreshingPkg === selectedGame.package_name}
             onOpenCountryScan={(pkg) => handleStartCountryScan(pkg)}
             allGames={trending}
+            isAdmin={isAdmin}
           />
         )}
       </AnimatePresence>

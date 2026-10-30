@@ -98,7 +98,7 @@ function getPublisherSyncState(pub) {
   };
 }
 
-export default function AmazonIntelligenceView() {
+export default function AmazonIntelligenceView({ isAdmin = false }) {
   const fetcher = useCallback((url, options = {}) => {
     const token = localStorage.getItem("atlas_auth_token");
     return fetch(url, {
@@ -790,29 +790,33 @@ export default function AmazonIntelligenceView() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => openListManager(activeListObj || null)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
-          >
-            <span className="material-symbols-outlined text-[16px]">folder_managed</span>
-            Manage Lists ({overview.lists.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (activeListObj) {
-                setScanTargetListIds([activeListObj.id]);
-              } else {
-                setScanTargetListIds([]);
-              }
-              setShowScannerModal(true);
-            }}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition shadow-sm"
-          >
-            <span className="material-symbols-outlined text-[17px]">add_link</span>
-            Add &amp; Scan Accounts
-          </button>
+          {isAdmin && (
+            <>
+              <button
+                type="button"
+                onClick={() => openListManager(activeListObj || null)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
+              >
+                <span className="material-symbols-outlined text-[16px]">folder_managed</span>
+                Manage Lists ({overview.lists.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeListObj) {
+                    setScanTargetListIds([activeListObj.id]);
+                  } else {
+                    setScanTargetListIds([]);
+                  }
+                  setShowScannerModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition shadow-sm"
+              >
+                <span className="material-symbols-outlined text-[17px]">add_link</span>
+                Add &amp; Scan Accounts
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={exportCsv}
@@ -872,27 +876,29 @@ export default function AmazonIntelligenceView() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                {!scanStatus.running && Array.isArray(scanStatus.failedLinks) && scanStatus.failedLinks.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => handleStartScan({ links: scanStatus.failedLinks })}
-                    className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1"
-                  >
-                    <span className="material-symbols-outlined text-[14px]">refresh</span>
-                    Retry Failed ({scanStatus.failedLinks.length})
-                  </button>
-                )}
-                {scanStatus.running && (
-                  <button
-                    type="button"
-                    onClick={handleCancelScan}
-                    className="px-3.5 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition"
-                  >
-                    Abort &amp; Save Collected
-                  </button>
-                )}
-              </div>
+              {isAdmin && (
+                <div className="flex items-center gap-2 shrink-0">
+                  {!scanStatus.running && Array.isArray(scanStatus.failedLinks) && scanStatus.failedLinks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleStartScan({ links: scanStatus.failedLinks })}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">refresh</span>
+                      Retry Failed ({scanStatus.failedLinks.length})
+                    </button>
+                  )}
+                  {scanStatus.running && (
+                    <button
+                      type="button"
+                      onClick={handleCancelScan}
+                      className="px-3.5 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition"
+                    >
+                      Abort &amp; Save Collected
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Visual Progress Bar */}
@@ -914,108 +920,112 @@ export default function AmazonIntelligenceView() {
         )}
 
       {/* COMPETITOR LISTS & LAUNCH DATE FILTER BAR */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3.5">
-        {/* Row 1: Competitor Lists */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mr-1">
-              Competitor List:
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedListId("all");
-                setSelectedPublisher("all");
-              }}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 border ${
-                selectedListId === "all"
-                  ? "bg-electric-blue text-white border-electric-blue"
-                  : "bg-input-bg text-text-muted border-border-subtle hover:text-text-main"
-              }`}
-            >
-              <span>All Accounts</span>
-              <span className="px-1.5 py-0.2 rounded bg-black/20 text-[10px] font-mono">
-                {overview.publishers.length}
+      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3.5 shadow-sm">
+        {/* Row 1: Competitor List & Publisher Account Dropdowns */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Competitor List Dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
+                <span className="material-symbols-outlined text-[15px]">folder</span>
+                Competitor:
               </span>
-            </button>
-
-            {(overview.lists || []).map((list) => {
-              const isActive = Number(selectedListId) === Number(list.id);
-              return (
-                <div
-                  key={list.id}
-                  className={`inline-flex items-center rounded-xl text-xs font-semibold border transition overflow-hidden ${
-                    isActive
-                      ? "bg-amber-500 text-slate-950 border-amber-400"
-                      : "bg-input-bg text-text-main border-border-subtle hover:border-amber-500/40"
-                  }`}
+              <div className="relative">
+                <select
+                  value={selectedListId}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedListId(val === "all" || val === "ungrouped" ? val : Number(val));
+                    setSelectedPublisher("all");
+                  }}
+                  className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer"
                 >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedListId(isActive ? "all" : list.id);
-                      setSelectedPublisher("all");
-                    }}
-                    className="px-3 py-1.5 flex items-center gap-1.5"
-                  >
-                    <span className="material-symbols-outlined text-[14px]">folder</span>
-                    <span>{list.name}</span>
-                    <span
-                      className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
-                        isActive ? "bg-black/15 text-slate-950" : "bg-bg-base text-text-muted"
-                      }`}
-                    >
-                      {list.account_count}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openListManager(list);
-                    }}
-                    title={`Edit "${list.name}"`}
-                    className={`px-2 py-1.5 border-l ${
-                      isActive
-                        ? "border-black/15 hover:bg-black/10 text-slate-950"
-                        : "border-border-subtle hover:bg-surface-solid text-text-muted hover:text-text-main"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[13px]">edit</span>
-                  </button>
-                </div>
-              );
-            })}
+                  <option value="all">All Competitors ({overview.publishers.length} accounts)</option>
+                  {(overview.lists || []).map((list) => (
+                    <option key={list.id} value={list.id}>
+                      {list.name} ({list.account_count} accounts)
+                    </option>
+                  ))}
+                  {ungroupedCount > 0 && (
+                    <option value="ungrouped">Ungrouped Accounts ({ungroupedCount})</option>
+                  )}
+                </select>
+                <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                  unfold_more
+                </span>
+              </div>
+            </div>
 
-            {ungroupedCount > 0 && (
+            {/* Publisher Account Dropdown */}
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
+                <span className="material-symbols-outlined text-[15px]">storefront</span>
+                Publisher:
+              </span>
+              <div className="relative">
+                <select
+                  value={selectedPublisher}
+                  onChange={(e) => setSelectedPublisher(e.target.value)}
+                  className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer max-w-[260px] truncate"
+                >
+                  <option value="all">All Accounts ({visiblePublishers.length})</option>
+                  {visiblePublishers.map((pub) => (
+                    <option key={pub.id} value={pub.publisher_name}>
+                      {getDisplayName(pub.publisher_name)} ({pub.game_count || 0} games)
+                    </option>
+                  ))}
+                </select>
+                <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                  unfold_more
+                </span>
+              </div>
+            </div>
+
+            {/* Reset Filters button if any filter active */}
+            {(selectedListId !== "all" || selectedPublisher !== "all" || durationPreset !== "all") && (
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedListId(selectedListId === "ungrouped" ? "all" : "ungrouped");
+                  setSelectedListId("all");
                   setSelectedPublisher("all");
+                  setDurationPreset("all");
                 }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 border ${
-                  selectedListId === "ungrouped"
-                    ? "bg-electric-blue text-white border-electric-blue"
-                    : "bg-input-bg text-text-muted border-border-subtle hover:text-text-main"
-                }`}
+                className="h-8 px-2.5 rounded-lg bg-surface-glass border border-border-subtle hover:border-urgent-red/40 text-text-muted hover:text-urgent-red text-xs font-medium transition flex items-center gap-1"
+                title="Reset all filters to show everything"
               >
-                <span>Ungrouped</span>
-                <span className="px-1.5 py-0.2 rounded bg-black/20 text-[10px] font-mono">{ungroupedCount}</span>
+                <span className="material-symbols-outlined text-[14px]">filter_alt_off</span>
+                Reset
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={() => openListManager(null)}
-              className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-input-bg border border-dashed border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue transition inline-flex items-center gap-1"
-            >
-              <span className="material-symbols-outlined text-[14px]">add</span>
-              New List
-            </button>
+            {/* Admin Shortcuts: Edit / New list */}
+            {isAdmin && (
+              <div className="flex items-center gap-1.5 ml-1">
+                {activeListObj && (
+                  <button
+                    type="button"
+                    onClick={() => openListManager(activeListObj)}
+                    title={`Edit list "${activeListObj.name}"`}
+                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle hover:border-amber-500/40 text-text-main text-xs font-semibold transition flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">edit</span>
+                    Edit List
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => openListManager(null)}
+                  className="h-8 px-2.5 rounded-lg bg-input-bg border border-dashed border-border-subtle text-text-muted hover:text-amber-400 hover:border-amber-400 transition flex items-center gap-1 text-xs font-semibold"
+                >
+                  <span className="material-symbols-outlined text-[14px]">add</span>
+                  New List
+                </button>
+              </div>
+            )}
           </div>
 
-          {activeListObj && (
+          {/* Admin List Quick Action buttons */}
+          {isAdmin && activeListObj && (
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -1309,42 +1319,44 @@ export default function AmazonIntelligenceView() {
                         </div>
                       </button>
 
-                      <div className="flex items-center gap-0.5 shrink-0">
-                        <button
-                          type="button"
-                          disabled={scanStatus.running}
-                          onClick={() => handleRescanPublisher(pub)}
-                          title={`Re-scan ${dispName}`}
-                          className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
-                        >
-                          <span className="material-symbols-outlined text-[15px]">refresh</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setEditingPublisher({
-                              id: pub.id,
-                              publisher_name: pub.publisher_name,
-                              display_name: pub.display_name || "",
-                              list_ids: Array.isArray(pub.list_ids) ? [...pub.list_ids] : []
-                            })
-                          }
-                          title="Rename account or assign to Competitor Lists"
-                          className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-text-main transition"
-                        >
-                          <span className="material-symbols-outlined text-[15px]">edit</span>
-                        </button>
-                        {activeListObj && (
+                      {isAdmin && (
+                        <div className="flex items-center gap-0.5 shrink-0">
                           <button
                             type="button"
-                            onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
-                            title={`Remove "${dispName}" from list "${activeListObj.name}"`}
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                            disabled={scanStatus.running}
+                            onClick={() => handleRescanPublisher(pub)}
+                            title={`Re-scan ${dispName}`}
+                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
                           >
-                            <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                            <span className="material-symbols-outlined text-[15px]">refresh</span>
                           </button>
-                        )}
-                      </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditingPublisher({
+                                id: pub.id,
+                                publisher_name: pub.publisher_name,
+                                display_name: pub.display_name || "",
+                                list_ids: Array.isArray(pub.list_ids) ? [...pub.list_ids] : []
+                              })
+                            }
+                            title="Rename account or assign to Competitor Lists"
+                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-text-main transition"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">edit</span>
+                          </button>
+                          {activeListObj && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
+                              title={`Remove "${dispName}" from list "${activeListObj.name}"`}
+                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                            >
+                              <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* Stacked Bar */}
@@ -1420,28 +1432,32 @@ export default function AmazonIntelligenceView() {
               {selectedPublisherObj.display_name && (
                 <span className="text-xs text-text-muted">(Amazon: {selectedPublisherObj.publisher_name})</span>
               )}
-              <button
-                type="button"
-                disabled={scanStatus.running}
-                onClick={() => handleRescanPublisher(selectedPublisherObj)}
-                className="text-xs text-amber-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[14px]">refresh</span> Re-scan
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setEditingPublisher({
-                    id: selectedPublisherObj.id,
-                    publisher_name: selectedPublisherObj.publisher_name,
-                    display_name: selectedPublisherObj.display_name || "",
-                    list_ids: Array.isArray(selectedPublisherObj.list_ids) ? [...selectedPublisherObj.list_ids] : []
-                  })
-                }
-                className="text-xs text-electric-blue hover:underline inline-flex items-center gap-1"
-              >
-                <span className="material-symbols-outlined text-[14px]">edit</span> Rename / Lists
-              </button>
+              {isAdmin && (
+                <>
+                  <button
+                    type="button"
+                    disabled={scanStatus.running}
+                    onClick={() => handleRescanPublisher(selectedPublisherObj)}
+                    className="text-xs text-amber-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">refresh</span> Re-scan
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEditingPublisher({
+                        id: selectedPublisherObj.id,
+                        publisher_name: selectedPublisherObj.publisher_name,
+                        display_name: selectedPublisherObj.display_name || "",
+                        list_ids: Array.isArray(selectedPublisherObj.list_ids) ? [...selectedPublisherObj.list_ids] : []
+                      })
+                    }
+                    className="text-xs text-electric-blue hover:underline inline-flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">edit</span> Rename / Lists
+                  </button>
+                </>
+              )}
               <a
                 href={selectedPublisherObj.source_url}
                 target="_blank"

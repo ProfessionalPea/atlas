@@ -20,7 +20,8 @@ export default function UniversalGameDetailDrawer({
   onRefreshTelemetry,
   isRefreshing = false,
   onOpenCountryScan,
-  allGames = []
+  allGames = [],
+  isAdmin = false
 }) {
   const [keywordTarget, setKeywordTarget] = useState(null);
   const [videos, setVideos] = useState([]);
@@ -245,34 +246,50 @@ export default function UniversalGameDetailDrawer({
               </div>
             </div>
 
-            {/* 4 Action Buttons (2x2 Grid) */}
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                disabled={isRefreshing}
-                onClick={(e) => onRefreshTelemetry && onRefreshTelemetry(game, e)}
-                className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                <span
-                  className={`material-symbols-outlined text-[16px] ${
-                    isRefreshing ? "animate-spin" : ""
-                  }`}
+            {/* Action Buttons */}
+            <div className={`grid ${isAdmin ? "grid-cols-2" : "grid-cols-1 sm:grid-cols-2"} gap-2.5`}>
+              {isAdmin && (
+                <button
+                  type="button"
+                  disabled={isRefreshing}
+                  onClick={(e) => onRefreshTelemetry && onRefreshTelemetry(game, e)}
+                  className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                 >
-                  refresh
-                </span>
-                {isRefreshing ? "Refreshing..." : "Refresh Telemetry"}
-              </button>
+                  <span
+                    className={`material-symbols-outlined text-[16px] ${
+                      isRefreshing ? "animate-spin" : ""
+                    }`}
+                  >
+                    refresh
+                  </span>
+                  {isRefreshing ? "Refreshing..." : "Refresh Telemetry"}
+                </button>
+              )}
 
-              <button
-                type="button"
-                onClick={() => onOpenCountryScan && onOpenCountryScan(game.package_name)}
-                className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
-              >
-                <span className="material-symbols-outlined text-[16px]">public</span>
-                {countryLiveCount != null
-                  ? `Live in ${countryLiveCount}/176 Countries`
-                  : "Scan 176 Countries"}
-              </button>
+              {countryLiveCount != null ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenCountryScan && onOpenCountryScan(game.package_name)}
+                  className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
+                >
+                  <span className="material-symbols-outlined text-[16px]">public</span>
+                  Live in {countryLiveCount}/176 Countries
+                </button>
+              ) : isAdmin ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenCountryScan && onOpenCountryScan(game.package_name)}
+                  className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
+                >
+                  <span className="material-symbols-outlined text-[16px]">public</span>
+                  Scan 176 Countries
+                </button>
+              ) : (
+                <div className="py-2.5 px-3 rounded-xl bg-input-bg border border-border-subtle text-text-muted text-xs font-medium flex items-center justify-center gap-1.5 select-none">
+                  <span className="material-symbols-outlined text-[16px]">public</span>
+                  No country scan data
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2.5">
