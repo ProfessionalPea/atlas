@@ -586,6 +586,39 @@ function registerAmazonRoutes({ app, pool }) {
       const unknownGames = uniqueGamesArr.filter((g) => g.pricing === 'unknown').length;
       const totalReviews = uniqueGamesArr.reduce((s, g) => s + (Number(g.review_count) || 0), 0);
 
+      // Fetch competitor groups / batches (e.g. 'Bahria' containing Trenzy + Gaminator)
+      let competitorGroups = [];
+      try {
+        const groupsRes = await pool.query(`
+          SELECT 
+            g.id,
+            g.name,
+            COALESCE(array_agg(c.id) FILTER (WHERE c.id IS NOT NULL), '{}') AS competitor_ids,
+            COALESCE(array_agg(c.name) FILTER (WHERE c.name IS NOT NULL), '{}') AS competitor_names
+          FROM competitor_groups g
+          LEFT JOIN competitor_group_members gm ON g.id = gm.group_id
+          LEFT JOIN competitors c ON gm.competitor_id = c.id
+          GROUP BY g.id
+          ORDER BY g.name ASC
+        `);
+        competitorGroups = (groupsRes.rows || []).map((row) => {
+          const matchedLists = lists.filter((l) => (row.competitor_ids || []).includes(l.competitor_id));
+          const pubIdSet = new Set();
+          matchedLists.forEach((l) => (l.publisher_ids || []).forEach((pId) => pubIdSet.add(pId)));
+          return {
+            id: row.id,
+            name: row.name,
+            competitor_ids: row.competitor_ids || [],
+            competitor_names: row.competitor_names || [],
+            list_ids: matchedLists.map((l) => l.id),
+            publisher_ids: Array.from(pubIdSet),
+            account_count: pubIdSet.size
+          };
+        });
+      } catch (_gErr) {
+        // Table might not exist yet if not initialized
+      }
+
       const payload = {
         summary: {
           publisherCount: publishers.length,
@@ -600,6 +633,7 @@ function registerAmazonRoutes({ app, pool }) {
           totalReviews
         },
         lists,
+        competitorGroups,
         publishers,
         games,
         snapshots: snapsRes.rows

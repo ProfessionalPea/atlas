@@ -3,36 +3,30 @@ import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { cn } from "./lib/utils";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
+import MarketIntelligenceView from "./MarketIntelligenceView.jsx";
+import CreativesView from "./CreativesView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
-// Authentic platform SVG brand marks
+// Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {
   return (
-    <svg viewBox="0 0 512 512" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M48.8 19.3C44.7 23.5 42.4 29.8 42.4 38v436c0 8.2 2.3 14.5 6.4 18.7l2.1 1.9L295.3 250v-5.2L50.9 17.4l-2.1 1.9z" fill="#00C1A6"/>
-      <path d="M377.3 332.2l-82-82v-5.2l82-82 1.8 1 97.4 55.4c27.8 15.8 27.8 41.7 0 57.5l-97.4 55.4-1.8 0.9z" fill="#FFCE00"/>
-      <path d="M295.3 244.6L50.9 1.9C47.8 -1.2 43.4 -0.5 40.5 2.4l254.8 242.2z" fill="#0083FF"/>
-      <path d="M295.3 267.4L40.5 509.6c2.9 2.9 7.3 3.6 10.4 0.5l244.4-242.7z" fill="#FF3333"/>
-    </svg>
+    <img
+      src="/assets/playstore.png"
+      alt="Google Play"
+      className={cn("object-contain select-none", className)}
+      loading="eager"
+    />
   );
 }
 
 function AmazonAppstoreIcon({ className = "w-5 h-5" }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path
-        d="M13.9 14.8c-.8.7-1.8 1.1-2.9 1.1-1.6 0-2.8-.8-3.4-1.8-.4-.7-.5-1.5-.5-2.5 0-2.2 1.4-3.8 3.8-3.8.9 0 1.8.2 2.5.6v-.6c0-1.1-.7-1.7-2-1.7-.8 0-1.6.3-2.3.8l-.7-1.2C9.4 5.1 10.6 4.6 12 4.6c2.4 0 3.8 1.2 3.8 3.4v5.4c0 .5.1.9.2 1.2h-1.8c-.1-.3-.2-.7-.3-1zm-.5-1.5v-2.3c-.6-.3-1.3-.5-2-.5-1.4 0-2.2.8-2.2 2.1 0 1.2.7 1.9 1.9 1.9.9 0 1.7-.5 2.3-1.2z"
-        fill="currentColor"
-      />
-      <path
-        d="M19.4 18.2c-2.4 1.8-5.8 2.8-9.4 2.8-4.4 0-8.2-1.4-10-3.6-.2-.2 0-.5.2-.4 3.7 2.1 8 3.3 12.4 3.3 3.5 0 7-1 9.9-2.7.4-.2.7.2.4.5l-3.5.1z"
-        fill="#FF9900"
-      />
-      <path
-        d="M20.5 16.9c-.3-.4-1.9-.2-2.8 0-.3 0-.3-.3 0-.5 1.5-1 4-1.2 4.4-.7.4.4-.1 3-1.5 4.1-.3.2-.5.1-.4-.2.4-.8.6-2.3.3-2.7z"
-        fill="#FF9900"
-      />
-    </svg>
+    <img
+      src="/assets/amazon.png"
+      alt="Amazon Appstore"
+      className={cn("object-contain select-none", className)}
+      loading="eager"
+    />
   );
 }
 
@@ -505,7 +499,15 @@ function App() {
 
   const isAdmin = currentUser?.role === "admin";
 
-  const [activeTab, setActiveTab] = useState("dashboard"); 
+  // Regular users land directly on Play Store Intelligence; Admins land on Dashboard
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem(AUTH_USER_KEY));
+      return u?.role === "admin" ? "dashboard" : "playStore";
+    } catch {
+      return "playStore";
+    }
+  }); 
   const [trendingSort, setTrendingSort] = useState("ads");
   const [stats, setStats] = useState({ competitors: 0, accounts: 0, games: 0 });
   const [competitorTree, setCompetitorTree] = useState([]);
@@ -901,6 +903,7 @@ function App() {
       localStorage.setItem(AUTH_USER_KEY, JSON.stringify(res.user));
       setAuthToken(res.token);
       setCurrentUser(res.user);
+      setActiveTab(res.user?.role === "admin" ? "dashboard" : "playStore");
       setUsernameInput("");
       setPasswordInput("");
     } catch (err) {
@@ -2400,12 +2403,18 @@ function App() {
       <aside className="hidden md:flex fixed left-0 top-16 bottom-0 z-40 w-[88px] bg-bg-base border-r border-border-subtle flex-col items-center py-3">
         <nav className="w-full flex flex-col items-center gap-1 px-2">
           {[
-            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
-            { id: "countryScans", icon: "public", label: "Country Scans" },
-            { id: "automated", icon: "track_changes", label: "Targets" },
-            ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
+            { id: "directory", icon: "insights", label: "Market Intelligence" },
+            { id: "videos", icon: "movie", label: "Creatives" },
+            { id: "automated", icon: "groups", label: "Competitors" },
+            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+            ...(isAdmin
+              ? [
+                  { id: "countryScans", icon: "public", label: "Country Scans" },
+                  { id: "settings", icon: "settings", label: "Settings" }
+                ]
+              : [])
           ].map((tab) => (
             <button
               key={tab.id}
@@ -2460,325 +2469,319 @@ function App() {
                 </div>
               </motion.div>
 
-              <motion.div variants={FADE_UP} className={cn("w-full bg-surface-solid rounded-[24px] p-3 md:p-4 shadow-sm border border-border-subtle z-40 transition-all", isScanning && "ring-1 ring-electric-blue/40 opacity-80")}>
-                <div className="flex flex-col md:flex-row flex-wrap items-end gap-3 md:gap-4 w-full">
-                  <div className="flex-[2] min-w-full md:min-w-[200px] space-y-1.5 md:space-y-2">
-                    <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Target competitor / ID</label>
-                    <div className="relative">
-                      <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">my_location</span>
-                      <input 
-                        value={selectedSource === "manual" ? scanQuery : "Auto-Target Selected"} 
-                        onChange={(e) => setScanQuery(e.target.value)} 
-                        disabled={!isAdmin || selectedSource !== "manual" || isScanning}
-                        className="w-full h-[48px] bg-input-bg text-text-main border border-border-subtle font-medium rounded-full py-3 pl-10 pr-4 outline-none transition-all focus:ring-2 focus:ring-electric-blue/30 disabled:opacity-50" 
-                        placeholder={isAdmin ? "e.g. Voodoo or ID: 12345" : "Scan input restricted to Admin"} 
-                        type="text" 
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 md:flex flex-[3] gap-4 w-full">
-                    <div className="flex-[1.5] min-w-[140px] space-y-2 relative">
-                      <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Target source</label>
-                      <div onClick={(e) => { 
-                            if(!isScanning && isAdmin) { 
-                              e.stopPropagation(); 
-                              if (activeDropdown !== 'source') setSourceSearch("");
-                              setActiveDropdown(activeDropdown === 'source' ? null : 'source'); 
-                            } 
-                          }}
-                        className={cn("w-full h-[48px] bg-input-bg text-text-main border border-border-subtle rounded-full py-3 px-3 md:pl-10 md:pr-4 outline-none transition-all cursor-pointer flex items-center justify-between select-none hover:border-text-muted/50", activeDropdown === 'source' && 'ring-2 ring-electric-blue/20', (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed")}
-                      >
-                        <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">list_alt</span>
-                        <span className="truncate font-medium text-xs md:text-sm">{getTargetSourceName()}</span>
-                        <span className="material-symbols-outlined text-text-muted text-[18px] transition-transform" style={{ transform: activeDropdown === 'source' ? 'rotate(180deg)' : 'rotate(0deg)' }}>expand_more</span>
+              {isAdmin && (
+                <motion.div variants={FADE_UP} className={cn("w-full bg-surface-solid rounded-[24px] p-3 md:p-4 shadow-sm border border-border-subtle z-40 transition-all", isScanning && "ring-1 ring-electric-blue/40 opacity-80")}>
+                  <div className="flex flex-col md:flex-row flex-wrap items-end gap-3 md:gap-4 w-full">
+                    <div className="flex-[2] min-w-full md:min-w-[200px] space-y-1.5 md:space-y-2">
+                      <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Target competitor / ID</label>
+                      <div className="relative">
+                        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[20px]">my_location</span>
+                        <input 
+                          value={selectedSource === "manual" ? scanQuery : "Auto-Target Selected"} 
+                          onChange={(e) => setScanQuery(e.target.value)} 
+                          disabled={!isAdmin || selectedSource !== "manual" || isScanning}
+                          className="w-full h-[48px] bg-input-bg text-text-main border border-border-subtle font-medium rounded-full py-3 pl-10 pr-4 outline-none transition-all focus:ring-2 focus:ring-electric-blue/30 disabled:opacity-50" 
+                          placeholder="e.g. Voodoo or ID: 12345" 
+                          type="text" 
+                        />
                       </div>
-                      <AnimatePresence>
-                        {activeDropdown === 'source' && isAdmin && (
-                          <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" onClick={(e) => e.stopPropagation()} className="absolute top-full left-0 w-full md:w-[520px] mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl p-2 z-50">
-                            <div className="flex items-center gap-2 bg-input-bg border border-border-subtle rounded-lg px-3 py-2 mb-2">
-                              <span className="material-symbols-outlined text-text-muted text-[18px]">search</span>
-                              <input
-                                autoFocus
-                                value={sourceSearch}
-                                onChange={(e) => setSourceSearch(e.target.value)}
-                                onClick={(e) => e.stopPropagation()}
-                                className="w-full bg-transparent text-text-main text-sm outline-none placeholder:text-text-muted"
-                                placeholder="Search competitors or lists..."
-                              />
-                              {sourceSearch && (
-                                <button onClick={() => setSourceSearch("")} className="text-text-muted hover:text-text-main">
-                                  <span className="material-symbols-outlined text-[16px]">close</span>
-                                </button>
-                              )}
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
-                              <div className="min-w-0">
-                                <div onClick={() => { setSelectedSource("manual"); setSourceSearch(""); setActiveDropdown(null); }} className="px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium transition-colors flex items-center gap-2.5">
-                                  <span className="material-symbols-outlined text-text-muted text-[18px]">edit_note</span>
-                                  <span>Manual entry</span>
-                                </div>
-                                <div className="px-3 py-1.5 mt-2 text-[10px] font-medium text-text-muted border-b border-border-subtle mb-1">Saved competitors</div>
-                                {savedCompetitors
-                                  .filter(c => (c.name || "").toLowerCase().includes(sourceSearch.toLowerCase()) || (c.ads_id || "").toLowerCase().includes(sourceSearch.toLowerCase()))
-                                  .map(c => (
-                                    <div key={`comp_${c.id}`} onClick={() => { setSelectedSource(`comp_${c.id}`); setSourceSearch(""); setActiveDropdown(null); }} className="px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium transition-colors flex items-center gap-2.5 min-w-0">
-                                      <span className="material-symbols-outlined text-text-muted text-[18px] flex-shrink-0">domain</span>
-                                      <span className="truncate">{c.name}</span>
-                                    </div>
-                                  ))}
-                                {savedCompetitors.length > 0 && savedCompetitors.filter(c => (c.name || "").toLowerCase().includes(sourceSearch.toLowerCase()) || (c.ads_id || "").toLowerCase().includes(sourceSearch.toLowerCase())).length === 0 && (
-                                  <div className="px-3 py-3 text-xs text-text-muted italic">No competitors found.</div>
-                                )}
-                              </div>
-
-                              <div className="min-w-0">
-                                <div className="px-3 py-1.5 text-[10px] font-medium text-text-muted border-b border-border-subtle mb-1">Target lists</div>
-                                {targetLists
-                                  .filter(l => (l.name || "").toLowerCase().includes(sourceSearch.toLowerCase()))
-                                  .map(l => (
-                                    <div key={`list_${l.id}`} onClick={() => { setSelectedSource(`list_${l.id}`); setSourceSearch(""); setActiveDropdown(null); }} className="px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium transition-colors flex items-center gap-2.5 min-w-0">
-                                      <span className="material-symbols-outlined text-text-muted text-[18px] flex-shrink-0">list_alt</span>
-                                      <span className="truncate">{l.name}</span>
-                                    </div>
-                                  ))}
-                                {targetLists.length > 0 && targetLists.filter(l => (l.name || "").toLowerCase().includes(sourceSearch.toLowerCase())).length === 0 && (
-                                  <div className="px-3 py-3 text-xs text-text-muted italic">No lists found.</div>
-                                )}
-                              </div>
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
                     </div>
 
-                    <div className="flex-[1.5] min-w-[180px] space-y-2 relative">
-                      <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Email report</label>
-                      <motion.div
-                        layout
-                        transition={{ type: "spring", stiffness: 320, damping: 30 }}
-                        onClick={(e) => {
-                          if (!isScanning && isAdmin) {
-                            e.stopPropagation();
-                            setActiveDropdown(activeDropdown === 'email' ? null : 'email');
-                          }
-                        }}
-                        className={cn(
-                          "w-full h-[48px] bg-input-bg text-text-main border border-border-subtle rounded-full px-3 md:pl-10 md:pr-3 outline-none cursor-pointer flex items-center gap-2 select-none transition-[border-color,box-shadow,opacity]",
-                          activeDropdown === 'email' && 'ring-2 ring-electric-blue/20',
-                          selectedEmailList === 'custom' && EMAIL_REGEX.test(customReportEmail.trim()) && 'border-emerald-metric/40',
-                          (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed"
-                        )}
-                      >
-                        <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">mail</span>
-
-                        <div className="flex-1 min-w-0">
-                          <AnimatePresence mode="wait" initial={false}>
-                            {selectedEmailList === 'custom' && isAdmin ? (
-                              <motion.input
-                                key="custom-report-email"
-                                initial={{ opacity: 0, x: -8 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: 6 }}
-                                transition={{ duration: 0.15 }}
-                                autoFocus
-                                type="email"
-                                inputMode="email"
-                                autoComplete="email"
-                                value={customReportEmail}
-                                onChange={(e) => setCustomReportEmail(e.target.value)}
-                                onClick={(e) => e.stopPropagation()}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Escape') {
-                                    setSelectedEmailList('none');
-                                    setCustomReportEmail('');
-                                    e.currentTarget.blur();
-                                  }
-                                }}
-                                disabled={isScanning}
-                                placeholder="recipient@email.com"
-                                className="w-full bg-transparent text-text-main placeholder:text-text-muted/70 text-xs md:text-sm font-medium outline-none disabled:cursor-not-allowed"
-                              />
-                            ) : (
-                              <motion.span
-                                key="saved-email-selection"
-                                initial={{ opacity: 0, x: 8 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: -6 }}
-                                transition={{ duration: 0.15 }}
-                                className="block truncate font-medium text-xs md:text-sm"
-                              >
-                                {getEmailListName()}
-                              </motion.span>
-                            )}
-                          </AnimatePresence>
-                        </div>
-
-                        {selectedEmailList === 'custom' && customReportEmail.trim() && (
-                          <span
-                            className={cn(
-                              "material-symbols-outlined text-[17px] flex-shrink-0",
-                              EMAIL_REGEX.test(customReportEmail.trim()) ? "text-emerald-metric" : "text-urgent-red"
-                            )}
-                            title={EMAIL_REGEX.test(customReportEmail.trim()) ? "Valid email" : "Enter a valid email"}
-                          >
-                            {EMAIL_REGEX.test(customReportEmail.trim()) ? 'check_circle' : 'error'}
-                          </span>
-                        )}
-
-                        <span
-                          className="material-symbols-outlined text-text-muted text-[18px] transition-transform flex-shrink-0"
-                          style={{ transform: activeDropdown === 'email' ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                    <div className="grid grid-cols-2 md:flex flex-[3] gap-4 w-full">
+                      <div className="flex-[1.5] min-w-[140px] space-y-2 relative">
+                        <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Target source</label>
+                        <div onClick={(e) => { 
+                              if(!isScanning && isAdmin) { 
+                                e.stopPropagation(); 
+                                if (activeDropdown !== 'source') setSourceSearch("");
+                                setActiveDropdown(activeDropdown === 'source' ? null : 'source'); 
+                              } 
+                            }}
+                          className={cn("w-full h-[48px] bg-input-bg text-text-main border border-border-subtle rounded-full py-3 px-3 md:pl-10 md:pr-4 outline-none transition-all cursor-pointer flex items-center justify-between select-none hover:border-text-muted/50", activeDropdown === 'source' && 'ring-2 ring-electric-blue/20', (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed")}
                         >
-                          expand_more
-                        </span>
-                      </motion.div>
-
-                      <AnimatePresence>
-                        {activeDropdown === 'email' && isAdmin && (
-                          <motion.div
-                            variants={dropDownAnim}
-                            initial="hidden"
-                            animate="show"
-                            exit="exit"
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute top-full left-0 w-full mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl max-h-[320px] overflow-y-auto custom-scrollbar p-2 z-50"
-                          >
-                            <div
-                              onClick={() => { setSelectedEmailList("none"); setActiveDropdown(null); }}
-                              className={cn(
-                                "px-3 py-2.5 rounded-lg hover:bg-input-bg text-text-main cursor-pointer text-sm font-medium transition-colors flex items-center gap-2",
-                                selectedEmailList === 'none' && 'bg-input-bg'
-                              )}
-                            >
-                              <span className="material-symbols-outlined text-[17px] text-text-muted">mail_off</span> Don't send
-                            </div>
-
-                            <div
-                              onClick={() => { setSelectedEmailList("custom"); setActiveDropdown(null); }}
-                              className={cn(
-                                "px-3 py-2.5 mt-1 rounded-lg hover:bg-electric-blue/10 text-text-main cursor-pointer text-sm font-medium transition-colors flex items-center gap-2",
-                                selectedEmailList === 'custom' && 'bg-electric-blue/10 text-electric-blue'
-                              )}
-                            >
-                              <span className="material-symbols-outlined text-[17px] text-electric-blue">alternate_email</span>
-                              <div className="min-w-0">
-                                <div>Custom email</div>
-                                <div className="text-[10px] font-normal text-text-muted truncate">Type a one-time recipient</div>
+                          <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">list_alt</span>
+                          <span className="truncate font-medium text-xs md:text-sm">{getTargetSourceName()}</span>
+                          <span className="material-symbols-outlined text-text-muted text-[18px] transition-transform" style={{ transform: activeDropdown === 'source' ? 'rotate(180deg)' : 'rotate(0deg)' }}>expand_more</span>
+                        </div>
+                        <AnimatePresence>
+                          {activeDropdown === 'source' && isAdmin && (
+                            <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" onClick={(e) => e.stopPropagation()} className="absolute top-full left-0 w-full md:w-[520px] mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl p-2 z-50">
+                              <div className="flex items-center gap-2 bg-input-bg border border-border-subtle rounded-lg px-3 py-2 mb-2">
+                                <span className="material-symbols-outlined text-text-muted text-[18px]">search</span>
+                                <input
+                                  autoFocus
+                                  value={sourceSearch}
+                                  onChange={(e) => setSourceSearch(e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="w-full bg-transparent text-text-main text-sm outline-none placeholder:text-text-muted"
+                                  placeholder="Search competitors or lists..."
+                                />
+                                {sourceSearch && (
+                                  <button onClick={() => setSourceSearch("")} className="text-text-muted hover:text-text-main">
+                                    <span className="material-symbols-outlined text-[16px]">close</span>
+                                  </button>
+                                )}
                               </div>
-                            </div>
 
-                            {emailLists.length > 0 && (
-                              <>
-                                <div className="px-3 py-1.5 mt-2 text-[10px] font-medium text-text-muted border-b border-border-subtle mb-1">Saved contacts</div>
-                                {emailLists.map((emailList) => (
-                                  <div
-                                    key={emailList.id}
-                                    onClick={() => { setSelectedEmailList(emailList.id); setActiveDropdown(null); }}
-                                    className={cn(
-                                      "px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-semibold transition-colors truncate flex items-center gap-2",
-                                      selectedEmailList?.toString() === emailList.id.toString() && 'bg-input-bg text-electric-blue'
-                                    )}
-                                  >
-                                    <span className="material-symbols-outlined text-[17px]">group</span>
-                                    <span className="truncate">{emailList.name}</span>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[300px] overflow-y-auto custom-scrollbar">
+                                <div className="min-w-0">
+                                  <div onClick={() => { setSelectedSource("manual"); setSourceSearch(""); setActiveDropdown(null); }} className="px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium transition-colors flex items-center gap-2.5">
+                                    <span className="material-symbols-outlined text-text-muted text-[18px]">edit_note</span>
+                                    <span>Manual entry</span>
                                   </div>
-                                ))}
-                              </>
-                            )}
+                                  <div className="px-3 py-1.5 mt-2 text-[10px] font-medium text-text-muted border-b border-border-subtle mb-1">Saved competitors</div>
+                                  {savedCompetitors
+                                    .filter(c => (c.name || "").toLowerCase().includes(sourceSearch.toLowerCase()) || (c.ads_id || "").toLowerCase().includes(sourceSearch.toLowerCase()))
+                                    .map(c => (
+                                      <div key={`comp_${c.id}`} onClick={() => { setSelectedSource(`comp_${c.id}`); setSourceSearch(""); setActiveDropdown(null); }} className="px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium transition-colors flex items-center gap-2.5 min-w-0">
+                                        <span className="material-symbols-outlined text-text-muted text-[18px] flex-shrink-0">domain</span>
+                                        <span className="truncate">{c.name}</span>
+                                      </div>
+                                    ))}
+                                  {savedCompetitors.length > 0 && savedCompetitors.filter(c => (c.name || "").toLowerCase().includes(sourceSearch.toLowerCase()) || (c.ads_id || "").toLowerCase().includes(sourceSearch.toLowerCase())).length === 0 && (
+                                    <div className="px-3 py-3 text-xs text-text-muted italic">No competitors found.</div>
+                                  )}
+                                </div>
+
+                                <div className="min-w-0">
+                                  <div className="px-3 py-1.5 text-[10px] font-medium text-text-muted border-b border-border-subtle mb-1">Target lists</div>
+                                  {targetLists
+                                    .filter(l => (l.name || "").toLowerCase().includes(sourceSearch.toLowerCase()))
+                                    .map(l => (
+                                      <div key={`list_${l.id}`} onClick={() => { setSelectedSource(`list_${l.id}`); setSourceSearch(""); setActiveDropdown(null); }} className="px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium transition-colors flex items-center gap-2.5 min-w-0">
+                                        <span className="material-symbols-outlined text-text-muted text-[18px] flex-shrink-0">list_alt</span>
+                                        <span className="truncate">{l.name}</span>
+                                      </div>
+                                    ))}
+                                  {targetLists.length > 0 && targetLists.filter(l => (l.name || "").toLowerCase().includes(sourceSearch.toLowerCase())).length === 0 && (
+                                    <div className="px-3 py-3 text-xs text-text-muted italic">No lists found.</div>
+                                  )}
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+
+                      <div className="flex-[1.5] min-w-[180px] space-y-2 relative">
+                        <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block truncate">Email report</label>
+                        <motion.div
+                          layout
+                          transition={{ type: "spring", stiffness: 320, damping: 30 }}
+                          onClick={(e) => {
+                            if (!isScanning && isAdmin) {
+                              e.stopPropagation();
+                              setActiveDropdown(activeDropdown === 'email' ? null : 'email');
+                            }
+                          }}
+                          className={cn(
+                            "w-full h-[48px] bg-input-bg text-text-main border border-border-subtle rounded-full px-3 md:pl-10 md:pr-3 outline-none cursor-pointer flex items-center gap-2 select-none transition-[border-color,box-shadow,opacity]",
+                            activeDropdown === 'email' && 'ring-2 ring-electric-blue/20',
+                            selectedEmailList === 'custom' && EMAIL_REGEX.test(customReportEmail.trim()) && 'border-emerald-metric/40',
+                            (!isAdmin || isScanning) && "opacity-50 cursor-not-allowed"
+                          )}
+                        >
+                          <span className="material-symbols-outlined absolute left-3 text-text-muted text-[20px] hidden md:block">mail</span>
+
+                          <div className="flex-1 min-w-0">
+                            <AnimatePresence mode="wait" initial={false}>
+                              {selectedEmailList === 'custom' && isAdmin ? (
+                                <motion.input
+                                  key="custom-report-email"
+                                  initial={{ opacity: 0, x: -8 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  exit={{ opacity: 0, x: 6 }}
+                                  transition={{ duration: 0.15 }}
+                                  autoFocus
+                                  type="email"
+                                  inputMode="email"
+                                  autoComplete="email"
+                                  value={customReportEmail}
+                                  onChange={(e) => setCustomReportEmail(e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Escape') {
+                                      setSelectedEmailList('none');
+                                      setCustomReportEmail('');
+                                      e.currentTarget.blur();
+                                    }
+                                  }}
+                                  disabled={isScanning}
+                                  placeholder="recipient@email.com"
+                                  className="w-full bg-transparent text-text-main placeholder:text-text-muted/70 text-xs md:text-sm font-medium outline-none disabled:cursor-not-allowed"
+                                />
+                              ) : (
+                                <motion.span
+                                  key="saved-email-selection"
+                                  initial={{ opacity: 0, x: 8 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  exit={{ opacity: 0, x: -6 }}
+                                  transition={{ duration: 0.15 }}
+                                  className="block truncate font-medium text-xs md:text-sm"
+                                >
+                                  {getEmailListName()}
+                                </motion.span>
+                              )}
+                            </AnimatePresence>
+                          </div>
+
+                          {selectedEmailList === 'custom' && customReportEmail.trim() && (
+                            <span
+                              className={cn(
+                                "material-symbols-outlined text-[17px] flex-shrink-0",
+                                EMAIL_REGEX.test(customReportEmail.trim()) ? "text-emerald-metric" : "text-urgent-red"
+                              )}
+                              title={EMAIL_REGEX.test(customReportEmail.trim()) ? "Valid email" : "Enter a valid email"}
+                            >
+                              {EMAIL_REGEX.test(customReportEmail.trim()) ? 'check_circle' : 'error'}
+                            </span>
+                          )}
+
+                          <span
+                            className="material-symbols-outlined text-text-muted text-[18px] transition-transform flex-shrink-0"
+                            style={{ transform: activeDropdown === 'email' ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                          >
+                            expand_more
+                          </span>
+                        </motion.div>
+
+                        <AnimatePresence>
+                          {activeDropdown === 'email' && isAdmin && (
+                            <motion.div
+                              variants={dropDownAnim}
+                              initial="hidden"
+                              animate="show"
+                              exit="exit"
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute top-full left-0 w-full mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl max-h-[320px] overflow-y-auto custom-scrollbar p-2 z-50"
+                            >
+                              <div
+                                onClick={() => { setSelectedEmailList("none"); setActiveDropdown(null); }}
+                                className={cn(
+                                  "px-3 py-2.5 rounded-lg hover:bg-input-bg text-text-main cursor-pointer text-sm font-medium transition-colors flex items-center gap-2",
+                                  selectedEmailList === 'none' && 'bg-input-bg'
+                                )}
+                              >
+                                <span className="material-symbols-outlined text-[17px] text-text-muted">mail_off</span> Don't send
+                              </div>
+
+                              <div
+                                onClick={() => { setSelectedEmailList("custom"); setActiveDropdown(null); }}
+                                className={cn(
+                                  "px-3 py-2.5 mt-1 rounded-lg hover:bg-electric-blue/10 text-text-main cursor-pointer text-sm font-medium transition-colors flex items-center gap-2",
+                                  selectedEmailList === 'custom' && 'bg-electric-blue/10 text-electric-blue'
+                                )}
+                              >
+                                <span className="material-symbols-outlined text-[17px] text-electric-blue">alternate_email</span>
+                                <div className="min-w-0">
+                                  <div>Custom email</div>
+                                  <div className="text-[10px] font-normal text-text-muted truncate">Type a one-time recipient</div>
+                                </div>
+                              </div>
+
+                              {emailLists.length > 0 && (
+                                <>
+                                  <div className="px-3 py-1.5 mt-2 text-[10px] font-medium text-text-muted border-b border-border-subtle mb-1">Saved contacts</div>
+                                  {emailLists.map((emailList) => (
+                                    <div
+                                      key={emailList.id}
+                                      onClick={() => { setSelectedEmailList(emailList.id); setActiveDropdown(null); }}
+                                      className={cn(
+                                        "px-3 py-2.5 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-semibold transition-colors truncate flex items-center gap-2",
+                                        selectedEmailList?.toString() === emailList.id.toString() && 'bg-input-bg text-electric-blue'
+                                      )}
+                                    >
+                                      <span className="material-symbols-outlined text-[17px]">group</span>
+                                      <span className="truncate">{emailList.name}</span>
+                                    </div>
+                                  ))}
+                                </>
+                              )}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    </div>
+                    
+                    <div className="flex-1 min-w-full md:min-w-[120px] space-y-1.5 md:space-y-2 relative">
+                      <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Unique games</label>
+                      <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-full transition-all h-[48px]", (!isAdmin || isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
+                        <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit(Math.max(1, scanLimit - 10))} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">remove</span></button>
+                        <input disabled={!isAdmin || isMaxAds || isScanning} value={isMaxAds ? "500" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-medium tabular-nums outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
+                        <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit((scanLimit || 0) + 10)} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">add</span></button>
+                        <div className="w-px h-full bg-border-subtle"></div>
+                        <button disabled={!isAdmin || isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(isAdmin && !isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-full transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
+                      </div>
+                      <AnimatePresence>
+                        {activeDropdown === 'limit' && isAdmin && !isMaxAds && (
+                          <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" onClick={(e) => e.stopPropagation()} className="absolute top-full right-0 w-full md:w-28 mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl overflow-hidden p-2 z-50 grid grid-cols-3 md:grid-cols-1 gap-1">
+                            {[10, 20, 50, 100, 250, 500].map(val => <div key={val} onClick={() => { setScanLimit(val); setActiveDropdown(null); }} className="px-3 py-2 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium tabular-nums text-center transition-colors border border-border-subtle md:border-none">{val}</div>)}
                           </motion.div>
                         )}
                       </AnimatePresence>
                     </div>
-                  </div>
-                  
-                  <div className="flex-1 min-w-full md:min-w-[120px] space-y-1.5 md:space-y-2 relative">
-                    <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Unique games</label>
-                    <div className={cn("flex items-center bg-input-bg border border-border-subtle rounded-full transition-all h-[48px]", (!isAdmin || isMaxAds || isScanning) && 'opacity-50 cursor-not-allowed', activeDropdown === 'limit' && 'ring-2 ring-electric-blue/20')}>
-                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit(Math.max(1, scanLimit - 10))} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">remove</span></button>
-                      <input disabled={!isAdmin || isMaxAds || isScanning} value={isMaxAds ? "500" : scanLimit} onChange={(e) => { const val = e.target.value.replace(/\D/g, ''); setScanLimit(val === '' ? '' : Number(val)); }} onBlur={() => { if (!scanLimit || scanLimit < 1) setScanLimit(1); }} className="w-full h-full bg-transparent text-text-main text-center font-medium tabular-nums outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none disabled:cursor-not-allowed" type="text" />
-                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={() => setScanLimit((scanLimit || 0) + 10)} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass transition-colors disabled:opacity-50"><span className="material-symbols-outlined text-[16px]">add</span></button>
-                      <div className="w-px h-full bg-border-subtle"></div>
-                      <button disabled={!isAdmin || isMaxAds || isScanning} onClick={(e) => { e.stopPropagation(); if(isAdmin && !isMaxAds && !isScanning) setActiveDropdown(activeDropdown === 'limit' ? null : 'limit'); }} className="h-full px-3 md:px-2 text-text-muted hover:text-text-main hover:bg-surface-glass rounded-r-full transition-colors disabled:opacity-50 flex items-center justify-center"><span className="material-symbols-outlined text-[18px]">arrow_drop_down</span></button>
-                    </div>
-                    <AnimatePresence>
-                      {activeDropdown === 'limit' && isAdmin && !isMaxAds && (
-                        <motion.div variants={dropDownAnim} initial="hidden" animate="show" exit="exit" onClick={(e) => e.stopPropagation()} className="absolute top-full right-0 w-full md:w-28 mt-2 bg-surface-solid border border-border-subtle rounded-xl shadow-2xl overflow-hidden p-2 z-50 grid grid-cols-3 md:grid-cols-1 gap-1">
-                          {[10, 20, 50, 100, 250, 500].map(val => <div key={val} onClick={() => { setScanLimit(val); setActiveDropdown(null); }} className="px-3 py-2 rounded-lg hover:bg-input-bg cursor-pointer text-sm font-medium tabular-nums text-center transition-colors border border-border-subtle md:border-none">{val}</div>)}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
 
-                  <div className="flex gap-2 items-center flex-shrink-0 w-full xl:w-auto mt-2 xl:mt-0">
-                    {isAdmin ? (
-                      <>
-                        <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[48px] px-4 rounded-full font-medium text-sm transition-all flex items-center justify-center gap-2 border border-border-subtle disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-primary-container text-on-primary-container border-transparent' : 'bg-surface-solid text-text-main')} title="Aim for up to 500 unique games. Atlas still stops at its configurable ad-inspection safety cap."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> Max</button>
-                        
-                        {isScanning ? (
-                          <button onClick={handleCancelScan} className="h-[48px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-medium px-6 rounded-full border border-urgent-red/20 flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
-                            <span className="material-symbols-outlined text-[20px]">cancel</span> Cancel
-                          </button>
-                        ) : (
-                          <button onClick={handleRunScan} className="h-[48px] flex-1 md:flex-none bg-[#8ab4f8] text-[#202124] font-medium px-7 rounded-full shadow-sm hover:shadow-md transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
-                            <span className="material-symbols-outlined text-[20px]">data_usage</span> Scan
-                          </button>
-                        )}
-
-                        <button onClick={handleReset} disabled={isScanning} title="Clear latest scan view" className="h-[48px] w-[48px] bg-input-bg text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle rounded-full transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed">
-                          <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+                    <div className="flex gap-2 items-center flex-shrink-0 w-full xl:w-auto mt-2 xl:mt-0">
+                      <button onClick={() => setIsMaxAds(!isMaxAds)} disabled={isScanning} className={cn("h-[48px] px-4 rounded-full font-medium text-sm transition-all flex items-center justify-center gap-2 border border-border-subtle disabled:opacity-50 disabled:cursor-not-allowed", isMaxAds ? 'bg-primary-container text-on-primary-container border-transparent' : 'bg-surface-solid text-text-main')} title="Aim for up to 500 unique games. Atlas still stops at its configurable ad-inspection safety cap."><span className="material-symbols-outlined text-[18px] hidden md:block">all_inclusive</span> Max</button>
+                      
+                      {isScanning ? (
+                        <button onClick={handleCancelScan} className="h-[48px] flex-1 md:flex-none bg-urgent-red/10 text-urgent-red hover:bg-urgent-red hover:text-white font-medium px-6 rounded-full border border-urgent-red/20 flex justify-center items-center gap-2 transition-all active:scale-[0.98]">
+                          <span className="material-symbols-outlined text-[20px]">cancel</span> Cancel
                         </button>
-                      </>
-                    ) : (
-                      <div className="h-[46px] md:h-[50px] px-5 rounded-full bg-input-bg border border-border-subtle text-text-muted text-xs flex items-center gap-2 font-medium select-none cursor-not-allowed">
-                        <span className="material-symbols-outlined text-[17px]">lock</span> Read-only view
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
+                      ) : (
+                        <button onClick={handleRunScan} className="h-[48px] flex-1 md:flex-none bg-[#8ab4f8] text-[#202124] font-medium px-7 rounded-full shadow-sm hover:shadow-md transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
+                          <span className="material-symbols-outlined text-[20px]">data_usage</span> Scan
+                        </button>
+                      )}
 
-              <motion.div variants={FADE_UP} className="w-full bg-surface-solid rounded-[24px] p-4 md:p-5 shadow-sm border border-border-subtle">
-                <div className="flex flex-col lg:flex-row lg:items-end gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="w-10 h-10 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center">
-                        <span className="material-symbols-outlined text-[21px]">public</span>
+                      <button onClick={handleReset} disabled={isScanning} title="Clear latest scan view" className="h-[48px] w-[48px] bg-input-bg text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle rounded-full transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed">
+                        <span className="material-symbols-outlined text-[20px]">delete_sweep</span>
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {isAdmin && (
+                <motion.div variants={FADE_UP} className="w-full bg-surface-solid rounded-[24px] p-4 md:p-5 shadow-sm border border-border-subtle">
+                  <div className="flex flex-col lg:flex-row lg:items-end gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 mb-3">
+                        <div className="w-10 h-10 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center">
+                          <span className="material-symbols-outlined text-[21px]">public</span>
+                        </div>
+                        <div className="min-w-0">
+                          <h2 className="text-sm md:text-base font-medium text-text-main">Country availability</h2>
+                          <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every individually targetable Google Play country/region for any package</p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <h2 className="text-sm md:text-base font-medium text-text-main">Country availability</h2>
-                        <p className="text-[10px] md:text-xs text-text-muted mt-0.5">Scan every individually targetable Google Play country/region for any package</p>
+
+                      <div className="relative">
+                        <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">deployed_code</span>
+                        <input
+                          value={countryPackage}
+                          onChange={(event) => setCountryPackage(event.target.value.trimStart())}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && isAdmin && countryPackage.trim() && !isCountryScanRunning) {
+                              handleStartCountryScan();
+                            }
+                          }}
+                          placeholder="com.publisher.game"
+                          className="w-full h-12 bg-input-bg text-text-main border border-border-subtle rounded-full pl-11 pr-4 outline-none focus:ring-2 focus:ring-electric-blue/30 font-mono text-xs md:text-sm"
+                        />
                       </div>
                     </div>
 
-                    <div className="relative">
-                      <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">deployed_code</span>
-                      <input
-                        value={countryPackage}
-                        onChange={(event) => setCountryPackage(event.target.value.trimStart())}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" && isAdmin && countryPackage.trim() && !isCountryScanRunning) {
-                            handleStartCountryScan();
-                          }
-                        }}
-                        placeholder="com.publisher.game"
-                        className="w-full h-12 bg-input-bg text-text-main border border-border-subtle rounded-full pl-11 pr-4 outline-none focus:ring-2 focus:ring-electric-blue/30 font-mono text-xs md:text-sm"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 lg:flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => handleViewSavedCountryScan()}
-                      disabled={!countryPackage.trim()}
-                      className="h-11 px-4 rounded-full border border-border-subtle bg-input-bg text-text-main text-xs font-medium hover:bg-surface-glass disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
-                    >
-                      <span className="material-symbols-outlined text-[18px]">history</span>
-                      View saved
-                    </button>
-                    {isAdmin && (
+                    <div className="flex flex-wrap items-center gap-2 lg:flex-shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleViewSavedCountryScan()}
+                        disabled={!countryPackage.trim()}
+                        className="h-11 px-4 rounded-full border border-border-subtle bg-input-bg text-text-main text-xs font-medium hover:bg-surface-glass disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">history</span>
+                        View saved
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleStartCountryScan()}
@@ -2790,10 +2793,10 @@ function App() {
                         </span>
                         {isCountryScanRunning ? "Scanning countries" : "Scan countries"}
                       </button>
-                    )}
+                    </div>
                   </div>
-                </div>
-              </motion.div>
+                </motion.div>
+              )}
 
               <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
                 {[
@@ -3092,7 +3095,7 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-7xl mx-auto">
               <motion.div variants={FADE_UP} className="flex justify-between items-end mb-4">
                 <div>
-                  <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">Targets</h1>
+                  <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">Competitors</h1>
                   <p className="text-sm text-text-muted mt-2">
                     {isAdmin ? "Manage saved competitors, batch lists, and email reporting targets." : "View saved competitor targets and active batch lists."}
                   </p>
@@ -3290,18 +3293,40 @@ function App() {
             />
           )}
 
+          {/* MARKET INTELLIGENCE TAB */}
+          {activeTab === "directory" && (
+            <MarketIntelligenceView
+              isAdmin={isAdmin}
+              onOpenCountryScan={handleViewSavedCountryScan}
+            />
+          )}
+
+          {/* CREATIVES (VIDEOS) TAB */}
+          {activeTab === "videos" && (
+            <CreativesView
+              isAdmin={isAdmin}
+              onGameClick={handleGameClick}
+            />
+          )}
+
         </main>
       </div>
 {/* MOBILE MATERIAL NAVIGATION BAR */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-bg-base/95 backdrop-blur-xl border-t border-border-subtle px-2 pb-[env(safe-area-inset-bottom)]">
         <div className="h-[72px] flex items-center justify-around">
           {[
-            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
-            { id: "countryScans", icon: "public", label: "Country Scans" },
-            { id: "automated", icon: "track_changes", label: "Targets" },
-            ...(isAdmin ? [{ id: "settings", icon: "settings", label: "Settings" }] : [])
+            { id: "directory", icon: "insights", label: "Market Intelligence" },
+            { id: "videos", icon: "movie", label: "Creatives" },
+            { id: "automated", icon: "groups", label: "Competitors" },
+            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
+            ...(isAdmin
+              ? [
+                  { id: "countryScans", icon: "public", label: "Country Scans" },
+                  { id: "settings", icon: "settings", label: "Settings" }
+                ]
+              : [])
           ].map((tab) => (
             <button key={`mobile-${tab.id}`} type="button" onClick={() => setActiveTab(tab.id)} className="flex flex-col items-center gap-1 min-w-[64px]">
               <span className={cn(

@@ -44,6 +44,20 @@ function formatCompactNumber(num) {
   return n.toLocaleString();
 }
 
+const GAME_CATEGORIES = new Set([
+  "game", "games", "simulation", "puzzle", "role playing", "strategy", "action",
+  "adventure", "casual", "sports", "racing", "arcade", "board", "card", "trivia",
+  "word", "casino", "music games", "educational games"
+]);
+
+function isGameItem(item) {
+  const cat = String(item?.category || "").trim().toLowerCase();
+  if (!cat) return true;
+  if (cat.includes("game")) return true;
+  if (GAME_CATEGORIES.has(cat)) return true;
+  return false;
+}
+
 /**
  * Separate data availability ("Synced") from latest refresh attempt ("Retry Needed").
  * A publisher with synced games in Atlas is never marked broken just because a later refresh hit a transient error.
@@ -123,12 +137,16 @@ export default function PlayStoreIntelligenceView({
     lists: [],
     publishers: [],
     games: [],
-    snapshots: []
+    snapshots: [],
+    competitorGroups: []
   });
   const [loading, setLoading] = useState(true);
 
+  // App vs Game Top-Level Category Filter state
+  const [appTypeFilter, setAppTypeFilter] = useState("all"); // "all" | "game" | "app"
+
   // Competitor List & Account Filter state
-  const [selectedListId, setSelectedListId] = useState("all"); // "all" | "ungrouped" | number
+  const [selectedListId, setSelectedListId] = useState("all"); // "all" | "ungrouped" | number | "group_<id>"
   const [selectedPublisher, setSelectedPublisher] = useState("all");
   const [selectedPricing, setSelectedPricing] = useState("all"); // all | free | paid
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery || "");
@@ -153,6 +171,7 @@ export default function PlayStoreIntelligenceView({
   const [showSheetModal, setShowSheetModal] = useState(false);
   const [showCountryBatchModal, setShowCountryBatchModal] = useState(false);
   const [listModal, setListModal] = useState(null); // { mode: 'create' | 'edit', listId: 'new' | number, name, description, publisherIds: number[] }
+  const [groupModal, setGroupModal] = useState(null); // { mode: 'create' | 'edit', groupId: 'new' | number, name, description, competitorIds: number[] }
   const [editingPublisher, setEditingPublisher] = useState(null); // { id, publisher_name, display_name, list_ids: number[] }
   const [confirmDeletePub, setConfirmDeletePub] = useState(null);
 
@@ -386,15 +405,31 @@ export default function PlayStoreIntelligenceView({
     [publisherByRawName]
   );
 
-  // Publishers visible under the active Competitor List filter
+  // Active Competitor Group (Batch) if selected (e.g. "group_1")
+  const activeGroupObj = useMemo(() => {
+    if (typeof selectedListId === "string" && selectedListId.startsWith("group_")) {
+      const gId = Number(selectedListId.replace("group_", ""));
+      return (overview.competitorGroups || []).find((g) => g.id === gId) || null;
+    }
+    return null;
+  }, [overview.competitorGroups, selectedListId]);
+
+  // Publishers visible under the active Competitor List or Competitor Group filter
   const visiblePublishers = useMemo(() => {
     return (overview.publishers || []).filter((p) => {
       if (selectedListId === "all") return true;
+      if (activeGroupObj) {
+        const pubId = Number(p.id);
+        const lIds = Array.isArray(p.list_ids) ? p.list_ids : [];
+        if (activeGroupObj.publisher_ids && activeGroupObj.publisher_ids.includes(pubId)) return true;
+        if (activeGroupObj.list_ids && lIds.some((lid) => activeGroupObj.list_ids.includes(lid))) return true;
+        return false;
+      }
       const lIds = Array.isArray(p.list_ids) ? p.list_ids : [];
       if (selectedListId === "ungrouped") return lIds.length === 0;
       return lIds.includes(Number(selectedListId));
     });
-  }, [overview.publishers, selectedListId]);
+  }, [overview.publishers, selectedListId, activeGroupObj]);
 
   const visiblePublisherNames = useMemo(
     () => new Set(visiblePublishers.map((p) => p.publisher_name)),
@@ -402,9 +437,20 @@ export default function PlayStoreIntelligenceView({
   );
 
   const activeListObj = useMemo(() => {
-    if (selectedListId === "all" || selectedListId === "ungrouped") return null;
+    if (selectedListId === "all" || selectedListId === "ungrouped" || String(selectedListId).startsWith("group_")) return null;
     return (overview.lists || []).find((l) => l.id === Number(selectedListId)) || null;
   }, [overview.lists, selectedListId]);
+
+  // Total games vs apps counts for header tabs
+  const appCounts = useMemo(() => {
+    let games = 0;
+    let apps = 0;
+    for (const g of overview.games || []) {
+      if (isGameItem(g)) games++;
+      else apps++;
+    }
+    return { games, apps, total: (overview.games || []).length };
+  }, [overview.games]);
 
   const ungroupedCount = useMemo(
     () => (overview.publishers || []).filter((p) => !p.list_ids || p.list_ids.length === 0).length,
@@ -475,6 +521,8 @@ export default function PlayStoreIntelligenceView({
   // Scope games to current list AND/OR selected account, then compute both all-time and period metrics
   const scopedStats = useMemo(() => {
     const inScopeGames = (overview.games || []).filter((g) => {
+      if (appTypeFilter === "game" && !isGameItem(g)) return false;
+      if (appTypeFilter === "app" && isGameItem(g)) return false;
       if (!visiblePublisherNames.has(g.publisher_name)) return false;
       if (selectedPublisher !== "all" && g.publisher_name !== selectedPublisher) return false;
       return true;
@@ -518,9 +566,9 @@ export default function PlayStoreIntelligenceView({
       knownDateCount,
       unknownDateCount
     };
-  }, [overview.games, visiblePublisherNames, selectedPublisher, evaluateGameDate]);
+  }, [overview.games, visiblePublisherNames, selectedPublisher, evaluateGameDate, appTypeFilter]);
 
-  // Per-publisher stats dynamically computed for the active date filter
+  // Per-publisher stats dynamically computed for the active date filter and app/game mode
   const publisherStatsByName = useMemo(() => {
     const map = new Map();
     for (const pub of visiblePublishers) {
@@ -535,6 +583,8 @@ export default function PlayStoreIntelligenceView({
       });
     }
     for (const g of overview.games || []) {
+      if (appTypeFilter === "game" && !isGameItem(g)) continue;
+      if (appTypeFilter === "app" && isGameItem(g)) continue;
       const entry = map.get(g.publisher_name);
       if (!entry) continue;
       const dEval = evaluateGameDate(g);
@@ -548,7 +598,7 @@ export default function PlayStoreIntelligenceView({
       }
     }
     return map;
-  }, [visiblePublishers, overview.games, evaluateGameDate]);
+  }, [visiblePublishers, overview.games, evaluateGameDate, appTypeFilter]);
 
   const maxPublisherGames = useMemo(() => {
     return Math.max(
@@ -564,6 +614,8 @@ export default function PlayStoreIntelligenceView({
     const q = searchQuery.trim().toLowerCase();
     return (overview.games || [])
       .filter((g) => {
+        if (appTypeFilter === "game" && !isGameItem(g)) return false;
+        if (appTypeFilter === "app" && isGameItem(g)) return false;
         if (!visiblePublisherNames.has(g.publisher_name)) return false;
         if (selectedPublisher !== "all" && g.publisher_name !== selectedPublisher) return false;
         if (selectedPricing !== "all" && g.pricing !== selectedPricing) return false;
@@ -611,6 +663,75 @@ export default function PlayStoreIntelligenceView({
     () => (overview.publishers || []).find((p) => p.publisher_name === selectedPublisher) || null,
     [overview.publishers, selectedPublisher]
   );
+
+  // Open Competitor Batch modal (e.g. "Bahria" grouping Trenzy + Gaminator)
+  const openBatchManager = useCallback((targetGroup = null) => {
+    if (targetGroup) {
+      setGroupModal({
+        mode: "edit",
+        groupId: targetGroup.id,
+        name: targetGroup.name,
+        description: targetGroup.description || "",
+        competitorIds: Array.isArray(targetGroup.competitor_ids) ? [...targetGroup.competitor_ids] : []
+      });
+    } else {
+      setGroupModal({
+        mode: "create",
+        groupId: "new",
+        name: "",
+        description: "",
+        competitorIds: []
+      });
+    }
+  }, []);
+
+  const handleSaveBatch = async (e) => {
+    e?.preventDefault();
+    if (!groupModal || !groupModal.name.trim()) return;
+    try {
+      const isCreate = groupModal.mode === "create";
+      const url = isCreate
+        ? `${API_BASE}/api/competitor-groups`
+        : `${API_BASE}/api/competitor-groups/${groupModal.groupId}`;
+      const method = isCreate ? "POST" : "PUT";
+      const res = await fetcher(url, {
+        method,
+        body: JSON.stringify({
+          name: groupModal.name.trim(),
+          description: groupModal.description.trim(),
+          competitor_ids: groupModal.competitorIds
+        })
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        setGroupModal(null);
+        await loadOverview();
+        if (saved?.id) {
+          setSelectedListId(`group_${saved.id}`);
+        }
+      } else {
+        const err = await res.json();
+        alert(err.error || "Failed to save competitor batch.");
+      }
+    } catch (err) {
+      console.error("Save batch error:", err);
+      alert("Failed to save competitor batch: " + (err.message || err));
+    }
+  };
+
+  const handleDeleteBatch = async (groupId) => {
+    if (!window.confirm("Are you sure you want to delete this competitor batch? Competitors and publisher accounts will NOT be deleted.")) return;
+    try {
+      const res = await fetcher(`${API_BASE}/api/competitor-groups/${groupId}`, { method: "DELETE" });
+      if (res.ok) {
+        if (selectedListId === `group_${groupId}`) setSelectedListId("all");
+        setGroupModal(null);
+        await loadOverview();
+      }
+    } catch (err) {
+      console.error("Delete batch error:", err);
+    }
+  };
 
   // Open Manage Lists modal for a specific list or new list
   const openListManager = useCallback((targetList = null) => {
@@ -1039,10 +1160,49 @@ export default function PlayStoreIntelligenceView({
 
   return (
     <div className="flex flex-col w-full gap-5">
+      {/* GOOGLE PLAY STYLE ALL / GAMES / APPS SEGMENT SWITCHER */}
+      <div className="flex items-center gap-1 border-b border-border-subtle pb-1 -mt-1 px-1">
+        <button
+          type="button"
+          onClick={() => setAppTypeFilter("all")}
+          className={`px-4 py-2 text-xs md:text-sm font-semibold rounded-lg transition-all relative ${
+            appTypeFilter === "all"
+              ? "text-emerald-700 dark:text-emerald-400 after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[3px] after:rounded-full after:bg-emerald-600 dark:after:bg-emerald-400"
+              : "text-text-muted hover:text-text-main"
+          }`}
+        >
+          All ({overview.games.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setAppTypeFilter("game")}
+          className={`px-4 py-2 text-xs md:text-sm font-semibold rounded-lg transition-all relative flex items-center gap-1.5 ${
+            appTypeFilter === "game"
+              ? "text-emerald-700 dark:text-emerald-400 after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[3px] after:rounded-full after:bg-emerald-600 dark:after:bg-emerald-400"
+              : "text-text-muted hover:text-text-main"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[17px]">sports_esports</span>
+          Games ({appCounts.games})
+        </button>
+        <button
+          type="button"
+          onClick={() => setAppTypeFilter("app")}
+          className={`px-4 py-2 text-xs md:text-sm font-semibold rounded-lg transition-all relative flex items-center gap-1.5 ${
+            appTypeFilter === "app"
+              ? "text-emerald-700 dark:text-emerald-400 after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[3px] after:rounded-full after:bg-emerald-600 dark:after:bg-emerald-400"
+              : "text-text-muted hover:text-text-main"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[17px]">apps</span>
+          Apps ({appCounts.apps})
+        </button>
+      </div>
+
       {/* HEADER */}
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 px-1">
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-[11px] font-semibold mb-1.5">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-[11px] font-semibold mb-1.5">
             <span className="material-symbols-outlined text-[15px]">shop</span>
             Play Store Intelligence · Primary Discovery Engine
           </div>
@@ -1067,7 +1227,7 @@ export default function PlayStoreIntelligenceView({
                     ? `Scan ${unscannedPublisherCount} unscanned publisher accounts first`
                     : `Refresh all ${overview.publishers.length} Play Store publisher catalogues`
                 }
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/35 text-emerald-700 dark:text-emerald-400 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-500/25 transition disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[16px]">sync</span>
                 {unscannedPublisherCount > 0
@@ -1348,17 +1508,28 @@ export default function PlayStoreIntelligenceView({
                   value={selectedListId}
                   onChange={(e) => {
                     const val = e.target.value;
-                    setSelectedListId(val === "all" || val === "ungrouped" ? val : Number(val));
+                    setSelectedListId(val === "all" || val === "ungrouped" || String(val).startsWith("group_") ? val : Number(val));
                     setSelectedPublisher("all");
                   }}
                   className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer"
                 >
                   <option value="all">All Competitors ({overview.publishers.length} accounts)</option>
-                  {(overview.lists || []).map((list) => (
-                    <option key={list.id} value={list.id}>
-                      {list.name} ({list.account_count} accounts)
-                    </option>
-                  ))}
+                  {(overview.competitorGroups || []).length > 0 && (
+                    <optgroup label="Competitor Batches (Groups)">
+                      {overview.competitorGroups.map((grp) => (
+                        <option key={`group_${grp.id}`} value={`group_${grp.id}`}>
+                          📁 {grp.name} ({grp.competitor_names?.join(", ") || `${grp.competitor_ids?.length} competitors`} · {grp.account_count || 0} accounts)
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="Individual Competitors">
+                    {(overview.lists || []).map((list) => (
+                      <option key={list.id} value={list.id}>
+                        {list.name} ({list.account_count} accounts)
+                      </option>
+                    ))}
+                  </optgroup>
                   {ungroupedCount > 0 && (
                     <option value="ungrouped">Ungrouped Accounts ({ungroupedCount})</option>
                   )}
@@ -1411,9 +1582,29 @@ export default function PlayStoreIntelligenceView({
               </button>
             )}
 
-            {/* Admin Shortcuts: Edit / New list */}
+            {/* Admin Shortcuts: Competitor Batches + Lists */}
             {isAdmin && (
               <div className="flex items-center gap-1.5 ml-1">
+                {activeGroupObj && (
+                  <button
+                    type="button"
+                    onClick={() => openBatchManager(activeGroupObj)}
+                    title={`Edit competitor batch "${activeGroupObj.name}"`}
+                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle hover:border-electric-blue text-text-main text-xs font-semibold transition flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">edit</span>
+                    Edit Batch
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => openBatchManager(null)}
+                  title="Group competitors under a batch (e.g. Trenzy & Gaminator into Bahria)"
+                  className="h-8 px-2.5 rounded-lg bg-input-bg border border-dashed border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue transition flex items-center gap-1 text-xs font-semibold"
+                >
+                  <span className="material-symbols-outlined text-[14px]">folder_special</span>
+                  + Batch
+                </button>
                 {activeListObj && (
                   <button
                     type="button"
@@ -1589,13 +1780,13 @@ export default function PlayStoreIntelligenceView({
         </div>
 
         <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
-          <div className="text-[11px] text-emerald-400 font-medium">
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-semibold">
             Total Real Installs {dateWindow.active ? `(${dateWindow.label})` : ""}
           </div>
           <div className="text-2xl font-semibold text-text-main mt-1">
             {formatCompactNumber(scopedStats.totalInstalls)}
           </div>
-          <div className="text-[10px] text-emerald-400 font-mono mt-1">
+          <div className="text-[10px] text-emerald-700 dark:text-emerald-400 font-mono font-medium mt-1">
             +{formatCompactNumber(scopedStats.totalDailyDelta)} / day velocity
           </div>
         </div>
@@ -1839,7 +2030,7 @@ export default function PlayStoreIntelligenceView({
                         <strong className="text-text-main">{total}</strong>
                         {dateWindow.active ? `/${pSt.allTimeTotal}` : " games"}
                       </span>
-                      <span title="Total Real Installs" className="text-emerald-400">
+                      <span title="Total Real Installs" className="text-emerald-700 dark:text-emerald-400 font-semibold">
                         {formatCompactNumber(pSt.installs)} inst
                       </span>
                       {pSt.dailyDelta > 0 && (
@@ -1950,60 +2141,85 @@ export default function PlayStoreIntelligenceView({
 
       {/* GAME DIRECTORY TABLE */}
       <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-text-main">
-              Play Store Games ({filteredGames.length.toLocaleString()})
+            <h2 className="text-base font-semibold text-text-main flex items-center gap-2">
+              <span>Play Store Games ({filteredGames.length.toLocaleString()})</span>
+              {appTypeFilter !== "all" && (
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 capitalize">
+                  {appTypeFilter}s only
+                </span>
+              )}
             </h2>
             <p className="text-xs text-text-muted">
               Click any game row to inspect telemetry, refresh install velocity, or view country availability.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={selectedPublisher}
-              onChange={(e) => setSelectedPublisher(e.target.value)}
-              className="rounded-xl bg-input-bg border border-border-subtle px-3 py-2 text-xs text-text-main"
-            >
-              <option value="all">All Accounts in View ({visiblePublishers.length})</option>
-              {visiblePublishers.map((p) => (
-                <option key={p.id} value={p.publisher_name}>
-                  {getDisplayName(p.publisher_name)} ({p.total_games})
-                </option>
-              ))}
-            </select>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="relative">
+              <select
+                value={selectedPublisher}
+                onChange={(e) => setSelectedPublisher(e.target.value)}
+                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer max-w-[210px] truncate"
+              >
+                <option value="all">All Accounts in View ({visiblePublishers.length})</option>
+                {visiblePublishers.map((p) => (
+                  <option key={p.id} value={p.publisher_name}>
+                    {getDisplayName(p.publisher_name)} ({p.total_games})
+                  </option>
+                ))}
+              </select>
+              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                unfold_more
+              </span>
+            </div>
 
-            <select
-              value={selectedPricing}
-              onChange={(e) => setSelectedPricing(e.target.value)}
-              className="rounded-xl bg-input-bg border border-border-subtle px-3 py-2 text-xs text-text-main"
-            >
-              <option value="all">All Pricing</option>
-              <option value="free">Free Only</option>
-              <option value="paid">Paid Only</option>
-            </select>
+            <div className="relative">
+              <select
+                value={selectedPricing}
+                onChange={(e) => setSelectedPricing(e.target.value)}
+                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer"
+              >
+                <option value="all">All Pricing</option>
+                <option value="free">Free Only</option>
+                <option value="paid">Paid Only</option>
+              </select>
+              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                unfold_more
+              </span>
+            </div>
 
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="rounded-xl bg-input-bg border border-border-subtle px-3 py-2 text-xs text-text-main"
-            >
-              <option value="installs">Sort: Highest Installs</option>
-              <option value="delta">Sort: Fastest Daily Velocity</option>
-              <option value="release">Sort: Newest Play Launch Date</option>
-              <option value="first_seen">Sort: Newly Discovered in Atlas</option>
-              <option value="reviews">Sort: Most Reviews</option>
-              <option value="rating">Sort: Highest Rating</option>
-            </select>
+            <div className="relative">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer"
+              >
+                <option value="installs">Sort: Highest Installs</option>
+                <option value="delta">Sort: Fastest Daily Velocity</option>
+                <option value="release">Sort: Newest Play Launch Date</option>
+                <option value="first_seen">Sort: Newly Discovered in Atlas</option>
+                <option value="reviews">Sort: Most Reviews</option>
+                <option value="rating">Sort: Highest Rating</option>
+              </select>
+              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                unfold_more
+              </span>
+            </div>
 
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search title, package, publisher..."
-              className="rounded-xl bg-input-bg border border-border-subtle px-3 py-2 text-xs text-text-main w-52"
-            />
+            <div className="relative">
+              <span className="material-symbols-outlined text-[16px] text-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                search
+              </span>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search title, package, publisher..."
+                className="h-9 pl-8 pr-3 rounded-xl bg-input-bg border border-border-subtle text-xs font-medium text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none transition w-48 sm:w-56"
+              />
+            </div>
           </div>
         </div>
 
@@ -2077,7 +2293,7 @@ export default function PlayStoreIntelligenceView({
 
                       <td className="py-2.5 px-3 text-right font-mono">
                         {Number(g.installs_delta_1d) > 0 ? (
-                          <span className="text-emerald-400 font-semibold">
+                          <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
                             +{Number(g.installs_delta_1d).toLocaleString()}/d
                           </span>
                         ) : (
@@ -2101,7 +2317,7 @@ export default function PlayStoreIntelligenceView({
                               if (onOpenCountryScan) onOpenCountryScan(g.package_name);
                             }}
                             title="Click to open Country Availability breakdown"
-                            className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono font-semibold hover:bg-emerald-500/25"
+                            className="px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-[10px] font-mono font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-500/25"
                           >
                             🌍 {g.country_scan.liveCount}/176
                           </button>
@@ -2863,6 +3079,136 @@ export default function PlayStoreIntelligenceView({
                 </div>
               </div>
             </form>
+          </div>,
+          document.body
+        )}
+
+      {/* MODAL: MANAGE COMPETITOR BATCHES (GROUPS) (z-[100]) */}
+      {groupModal &&
+        createPortal(
+          <div
+            onClick={() => setGroupModal(null)}
+            className="atlas-google-shell fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="bg-surface-solid border border-border-subtle rounded-3xl w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+            >
+              <div className="p-5 border-b border-border-subtle flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-text-main flex items-center gap-2">
+                    <span className="material-symbols-outlined text-electric-blue">folder_special</span>
+                    {groupModal.mode === "create" ? "Create Competitor Batch" : `Edit Batch: ${groupModal.name}`}
+                  </h3>
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Group multiple competitors (e.g. Trenzy &amp; Gaminator) into a unified batch named Bahria.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setGroupModal(null)}
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
+                >
+                  <span className="material-symbols-outlined text-[20px]">close</span>
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveBatch} className="p-5 overflow-y-auto flex-1 flex flex-col gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
+                    Batch Name
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={groupModal.name}
+                    onChange={(e) => setGroupModal({ ...groupModal, name: e.target.value })}
+                    placeholder="e.g. Bahria"
+                    className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
+                    Description (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={groupModal.description}
+                    onChange={(e) => setGroupModal({ ...groupModal, description: e.target.value })}
+                    placeholder="e.g. Trenzy and Gaminator studio network"
+                    className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
+                      Select Member Competitors ({groupModal.competitorIds.length} selected)
+                    </label>
+                    <span className="text-[10px] text-text-muted">
+                      Select competitors to group
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1.5 bg-input-bg rounded-xl border border-border-subtle">
+                    {(overview.lists || []).map((comp) => {
+                      const isChecked = groupModal.competitorIds.includes(comp.id);
+                      return (
+                        <label
+                          key={comp.id}
+                          className={`flex items-center gap-2.5 p-2 rounded-lg cursor-pointer text-xs font-medium transition ${
+                            isChecked
+                              ? "bg-electric-blue/15 text-electric-blue border border-electric-blue/30"
+                              : "bg-surface-solid text-text-main border border-border-subtle hover:bg-surface-glass"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...groupModal.competitorIds, comp.id]
+                                : groupModal.competitorIds.filter((id) => id !== comp.id);
+                              setGroupModal({ ...groupModal, competitorIds: next });
+                            }}
+                            className="accent-electric-blue rounded w-4 h-4 cursor-pointer"
+                          />
+                          <span className="truncate flex-1 font-semibold">{comp.name}</span>
+                          <span className="text-[10px] text-text-muted">({comp.account_count || 0})</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-3 border-t border-border-subtle mt-auto">
+                  {groupModal.mode === "edit" ? (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteBatch(groupModal.groupId)}
+                      className="px-3.5 py-2 rounded-xl bg-urgent-red/10 border border-urgent-red/20 text-urgent-red text-xs font-semibold hover:bg-urgent-red hover:text-white transition"
+                    >
+                      Delete Batch
+                    </button>
+                  ) : <div />}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setGroupModal(null)}
+                      className="px-4 py-2 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:bg-surface-glass"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-5 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shadow-sm"
+                    >
+                      Save Batch
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
           </div>,
           document.body
         )}

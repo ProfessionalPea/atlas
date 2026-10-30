@@ -32,6 +32,10 @@ const {
   registerPlayStoreRoutes,
   syncLegacyAccountsAndCompetitors
 } = require('./PlayStoreIntelligence');
+const {
+  initializeCompetitorGroupsStorage,
+  registerCompetitorGroupRoutes
+} = require('./CompetitorGroups');
 
 const extensionPool = getDatabasePool();
 
@@ -348,7 +352,8 @@ async function initialize() {
     await initializePlayTelemetryStorage(extensionPool);
     await initializeAmazonStorage(extensionPool);
     await initializePlayStoreStorage(extensionPool);
-    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry + Amazon + Play Store Intelligence storage ready.');
+    await initializeCompetitorGroupsStorage(extensionPool);
+    console.log('🎬 [Atlas Intelligence] Video library + editable metadata + keyword + Play telemetry + Amazon + Play Store Intelligence + Competitor Groups storage ready.');
   } catch (error) {
     initialized = false;
     console.error('⚠️ [Atlas Intelligence] Initialization failed:', error.message);
@@ -365,6 +370,7 @@ express.application.listen = function atlasExtensionListen(...args) {
     registerPlayTelemetryRoutes({ app: this, pool: extensionPool });
     registerAmazonRoutes({ app: this, pool: extensionPool });
     registerPlayStoreRoutes({ app: this, pool: extensionPool });
+    registerCompetitorGroupRoutes({ app: this, pool: extensionPool });
   }
   void initialize();
   return originalListen.apply(this, args);
