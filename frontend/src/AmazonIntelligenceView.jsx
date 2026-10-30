@@ -1364,9 +1364,9 @@ export default function AmazonIntelligenceView() {
                               }}
                               style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
                               title={`${dispName}: ${free} Free games (click to filter)`}
-                              className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
+                              className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
                             >
-                              {free >= 6 ? `${free} Free` : ""}
+                              {freeWidthPct >= 18 ? `${free} Free` : freeWidthPct >= 10 ? `${free}F` : freeWidthPct >= 5 ? String(free) : ""}
                             </button>
                           )}
                           {paid > 0 && (
@@ -1378,9 +1378,9 @@ export default function AmazonIntelligenceView() {
                               }}
                               style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
                               title={`${dispName}: ${paid} Paid games · Median $${Number(pub.median_paid_price || 0).toFixed(2)} (click to filter)`}
-                              className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
+                              className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
                             >
-                              {paid >= 6 ? `${paid} Paid` : ""}
+                              {paidWidthPct >= 18 ? `${paid} Paid` : paidWidthPct >= 10 ? `${paid}P` : paidWidthPct >= 5 ? String(paid) : ""}
                             </button>
                           )}
                         </>

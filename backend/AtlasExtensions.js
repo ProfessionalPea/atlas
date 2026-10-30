@@ -139,13 +139,15 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
               CASE
                 WHEN cm.latest_creative_seen IS NOT NULL
                  AND cm.latest_creative_seen >= (NOW() - INTERVAL '14 days') THEN 'active'
-                WHEN COALESCE(g.ad_count, 0) > 0
-                 AND cm.latest_creative_seen IS NULL THEN 'active'
                 WHEN cm.latest_creative_seen IS NOT NULL
                  AND cm.latest_creative_seen < (NOW() - INTERVAL '14 days') THEN 'closed'
+                WHEN COALESCE(g.ad_count, 0) > 0
+                 AND (g.last_seen_at >= (NOW() - INTERVAL '14 days') OR g.store_scanned_at >= (NOW() - INTERVAL '14 days')) THEN 'active'
+                WHEN COALESCE(g.ad_count, 0) > 0
+                 AND (g.last_seen_at < (NOW() - INTERVAL '14 days') OR g.last_seen_at IS NULL) THEN 'closed'
                 WHEN g.card_status IN ('active', 'open') THEN 'active'
-                WHEN g.card_status = 'closed' AND COALESCE(g.ad_count, 0) = 0 AND ag.account_id IS NOT NULL THEN 'closed'
-                WHEN ag.account_id IS NOT NULL AND COALESCE(g.ad_count, 0) = 0 THEN 'closed'
+                WHEN g.card_status = 'closed' THEN 'closed'
+                WHEN COALESCE(g.ad_count, 0) = 0 AND ag.account_id IS NOT NULL THEN 'closed'
                 ELSE 'unscanned'
               END AS card_status
             FROM games g

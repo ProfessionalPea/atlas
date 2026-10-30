@@ -5,6 +5,7 @@ import { cn } from "./lib/utils";
 import GameIntelligenceCard from "./GameIntelligenceCard.jsx";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
+import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
 // NGROK URL / API base live in apiConfig.js (shared by all modules)
 import { API_BASE } from "./apiConfig.js";
@@ -23,7 +24,7 @@ const DIRECTORY_GAME_SORT_OPTIONS = [
   { id: "installs", label: "Installs" },
   { id: "newest", label: "Newest" },
   { id: "rating", label: "Rating" },
-  { id: "az", label: "Aâ€“Z" },
+  { id: "az", label: "A–Z" },
 ];
 
 const COUNTRY_STATE_META = {
@@ -52,7 +53,7 @@ function PaidBadge({ item, compact = false, showPrice = true }) {
   const priceText = typeof rawPriceText === "string" && rawPriceText.trim() && rawPriceText.trim().toLowerCase() !== "free"
     ? rawPriceText.trim()
     : "";
-  const label = showPrice && priceText ? `Paid Â· ${priceText}` : "Paid";
+  const label = showPrice && priceText ? `Paid · ${priceText}` : "Paid";
 
   return (
     <span
@@ -60,7 +61,7 @@ function PaidBadge({ item, compact = false, showPrice = true }) {
         "inline-flex items-center rounded-full border border-violet-500/25 bg-violet-500/10 text-violet-400 font-medium whitespace-nowrap",
         compact ? "gap-1 px-1.5 py-0.5 text-[8px]" : "gap-1.5 px-2.5 py-1 text-[9px] md:text-[10px]"
       )}
-      title={priceText ? `Paid app Â· ${priceText}` : "Paid app"}
+      title={priceText ? `Paid app · ${priceText}` : "Paid app"}
     >
       <span className={cn("material-symbols-outlined", compact ? "text-[11px]" : "text-[14px]")}>payments</span>
       {label}
@@ -2451,7 +2452,7 @@ function App() {
                   className="absolute top-[52px] left-0 right-0 bg-surface-solid border border-border-subtle rounded-[20px] shadow-xl overflow-hidden z-[70]"
                 >
                   {globalSearchResultCount === 0 ? (
-                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for â€œ{directorySearch.trim()}â€.</div>
+                    <div className="px-5 py-8 text-center text-sm text-text-muted">No Atlas results for “{directorySearch.trim()}”.</div>
                   ) : (
                     <div className="max-h-[430px] overflow-y-auto custom-scrollbar py-2">
                       {globalSearchResults.games.length > 0 && (
@@ -2634,7 +2635,7 @@ function App() {
             <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6 w-full bg-amber-500/10 border border-amber-500/25 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-center gap-2 text-amber-500 text-[11px] md:text-xs z-40 relative">
               <span className="flex items-center gap-2 font-medium"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Server offline</span>
               <span className="hidden sm:block text-amber-500/50">|</span>
-              <span className="text-center sm:text-left">Workstation server is unreachable. Active tracking hours: 9:00 AM â€“ 6:00 PM.</span>
+              <span className="text-center sm:text-left">Workstation server is unreachable. Active tracking hours: 9:00 AM – 6:00 PM.</span>
             </motion.div>
           )}
 
@@ -3111,7 +3112,7 @@ function App() {
                       <span className="material-symbols-outlined text-urgent-red text-[18px]">block</span>
                       Suspended games
                     </h3>
-                    <span className="text-[10px] text-text-muted">Preserved snapshots Â· reversible</span>
+                    <span className="text-[10px] text-text-muted">Preserved snapshots · reversible</span>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6">
@@ -3165,11 +3166,11 @@ function App() {
                             <div className="grid grid-cols-3 gap-2 mt-4">
                               <div className="rounded-xl bg-input-bg px-2.5 py-2">
                                 <div className="text-[9px] text-text-muted">Rating</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "â€”"}</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{Number(game.rating) > 0 ? Number(game.rating).toFixed(1) : "—"}</div>
                               </div>
                               <div className="rounded-xl bg-input-bg px-2.5 py-2">
                                 <div className="text-[9px] text-text-muted">Installs</div>
-                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "â€”"}</div>
+                                <div className="text-xs font-semibold text-text-main mt-0.5">{game.installs || "—"}</div>
                               </div>
                               <div className="rounded-xl bg-input-bg px-2.5 py-2">
                                 <div className="text-[9px] text-text-muted">Ads</div>
@@ -3576,11 +3577,11 @@ function App() {
                             <div className="mt-4 pt-3 border-t border-border-subtle flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                               <div className="text-[9px] md:text-[10px] text-text-muted">
                                 <span>{item.completedAt ? new Date(item.completedAt).toLocaleString() : "No completion time"}</span>
-                                <span className="mx-1.5">Â·</span>
+                                <span className="mx-1.5">·</span>
                                 <span>{item.scanCount || 1} {(item.scanCount || 1) === 1 ? "scan" : "scans"}</span>
                                 {item.totalCountries ? (
                                   <>
-                                    <span className="mx-1.5">Â·</span>
+                                    <span className="mx-1.5">·</span>
                                     <span>{item.totalCountries} locations</span>
                                   </>
                                 ) : null}
@@ -4027,280 +4028,17 @@ function App() {
         })()}
       </AnimatePresence>
 
-      <AnimatePresence onExitComplete={() => setSelectedGame(null)}>
-        {isDrawerOpen && selectedGame && (
-          <div className="fixed inset-0 z-[60] pointer-events-none">
-            <motion.div
-              key="game-drawer-backdrop"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.16 }}
-              className="absolute inset-0 bg-black/70 pointer-events-auto"
-              onClick={closeDrawer}
-            />
-            <motion.aside
-              key={`game-drawer-${getGameIdentity(selectedGame)}`}
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "tween", duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              className="absolute top-0 right-0 h-full w-full sm:w-[450px] md:w-[500px] bg-surface-solid border-l border-border-subtle shadow-2xl flex flex-col z-[70] pointer-events-auto will-change-transform"
-            >
-            <div className="p-6 md:p-8 pb-6 flex items-start justify-between relative bg-surface-glass border-b border-border-subtle pt-safe">
-              <div className="flex gap-5 md:gap-6 items-start min-w-0 pr-4">
-                <div className="w-20 h-20 md:w-24 md:h-24 rounded-2xl bg-input-bg border border-border-subtle flex items-center justify-center overflow-hidden flex-shrink-0">
-                  {selectedGame.icon ? <img loading="lazy" decoding="async" src={selectedGame.icon} alt="Icon" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-[40px] text-primary/50">sports_esports</span>}
-                </div>
-                <div className="flex flex-col pt-1 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0 mb-1">
-                    <h1 className="font-headline-lg text-text-main text-xl md:text-2xl leading-tight truncate">{selectedGame.title}</h1>
-                    <PaidBadge item={selectedGame} showPrice />
-                  </div>
-                  <p className="font-body-xs md:font-body-sm text-text-muted font-medium mb-3 truncate">{selectedGame.publisher_name}</p>
-                  
-                  {(() => {
-                    const compName = getCompetitorForGame(selectedGame, competitorTree);
-                    return compName ? (
-                      <div className="flex items-center gap-1.5 text-electric-blue font-medium text-[10px] md:text-xs bg-electric-blue/10 border border-electric-blue/20 px-2.5 py-1 rounded w-max mb-4 shadow-sm">
-                        <span className="material-symbols-outlined text-[14px]">corporate_fare</span>
-                        Group: {compName}
-                      </div>
-                    ) : (
-                      <div className="mb-2"></div>
-                    );
-                  })()}
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <a href={`https://play.google.com/store/apps/details?id=${selectedGame.package_name}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-electric-blue hover:bg-blue-600 text-white text-xs px-4 py-2 rounded-lg border border-border-subtle transition-all w-max shadow-sm font-bold active:scale-[0.98]">
-                      Play Store <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                    </a>
-                    {selectedGame.publisher_url && (
-                      <a href={selectedGame.publisher_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 bg-input-bg text-text-main text-xs px-3 py-2 rounded-lg border border-border-subtle transition-all w-max">
-                        Publisher <span className="material-symbols-outlined text-[15px]">storefront</span>
-                      </a>
-                    )}
-                    {isAdmin && selectedGame.id && (
-                      selectedGame.is_suspended ? (
-                        <button
-                          type="button"
-                          onClick={(event) => handleSetGameSuspended(selectedGame, false, event)}
-                          className="flex items-center gap-1.5 bg-emerald-500/10 text-emerald-500 text-xs px-3 py-2 rounded-lg border border-emerald-500/25 transition-all w-max"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">undo</span>
-                          Restore
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={(event) => handleSetGameSuspended(selectedGame, true, event)}
-                          className="flex items-center gap-1.5 bg-urgent-red/10 text-urgent-red text-xs px-3 py-2 rounded-lg border border-urgent-red/25 transition-all w-max"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">block</span>
-                          Mark suspended
-                        </button>
-                      )
-                    )}
-                  </div>
-                </div>
-              </div>
-              <button onClick={closeDrawer} className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-glass border border-transparent hover:border-border-subtle transition-all text-text-muted hover:text-text-main bg-surface-solid md:bg-transparent flex-shrink-0"><span className="material-symbols-outlined text-[24px]">close</span></button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6 md:p-8 flex flex-col gap-8 custom-scrollbar pb-24">
-              <GameIntelligenceCard
-                game={selectedGame}
-                onRefreshTelemetry={handleRefreshGameTelemetry}
-                isRefreshing={telemetryRefreshingPkg === selectedGame.package_name}
-                inDrawer
-              />
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted mb-2 font-bold">Rating</p><div className="flex items-center gap-2"><p className="font-headline-lg text-2xl text-text-main font-bold">{Number(selectedGame.rating) > 0 ? Number(selectedGame.rating).toFixed(1) : "N/A"}</p><span className="material-symbols-outlined text-electric-blue text-[22px] mb-0.5" style={{fontVariationSettings: "'FILL' 1"}}>star</span></div></div>
-                <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl"><p className="text-xs text-text-muted mb-2 font-bold">Reviews</p><p className="font-headline-lg text-2xl text-text-main font-bold">{selectedGame.ratings_count || 0}</p></div>
-              </div>
-              <div className="bg-surface-glass border border-border-subtle shadow-sm p-5 rounded-2xl">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-xs text-text-main font-bold flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[17px] text-electric-blue">public</span>
-                      Country availability
-                    </h3>
-                    <p className="text-[10px] text-text-muted mt-1 font-mono break-all">{selectedGame.package_name}</p>
-                    <div className="mt-2">
-                      <PaidBadge item={selectedGameCountryScan?.scan?.isPaid ? selectedGameCountryScan.scan : selectedGame} compact />
-                    </div>
-                  </div>
-                  {selectedGameCountryScan?.scan?.completedAt && (
-                    <span className="text-[9px] text-text-muted text-right flex-shrink-0">
-                      {new Date(selectedGameCountryScan.scan.completedAt).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-
-                {selectedGameCountryLoading ? (
-                  <div className="mt-4 flex items-center gap-2 text-xs text-text-muted">
-                    <span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
-                    Checking saved scan...
-                  </div>
-                ) : selectedGameCountryScan ? (
-                  <>
-                    <div className="grid grid-cols-2 gap-2 mt-4">
-                      {[
-                        ["live", selectedGameCountryScan.scan.counts?.live || 0],
-                        ["pre_register", selectedGameCountryScan.scan.counts?.pre_register || 0],
-                        ["early_access", selectedGameCountryScan.scan.counts?.early_access || 0],
-                        ["unavailable", selectedGameCountryScan.scan.counts?.unavailable || 0]
-                      ].map(([state, count]) => {
-                        const meta = getCountryStateMeta(state);
-                        return (
-                          <div key={state} className={cn("rounded-xl border px-3 py-2", meta.className)}>
-                            <div className="text-[9px] font-medium">{meta.label}</div>
-                            <div className="text-lg font-semibold mt-0.5">{count}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => openCountryScanDetails(selectedGameCountryScan, selectedGame.package_name)}
-                        className="h-9 px-3 rounded-full bg-input-bg border border-border-subtle text-text-main text-[10px] font-medium hover:bg-surface-solid flex items-center gap-1.5"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">visibility</span>
-                        View countries
-                      </button>
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          onClick={() => handleStartCountryScan(selectedGame.package_name)}
-                          disabled={isCountryScanRunning}
-                          className="h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">refresh</span>
-                          Scan again
-                        </button>
-                      )}
-                      {(selectedGameCountryScan.changes?.length || 0) > 0 && (
-                        <span className="h-9 px-3 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[10px] font-medium flex items-center">
-                          {selectedGameCountryScan.changes.length} changed
-                        </span>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="mt-4">
-                    <p className="text-xs text-text-muted">No country scan has been saved for this package yet.</p>
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        onClick={() => handleStartCountryScan(selectedGame.package_name)}
-                        disabled={isCountryScanRunning}
-                        className="mt-3 h-9 px-3 rounded-full bg-electric-blue text-white text-[10px] font-medium disabled:opacity-50 flex items-center gap-1.5"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">travel_explore</span>
-                        Scan countries
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {(selectedGameVideosLoading || selectedGameVideos.length > 0) && (
-                <div className="flex flex-col gap-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-xs text-text-muted flex items-center gap-2 font-bold">
-                      <span className="material-symbols-outlined text-[17px] text-electric-blue">video_library</span>
-                      Video creatives
-                    </h3>
-                    {!selectedGameVideosLoading && (
-                      <span className="font-mono text-[9px] text-text-muted bg-input-bg px-2.5 py-1 rounded-full border border-border-subtle">
-                        {selectedGameVideos.length} found
-                      </span>
-                    )}
-                  </div>
-
-                  {selectedGameVideosLoading ? (
-                    <div className="h-28 rounded-2xl border border-border-subtle bg-surface-glass flex items-center justify-center gap-2 text-xs text-text-muted">
-                      <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
-                      Loading video creatives...
-                    </div>
-                  ) : (
-                    <div className="flex overflow-x-auto gap-3 pb-2 snap-x snap-mandatory custom-scrollbar">
-                      {selectedGameVideos.map((asset) => {
-                        const watchUrl = asset.youtubeUrl || (!asset.mediaUrlExpired ? asset.mediaUrl : null);
-                        const thumbnail = asset.thumbnailUrl || selectedGame.header_image || selectedGame.icon;
-                        return (
-                          <a
-                            key={asset.assetKey || asset.id}
-                            href={watchUrl || "#"}
-                            target={watchUrl ? "_blank" : undefined}
-                            rel={watchUrl ? "noreferrer" : undefined}
-                            onClick={(event) => { if (!watchUrl) event.preventDefault(); }}
-                            className="group/video relative w-[180px] h-[112px] flex-shrink-0 rounded-2xl overflow-hidden snap-start border border-border-subtle bg-black shadow-sm"
-                            title={watchUrl ? "Watch video creative" : "Video link unavailable"}
-                          >
-                            {thumbnail ? (
-                              <img loading="lazy" decoding="async" src={thumbnail} alt="Video creative" className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/video:scale-[1.02] transition-transform duration-200" />
-                            ) : (
-                              <div className="absolute inset-0 flex items-center justify-center text-white/60">
-                                <span className="material-symbols-outlined text-[30px]">movie</span>
-                              </div>
-                            )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/5 to-black/10" />
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className="w-10 h-10 rounded-full bg-black/60 border border-white/20 backdrop-blur-sm text-white flex items-center justify-center">
-                                <span className="material-symbols-outlined text-[24px] ml-0.5">play_arrow</span>
-                              </span>
-                            </div>
-                            <div className="absolute left-2.5 right-2.5 bottom-2 flex items-center justify-between gap-2 text-white">
-                              <span className="text-[9px] font-medium truncate">
-                                {asset.source === "youtube" ? "YouTube" : "Direct video"}
-                              </span>
-                              <span className="text-[8px] bg-black/55 rounded-full px-1.5 py-0.5 flex-shrink-0">
-                                {Number(asset.adCount) || 0} ads
-                              </span>
-                            </div>
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {selectedGame.screenshots && (
-                <div className="flex flex-col gap-4">
-                  <h3 className="text-xs text-text-muted flex items-center gap-3 font-bold"><span className="w-8 h-[1px] bg-border-subtle"></span> Screenshots</h3>
-                  <div className="flex overflow-x-auto gap-4 pb-4 snap-x snap-mandatory custom-scrollbar">
-                    {parseJsonArray(selectedGame.screenshots).slice(0, 4).map((url, i) => <div key={i} className="w-[140px] h-[280px] flex-shrink-0 bg-surface-glass rounded-xl overflow-hidden snap-center border border-border-subtle shadow-sm"><img loading="lazy" decoding="async" src={url} alt={`Screenshot ${i}`} className="w-full h-full object-cover hover:scale-105 transition-transform duration-500" /></div>)}
-                  </div>
-                </div>
-              )}
-              {selectedGame.similar_apps && (
-                <div className="flex flex-col gap-4">
-                  <div className="flex items-center justify-between"><h3 className="text-xs text-text-muted flex items-center gap-2 font-bold"><span className="material-symbols-outlined text-[16px] text-electric-blue">radar</span> Similar apps</h3><span className="font-mono text-[10px] text-text-muted bg-surface-solid px-2.5 py-1 rounded border border-border-subtle font-bold">{parseJsonArray(selectedGame.similar_apps).length} Found</span></div>
-                  <div className="space-y-3">
-                    {parseJsonArray(selectedGame.similar_apps).length === 0 ? <p className="font-body-sm text-xs text-text-muted italic">No direct copycats detected.</p> : parseJsonArray(selectedGame.similar_apps).map((sim, i) => (
-                      <div key={i} className="flex items-center justify-between p-3.5 rounded-xl bg-surface-glass border border-border-subtle shadow-sm group">
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <div className="w-12 h-12 rounded-lg overflow-hidden bg-input-bg flex-shrink-0 border border-border-subtle">
-                            {sim.icon ? <img loading="lazy" decoding="async" src={sim.icon} alt={sim.title} className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-primary/50 text-[24px] flex h-full items-center justify-center">sports_esports</span>}
-                          </div>
-                          <div className="min-w-0 pr-2">
-                            <p className="font-body-sm font-bold text-text-main truncate group-hover:text-primary transition-colors">{sim.title}</p>
-                            <p className="font-body-xs text-xs text-text-muted truncate mt-0.5">{sim.developer}</p>
-                          </div>
-                        </div>
-                        <a href={`https://play.google.com/store/apps/details?id=${sim.appId}`} target="_blank" rel="noreferrer" className="text-text-muted hover:text-electric-blue ml-2 p-2 rounded-lg bg-surface-solid border border-border-subtle flex-shrink-0"><span className="material-symbols-outlined text-[18px]">open_in_new</span></a>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            </motion.aside>
-          </div>
-        )}
-      </AnimatePresence>
+      {isDrawerOpen && selectedGame && (
+        <UniversalGameDetailDrawer
+          game={selectedGame}
+          onClose={closeDrawer}
+          onSelectGame={(sibling) => setSelectedGame(sibling)}
+          onRefreshTelemetry={handleRefreshGameTelemetry}
+          isRefreshing={telemetryRefreshingPkg === selectedGame.package_name}
+          onOpenCountryScan={(pkg) => handleStartCountryScan(pkg)}
+          allGames={trending}
+        />
+      )}
 
       <AnimatePresence>
         {countryScanModalOpen && (
@@ -4330,7 +4068,7 @@ function App() {
                   {countryScanData?.scan?.appTitle && (
                     <div className="mt-0.5 flex items-center gap-2 min-w-0">
                       <p className="text-[10px] text-text-muted truncate">
-                        {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " Â· " + countryScanData.scan.developer : ""}
+                        {countryScanData.scan.appTitle}{countryScanData.scan.developer ? " · " + countryScanData.scan.developer : ""}
                       </p>
                       <PaidBadge item={countryScanData.scan} compact showPrice={false} />
                     </div>
@@ -4367,7 +4105,7 @@ function App() {
                     </div>
 
                     <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted">
-                      <span>Loading saved scanâ€¦</span>
+                      <span>Loading saved scan...</span>
                       <span className="font-mono">{countryPackage}</span>
                     </div>
                   </div>
@@ -4449,8 +4187,8 @@ function App() {
 
                     <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                       <div className="text-[10px] text-text-muted">
-                        Last scanned {countryScanData.scan?.completedAt ? new Date(countryScanData.scan.completedAt).toLocaleString() : "â€”"}
-                        {countryScanData.previousScan ? " Â· compared with previous scan" : " Â· first saved scan"}
+                        Last scanned {countryScanData.scan?.completedAt ? new Date(countryScanData.scan.completedAt).toLocaleString() : "—"}
+                        {countryScanData.previousScan ? " · compared with previous scan" : " · first saved scan"}
                       </div>
                       <div className="flex items-center gap-2">
                         {(countryScanData.changes?.length || 0) > 0 && (
@@ -4566,7 +4304,7 @@ function App() {
                       ) : (
                         <>
                           <div className="mb-3 rounded-xl border border-border-subtle bg-input-bg/60 px-3 py-2.5 text-[10px] text-text-muted">
-                            <span className="font-medium text-text-main">Calculated score</span> is a confidence-adjusted 0â€“100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
+                            <span className="font-medium text-text-main">Calculated score</span> is a confidence-adjusted 0–100 score based on the observed country rating/star distribution. Small samples are pulled toward a neutral prior so a few perfect ratings do not outrank a large, consistently strong market.
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                             {countryPerformanceRows.map((item, index) => (
@@ -4589,19 +4327,19 @@ function App() {
                                           {item.performanceBand === "strong" ? "Strong" : item.performanceBand === "weak" ? "Weak" : "Typical"}
                                         </span>
                                       </div>
-                                      <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} Â· {item.performanceConfidence || "none"} sample confidence</div>
+                                      <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.performanceConfidence || "none"} sample confidence</div>
                                     </div>
                                   </div>
                                   <div className="text-right flex-shrink-0">
                                     <div className="text-[9px] text-text-muted">Calculated score</div>
-                                    <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "â€”" : Number(item.atlasMarketScore).toFixed(1)}</div>
+                                    <div className="text-lg font-semibold text-electric-blue">{item.atlasMarketScore == null ? "—" : Number(item.atlasMarketScore).toFixed(1)}</div>
                                   </div>
                                 </div>
 
                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
                                   <div className="rounded-lg bg-input-bg px-2.5 py-2">
                                     <div className="text-[9px] text-text-muted">Play rating</div>
-                                    <div className="text-xs font-semibold text-text-main mt-0.5">{item.playRating == null ? "â€”" : Number(item.playRating).toFixed(2)} â˜…</div>
+                                    <div className="text-xs font-semibold text-text-main mt-0.5">{item.playRating == null ? "—" : Number(item.playRating).toFixed(2)} ★</div>
                                   </div>
                                   <div className="rounded-lg bg-input-bg px-2.5 py-2">
                                     <div className="text-[9px] text-text-muted">Ratings</div>
@@ -4621,12 +4359,12 @@ function App() {
                                   <div className="mt-3">
                                     <div className="flex items-center justify-between text-[9px] text-text-muted">
                                       <span className="text-emerald-500">
-                                        Positive {item.positiveShare == null ? "â€”" : Number(item.positiveShare).toFixed(1) + "%"}
-                                        {item.positiveRatings ? ` Â· ${Number(item.positiveRatings).toLocaleString()}` : ""}
+                                        Positive {item.positiveShare == null ? "—" : Number(item.positiveShare).toFixed(1) + "%"}
+                                        {item.positiveRatings ? ` · ${Number(item.positiveRatings).toLocaleString()}` : ""}
                                       </span>
                                       <span className="text-urgent-red">
-                                        Negative {item.negativeShare == null ? "â€”" : Number(item.negativeShare).toFixed(1) + "%"}
-                                        {item.negativeRatings ? ` Â· ${Number(item.negativeRatings).toLocaleString()}` : ""}
+                                        Negative {item.negativeShare == null ? "—" : Number(item.negativeShare).toFixed(1) + "%"}
+                                        {item.negativeRatings ? ` · ${Number(item.negativeRatings).toLocaleString()}` : ""}
                                       </span>
                                     </div>
                                     <div className="mt-1.5 h-1.5 bg-input-bg rounded-full overflow-hidden flex">
@@ -4656,7 +4394,7 @@ function App() {
                                     <div className="text-xs font-medium text-text-main truncate">{item.countryName}</div>
                                     <PaidBadge item={item} compact />
                                   </div>
-                                  <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} Â· {item.confidence || "unknown"} confidence</div>
+                                  <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.confidence || "unknown"} confidence</div>
                                   {change && (
                                     <div className="text-[9px] text-amber-500 mt-1">
                                       {getCountryStateMeta(change.from).label} â†’ {getCountryStateMeta(change.to).label}
@@ -4722,7 +4460,7 @@ function App() {
                   </div>
                   <p className="text-[10px] md:text-[11px] text-text-muted truncate mt-0.5">
                     {countryScanJob?.packageName || countryPackage}
-                    {countryScanJob?.currentCountryName ? ` Â· ${countryScanJob.currentCountryName}` : ""}
+                    {countryScanJob?.currentCountryName ? ` · ${countryScanJob.currentCountryName}` : ""}
                   </p>
                 </div>
               </div>
@@ -4763,7 +4501,7 @@ function App() {
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
                         <span className="text-text-main font-medium">{countryScanJob?.checked || 0}</span> of {countryScanJob?.total || 0} countries checked
-                        <span className="ml-1.5">Â· {countryScanPercentage}%</span>
+                        <span className="ml-1.5">· {countryScanPercentage}%</span>
                       </span>
                     </div>
 
@@ -4772,7 +4510,7 @@ function App() {
                       <span className="truncate">
                         {countryScanJob?.currentCountryName
                           ? `Checking Google Play in ${countryScanJob.currentCountryName}`
-                          : "Preparing Google Play storefront scanâ€¦"}
+                          : "Preparing Google Play storefront scan..."}
                       </span>
                     </div>
                   </div>
@@ -4821,7 +4559,7 @@ function App() {
                     </div>
                   </div>
                   <p className="text-[10px] md:text-[11px] text-text-muted truncate mt-0.5">
-                    {scanProgress.target} Â· {scanProgress.targetIndex}/{scanProgress.totalTargets}
+                    {scanProgress.target} · {scanProgress.targetIndex}/{scanProgress.totalTargets}
                   </p>
                 </div>
               </div>
@@ -4873,7 +4611,7 @@ function App() {
                     <div className="mt-2.5 flex items-center justify-between gap-3 text-[10px] md:text-[11px] text-text-muted">
                       <span>
                         <span className="text-text-main font-medium">{scanProgress.uniqueGamesFound || 0}</span> / {scanProgress.targetUniqueGames || 0} unique games
-                        <span className="ml-1.5">Â· {scanPercentage}%</span>
+                        <span className="ml-1.5">· {scanPercentage}%</span>
                       </span>
                       <span className="tabular-nums flex-shrink-0">{scanProgress.timeRemaining}</span>
                     </div>
@@ -4894,7 +4632,7 @@ function App() {
 
                     <div className="mt-2.5 flex items-center gap-2 text-[10px] text-text-muted min-w-0">
                       <span className="material-symbols-outlined text-[14px] flex-shrink-0">terminal</span>
-                      <span className="truncate">{scanProgress.logs[scanProgress.logs.length - 1] || "Preparing scanâ€¦"}</span>
+                      <span className="truncate">{scanProgress.logs[scanProgress.logs.length - 1] || "Preparing scan..."}</span>
                     </div>
                   </div>
                 </motion.div>

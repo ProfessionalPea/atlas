@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
 import { KeywordPanel } from "./AtlasIntelligenceLayer.jsx";
+import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
 const SAMPLE_PLAY_LINKS = [
   "https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio",
@@ -1471,7 +1472,7 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
               { id: "all", label: "All Time" },
               { id: "today", label: "Today" },
               { id: "7d", label: "7 Days" },
-              { id: "14d", label: "14 Days (Pre-Ads Window)" },
+              { id: "14d", label: "14 Days" },
               { id: "30d", label: "30 Days" },
               { id: "90d", label: "90 Days" },
               { id: "6m", label: "6 Months" },
@@ -1784,9 +1785,9 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
                               }}
                               style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
                               title={`${dispName}: ${free} Free games (click to filter)`}
-                              className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
+                              className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
                             >
-                              {free >= 3 ? `${free} Free` : ""}
+                              {freeWidthPct >= 18 ? `${free} Free` : freeWidthPct >= 10 ? `${free}F` : freeWidthPct >= 5 ? String(free) : ""}
                             </button>
                           )}
                           {paid > 0 && (
@@ -1798,9 +1799,9 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
                               }}
                               style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
                               title={`${dispName}: ${paid} Paid games (click to filter)`}
-                              className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden"
+                              className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
                             >
-                              {paid >= 2 ? `${paid} Paid` : ""}
+                              {paidWidthPct >= 18 ? `${paid} Paid` : paidWidthPct >= 10 ? `${paid}P` : paidWidthPct >= 5 ? String(paid) : ""}
                             </button>
                           )}
                         </>
@@ -2871,278 +2872,16 @@ export default function PlayStoreIntelligenceView({ onOpenCountryScan }) {
           document.body
         )}
 
-      {/* GAME DETAIL DRAWER (z-[90] via Portal — sits cleanly in front of z-50 top header) */}
-      {activeGameDrawer &&
-        createPortal(
-          <div
-            onClick={() => setActiveGameDrawer(null)}
-            className="atlas-google-shell fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
-          >
-            <aside
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3.5 min-w-0">
-                  {activeGameDrawer.icon && (
-                    <img
-                      src={activeGameDrawer.icon}
-                      alt=""
-                      className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
-                    />
-                  )}
-                  <div className="min-w-0">
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                        activeGameDrawer.pricing === "free"
-                          ? "bg-emerald-500/15 text-emerald-400"
-                          : "bg-amber-500/15 text-amber-400"
-                      }`}
-                    >
-                      {activeGameDrawer.pricing === "free"
-                        ? "Free Play Store Title"
-                        : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
-                    </span>
-                    <h3 className="text-base font-semibold text-text-main mt-1 truncate">{activeGameDrawer.title}</h3>
-                    <div className="text-xs text-text-muted truncate">{getDisplayName(activeGameDrawer.publisher_name)}</div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveGameDrawer(null)}
-                  className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Package Name</div>
-                  <div className="text-[11px] font-mono font-semibold text-text-main mt-0.5 truncate" title={activeGameDrawer.package_name}>
-                    {activeGameDrawer.package_name}
-                  </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Real Installs</div>
-                  <div className="text-xs font-mono font-semibold text-emerald-400 mt-0.5">
-                    {activeGameDrawer.real_installs != null
-                      ? Number(activeGameDrawer.real_installs).toLocaleString()
-                      : activeGameDrawer.installs || Number(activeGameDrawer.min_installs || 0).toLocaleString()}
-                  </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Daily Velocity</div>
-                  <div className="text-xs font-mono font-semibold text-electric-blue mt-0.5">
-                    {Number(activeGameDrawer.installs_delta_1d) > 0
-                      ? `+${Number(activeGameDrawer.installs_delta_1d).toLocaleString()} / day`
-                      : "—"}
-                  </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
-                  <div className="text-xs font-semibold text-text-main mt-0.5">
-                    ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
-                  </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Play Launch Date</div>
-                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                    {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
-                  </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">First Seen in Atlas</div>
-                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                    {activeGameDrawer.first_seen_at ? String(activeGameDrawer.first_seen_at).slice(0, 10) : "—"}
-                  </div>
-                </div>
-              </div>
-
-              {/* 1-Click Actions inside Drawer: Refresh, Country Scan, Keywords, and Play Store Link */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  disabled={refreshingPkg === activeGameDrawer.package_name}
-                  onClick={(e) => handleRefreshSingleGame(activeGameDrawer.package_name, e)}
-                  className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-                >
-                  <span className="material-symbols-outlined text-[16px]">refresh</span>
-                  {refreshingPkg === activeGameDrawer.package_name ? "Refreshing..." : "Refresh Telemetry"}
-                </button>
-
-                {activeGameDrawer.country_scan ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (onOpenCountryScan) onOpenCountryScan(activeGameDrawer.package_name);
-                    }}
-                    className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">public</span>
-                    Live in {activeGameDrawer.country_scan.liveCount}/176 Countries
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={countryQueueStatus.running}
-                    onClick={() =>
-                      handleStartCountryQueue({
-                        scope: "single",
-                        packageName: activeGameDrawer.package_name,
-                        skipDays: 0
-                      })
-                    }
-                    className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">public</span>
-                    Scan 176 Countries
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  data-atlas-keywords="1"
-                  onClick={() =>
-                    setKeywordTarget({
-                      packageName: activeGameDrawer.package_name,
-                      title: activeGameDrawer.title
-                    })
-                  }
-                  className="py-2.5 px-3 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue hover:text-electric-blue transition flex items-center justify-center gap-1.5"
-                >
-                  <span className="material-symbols-outlined text-[16px]">key</span>
-                  Keywords Intelligence
-                </button>
-
-                <a
-                  href={activeGameDrawer.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="py-2.5 px-3 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-1.5"
-                >
-                  Open on Play Store
-                  <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-                </a>
-              </div>
-
-              {/* Video Creatives Section (when applicable) */}
-              {(drawerVideosLoading || drawerVideos.length > 0) && (
-                <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <h4 className="text-xs font-semibold text-electric-blue flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-[16px]">video_library</span>
-                      Video Creatives
-                    </h4>
-                    {!drawerVideosLoading && (
-                      <span className="font-mono text-[10px] text-text-muted bg-input-bg px-2.5 py-0.5 rounded-full border border-border-subtle">
-                        {drawerVideos.length} found
-                      </span>
-                    )}
-                  </div>
-
-                  {drawerVideosLoading ? (
-                    <div className="h-24 rounded-xl border border-border-subtle bg-input-bg/50 flex items-center justify-center gap-2 text-xs text-text-muted">
-                      <span className="material-symbols-outlined text-[17px] animate-spin">progress_activity</span>
-                      Loading video creatives...
-                    </div>
-                  ) : (
-                    <div className="flex overflow-x-auto gap-3 pb-2 snap-x snap-mandatory custom-scrollbar">
-                      {drawerVideos.map((asset) => {
-                        const watchUrl = asset.youtubeUrl || (!asset.mediaUrlExpired ? asset.mediaUrl : null);
-                        const thumbnail = asset.thumbnailUrl || activeGameDrawer.header_image || activeGameDrawer.icon;
-                        return (
-                          <a
-                            key={asset.assetKey || asset.id}
-                            href={watchUrl || "#"}
-                            target={watchUrl ? "_blank" : undefined}
-                            rel={watchUrl ? "noreferrer" : undefined}
-                            onClick={(e) => {
-                              if (!watchUrl) e.preventDefault();
-                            }}
-                            className="group/video relative w-[180px] h-[110px] shrink-0 rounded-xl overflow-hidden snap-start border border-border-subtle bg-black shadow-sm"
-                            title={watchUrl ? "Watch video creative" : "Video link unavailable"}
-                          >
-                            {thumbnail ? (
-                              <img
-                                loading="lazy"
-                                decoding="async"
-                                src={thumbnail}
-                                alt="Video creative"
-                                className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/video:scale-[1.03] transition-transform duration-200"
-                              />
-                            ) : (
-                              <div className="absolute inset-0 flex items-center justify-center text-white/60">
-                                <span className="material-symbols-outlined text-[28px]">movie</span>
-                              </div>
-                            )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/10 to-black/10" />
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className="w-9 h-9 rounded-full bg-black/60 border border-white/25 backdrop-blur-sm text-white flex items-center justify-center">
-                                <span className="material-symbols-outlined text-[22px] ml-0.5">play_arrow</span>
-                              </span>
-                            </div>
-                            <div className="absolute left-2.5 right-2.5 bottom-2 flex items-center justify-between gap-2 text-white">
-                              <span className="text-[9px] font-medium truncate">
-                                {asset.source === "youtube" ? "YouTube" : "Direct video"}
-                              </span>
-                              <span className="text-[8px] bg-black/60 rounded-full px-1.5 py-0.5 shrink-0">
-                                {Number(asset.adCount) || 0} ads
-                              </span>
-                            </div>
-                          </a>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {(() => {
-                const siblings = (gamesByPublisher.get(activeGameDrawer.publisher_name) || []).filter(
-                  (g) => g.package_name !== activeGameDrawer.package_name
-                );
-                const dispPub = getDisplayName(activeGameDrawer.publisher_name);
-                return (
-                  <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
-                    <h4 className="text-xs font-semibold text-emerald-400">
-                      Other Games by {dispPub} ({siblings.length})
-                    </h4>
-                    <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto">
-                      {siblings.slice(0, 25).map((s) => (
-                        <button
-                          key={s.package_name}
-                          type="button"
-                          onClick={() => setActiveGameDrawer(s)}
-                          className="p-2 rounded-lg bg-input-bg hover:bg-emerald-500/10 flex items-center justify-between gap-2 text-left text-xs"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            {s.icon && <img src={s.icon} alt="" className="w-6 h-6 rounded object-cover shrink-0" />}
-                            <span className="truncate text-text-main font-medium">{s.title}</span>
-                          </div>
-                          <span className="font-mono text-emerald-400 shrink-0 text-[11px]">
-                            {formatCompactNumber(s.real_installs ?? s.min_installs)} inst ·{" "}
-                            {s.release_date ? String(s.release_date).slice(0, 10) : "—"}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-            </aside>
-          </div>,
-          document.body
-        )}
-
-      {/* KEYWORD INTELLIGENCE MODAL (z-[130] via Portal) */}
-      {keywordTarget && (
-        <KeywordPanel
-          packageName={keywordTarget.packageName}
-          title={keywordTarget.title}
-          onClose={() => setKeywordTarget(null)}
+      {/* UNIVERSAL GAME DETAIL DRAWER (z-[90] via Portal — sits cleanly in front of z-50 top header) */}
+      {activeGameDrawer && (
+        <UniversalGameDetailDrawer
+          game={activeGameDrawer}
+          onClose={() => setActiveGameDrawer(null)}
+          onSelectGame={(sibling) => setActiveGameDrawer(sibling)}
+          onRefreshTelemetry={handleRefreshSingleGame}
+          isRefreshing={refreshingPkg === activeGameDrawer.package_name}
+          onOpenCountryScan={onOpenCountryScan}
+          allGames={games}
         />
       )}
     </div>
