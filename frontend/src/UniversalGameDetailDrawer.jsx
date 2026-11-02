@@ -186,8 +186,15 @@ export default function UniversalGameDetailDrawer({
                         : `Paid Title · $${Number(game.price || 0).toFixed(2)}`}
                     </span>
                     {(game.has_campaign || game.campaign_active) && (
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-blue-50 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/30 text-blue-800 dark:text-blue-300">
-                        Active Campaign
+                      <span
+                        className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-sky-50 dark:bg-sky-500/15 border-sky-300 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 select-none cursor-help"
+                        title={
+                          game.campaign_source === "transparency_center"
+                            ? "Advertising campaign detected via Google Ads Transparency Center."
+                            : "Advertising campaign record imported via Google Ads Transparency Center sheets."
+                        }
+                      >
+                        Campaign
                       </span>
                     )}
                   </div>

@@ -185,6 +185,18 @@ function PlayStoreIntelligenceView({
   const [scanStatus, setScanStatus] = useState({ running: false, state: "idle", log: "" });
   const [elapsedSec, setElapsedSec] = useState(0);
 
+  // Multi-Scope Scanner State
+  const [scanModalTab, setScanModalTab] = useState("links"); // 'links' | 'single_game' | 'competitor' | 'publisher'
+  const [singleGameInput, setSingleGameInput] = useState("");
+  const [singleGameListId, setSingleGameListId] = useState("");
+  const [scannerCompetitorId, setScannerCompetitorId] = useState("all");
+  const [selectedCompetitorPubIds, setSelectedCompetitorPubIds] = useState([]);
+  const [competitorPubFilter, setCompetitorPubFilter] = useState("");
+  const [selectedSinglePubId, setSelectedSinglePubId] = useState("");
+  const [publisherFilterQuery, setPublisherFilterQuery] = useState("");
+  const [isSyncingCampaigns, setIsSyncingCampaigns] = useState(false);
+  const [campaignSyncResult, setCampaignSyncResult] = useState(null);
+
   // Google Sheet Preview & One-Way Importer state
   const [sheetPreview, setSheetPreview] = useState(null);
   const [isLoadingSheet, setIsLoadingSheet] = useState(false);
@@ -869,6 +881,79 @@ function PlayStoreIntelligenceView({
     }
   };
 
+  // Synchronize selected accounts when competitor scope changes in Modal
+  useEffect(() => {
+    if (!scannerCompetitorId || scannerCompetitorId === "all") {
+      setSelectedCompetitorPubIds((overview.publishers || []).map((p) => p.id));
+    } else {
+      const idNum = Number(scannerCompetitorId);
+      const matching = (overview.publishers || []).filter(
+        (p) => Array.isArray(p.list_ids) && p.list_ids.includes(idNum)
+      );
+      setSelectedCompetitorPubIds(matching.map((p) => p.id));
+    }
+  }, [scannerCompetitorId, overview.publishers]);
+
+  const handleSyncSheetCampaigns = async () => {
+    setIsSyncingCampaigns(true);
+    try {
+      const res = await fetcher(`${API_BASE}/api/play/sync-sheet-campaigns`, {
+        method: "POST"
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCampaignSyncResult(data);
+        await loadOverview();
+      } else {
+        alert(`Campaign sync error: ${data?.error || "Unknown error"}`);
+      }
+    } catch (err) {
+      alert(`Campaign sync failed: ${err.message}`);
+    } finally {
+      setIsSyncingCampaigns(false);
+    }
+  };
+
+  const singleGameValidation = useMemo(() => {
+    const raw = singleGameInput.trim();
+    if (!raw) return { valid: false, message: "" };
+    if (/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(raw)) {
+      return { valid: true, type: "package", normalized: raw.toLowerCase() };
+    }
+    try {
+      const url = new URL(raw);
+      if (/\/store\/apps\/details/i.test(url.pathname) && url.searchParams.get("id")) {
+        return { valid: true, type: "url", normalized: url.searchParams.get("id").toLowerCase() };
+      }
+    } catch {}
+    return { valid: false, message: "Enter a valid package ID (e.g. com.voodoo.game) or Play Store details URL." };
+  }, [singleGameInput]);
+
+  const competitorPubsList = useMemo(() => {
+    let list = overview.publishers || [];
+    if (scannerCompetitorId && scannerCompetitorId !== "all") {
+      const idNum = Number(scannerCompetitorId);
+      list = list.filter((p) => Array.isArray(p.list_ids) && p.list_ids.includes(idNum));
+    }
+    if (competitorPubFilter.trim()) {
+      const q = competitorPubFilter.trim().toLowerCase();
+      list = list.filter((p) => (p.display_name || p.publisher_name).toLowerCase().includes(q));
+    }
+    return list;
+  }, [overview.publishers, scannerCompetitorId, competitorPubFilter]);
+
+  const searchablePublishers = useMemo(() => {
+    const list = overview.publishers || [];
+    if (!publisherFilterQuery.trim()) return list;
+    const q = publisherFilterQuery.trim().toLowerCase();
+    return list.filter((p) => (p.display_name || p.publisher_name).toLowerCase().includes(q));
+  }, [overview.publishers, publisherFilterQuery]);
+
+  const selectedPubObj = useMemo(() => {
+    if (!selectedSinglePubId) return null;
+    return (overview.publishers || []).find((p) => p.id === Number(selectedSinglePubId)) || null;
+  }, [overview.publishers, selectedSinglePubId]);
+
   // Validate Play Store developer links
   const handleValidateLinks = async (rawText = linksInput) => {
     setIsValidating(true);
@@ -1356,6 +1441,17 @@ function PlayStoreIntelligenceView({
 
               <button
                 type="button"
+                disabled={isSyncingCampaigns}
+                onClick={handleSyncSheetCampaigns}
+                title="Sync active ad campaign labels from Google Sheet (Sheet1)"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-semibold hover:bg-sky-500/20 transition disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[16px]">campaign</span>
+                {isSyncingCampaigns ? "Syncing Campaigns..." : "Sync Sheet Campaigns"}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => {
                   if (selectedPublisherObj) setCountryBatchScope("publisher");
                   else if (activeListObj) setCountryBatchScope("list");
@@ -1382,15 +1478,19 @@ function PlayStoreIntelligenceView({
                 onClick={() => {
                   if (activeListObj) {
                     setScanTargetListIds([activeListObj.id]);
+                    setScannerCompetitorId(activeListObj.id);
                   } else {
                     setScanTargetListIds([]);
+                    setScannerCompetitorId("all");
                   }
+                  setScanModalTab("links");
                   setShowScannerModal(true);
                 }}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition shadow-sm"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-blue-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                title="Import and scan individual games, publisher catalogues, or competitor accounts"
               >
-                <span className="material-symbols-outlined text-[17px]">add_link</span>
-                Add &amp; Scan Accounts
+                <span className="material-symbols-outlined text-[18px]">travel_explore</span>
+                <span>Import &amp; Scan Play Store</span>
               </button>
             </>
           )}
@@ -2376,8 +2476,12 @@ function PlayStoreIntelligenceView({
                               )}
                               {(g.has_campaign || g.campaign_active) && (
                                 <span
-                                  className="px-1.5 py-0.2 rounded bg-blue-500/15 text-blue-500 dark:text-cyan-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-blue-500/30"
-                                  title="Active Ad Campaign detected via Google Ads Transparency Centre"
+                                  className="px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-sky-500/30 select-none cursor-help"
+                                  title={
+                                    g.campaign_source === "transparency_center"
+                                      ? "Advertising campaign detected via Google Ads Transparency Center."
+                                      : "Advertising campaign record imported via Google Ads Transparency Center sheets."
+                                  }
                                 >
                                   Campaign
                                 </span>
@@ -2664,8 +2768,8 @@ function PlayStoreIntelligenceView({
           document.body
         )}
 
-      {/* MODAL 2: ADD & SCAN PLAY STORE PUBLISHER LINKS (z-[100]) */}
-      {showScannerModal &&
+      {/* MODAL 2: IMPORT & SCAN PLAY STORE (4-IN-1 MULTI-SCOPE SCANNER) (z-[100]) */}
+      {isAdmin && showScannerModal &&
         createPortal(
           <div
             onClick={() => setShowScannerModal(false)}
@@ -2673,161 +2777,580 @@ function PlayStoreIntelligenceView({
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="w-full max-w-2xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[92vh] overflow-y-auto"
             >
+              {/* Header */}
               <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Play Store Publisher Links</h3>
-                  <p className="text-xs text-text-muted">
-                    Paste Play Store developer URLs (`/store/apps/developer?id=...` or `/store/apps/dev?id=...`) or publisher names.
-                  </p>
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-sm">
+                    <span className="material-symbols-outlined text-[20px]">travel_explore</span>
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-text-main">Import &amp; Scan Play Store</h3>
+                    <p className="text-xs text-text-muted">
+                      Import new titles, refresh catalogues, or sync telemetry across multiple scopes.
+                    </p>
+                  </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowScannerModal(false)}
-                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted transition"
                 >
                   <span className="material-symbols-outlined">close</span>
                 </button>
               </div>
 
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-text-muted">Play Store Developer URLs or Names (one per line)</span>
+              {/* 4 Scope Tabs */}
+              <div className="flex items-center gap-1.5 p-1 bg-input-bg/70 border border-border-subtle rounded-xl text-xs overflow-x-auto">
                 <button
                   type="button"
-                  onClick={() => {
-                    const text = SAMPLE_PLAY_LINKS.join("\n");
-                    setLinksInput(text);
-                    handleValidateLinks(text);
-                  }}
-                  className="text-[11px] font-medium text-electric-blue hover:underline"
+                  onClick={() => setScanModalTab("links")}
+                  className={`flex-1 min-w-[120px] py-2 px-3 rounded-lg font-semibold transition flex items-center justify-center gap-1.5 ${
+                    scanModalTab === "links"
+                      ? "bg-surface-solid text-electric-blue shadow-sm"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
                 >
-                  Load Sample Links
+                  <span className="material-symbols-outlined text-[16px]">link</span>
+                  <span>By Link / ID</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScanModalTab("single_game")}
+                  className={`flex-1 min-w-[120px] py-2 px-3 rounded-lg font-semibold transition flex items-center justify-center gap-1.5 ${
+                    scanModalTab === "single_game"
+                      ? "bg-surface-solid text-electric-blue shadow-sm"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">sports_esports</span>
+                  <span>Individual Game</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScanModalTab("competitor")}
+                  className={`flex-1 min-w-[120px] py-2 px-3 rounded-lg font-semibold transition flex items-center justify-center gap-1.5 ${
+                    scanModalTab === "competitor"
+                      ? "bg-surface-solid text-electric-blue shadow-sm"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">folder_shared</span>
+                  <span>By Competitor</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScanModalTab("publisher")}
+                  className={`flex-1 min-w-[120px] py-2 px-3 rounded-lg font-semibold transition flex items-center justify-center gap-1.5 ${
+                    scanModalTab === "publisher"
+                      ? "bg-surface-solid text-electric-blue shadow-sm"
+                      : "text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">storefront</span>
+                  <span>Publisher Account</span>
                 </button>
               </div>
 
-              <textarea
-                rows={5}
-                value={linksInput}
-                onChange={(e) => setLinksInput(e.target.value)}
-                placeholder="https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio"
-                className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
-              />
-
-              <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
-                <div className="text-xs font-semibold text-text-main">
-                  Assign Scanned Accounts to Competitor List(s)
-                </div>
-                <div className="flex flex-wrap items-center gap-2 max-h-28 overflow-y-auto">
-                  {(overview.lists || []).map((list) => {
-                    const checked = scanTargetListIds.includes(list.id);
-                    return (
-                      <button
-                        key={list.id}
-                        type="button"
-                        onClick={() =>
-                          setScanTargetListIds((prev) =>
-                            checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
-                          checked
-                            ? "bg-emerald-500/20 text-emerald-300 border-emerald-400"
-                            : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                        }`}
-                      >
-                        <span className="material-symbols-outlined text-[14px]">
-                          {checked ? "check_box" : "check_box_outline_blank"}
-                        </span>
-                        {list.name}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                  <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
-                  <input
-                    type="text"
-                    value={scanNewListName}
-                    onChange={(e) => setScanNewListName(e.target.value)}
-                    placeholder="e.g. NewCompetitorGroup"
-                    className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
-                  />
-                </div>
-              </div>
-
-              {validationResult && (
-                <div className="border border-border-subtle rounded-xl overflow-hidden">
-                  <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-text-main">
-                      Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
-                      {validationResult.invalidCount} Invalid
+              {/* TAB 1: BY LINK OR PACKAGE ID */}
+              {scanModalTab === "links" && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-text-muted">
+                      Paste Play Store URLs, Package IDs, or Developer Links (one per line):
                     </span>
-                    {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const sample = [
+                          "https://play.google.com/store/apps/details?id=com.rovio.angrybirds",
+                          "com.voodoo.paperio2",
+                          "https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio"
+                        ].join("\n");
+                        setLinksInput(sample);
+                        handleValidateLinks(sample);
+                      }}
+                      className="text-[11px] font-semibold text-electric-blue hover:underline"
+                    >
+                      Load Sample Links
+                    </button>
+                  </div>
+
+                  <textarea
+                    rows={5}
+                    value={linksInput}
+                    onChange={(e) => setLinksInput(e.target.value)}
+                    placeholder="https://play.google.com/store/apps/details?id=com.rovio.angrybirds&#10;com.supercell.clashroyale&#10;https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio"
+                    className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue leading-relaxed"
+                  />
+
+                  {/* List Assignment */}
+                  <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-2.5">
+                    <div className="text-xs font-semibold text-text-main flex items-center justify-between">
+                      <span>Assign Scanned Items to Competitor List(s)</span>
+                      <span className="text-[10px] text-text-muted font-normal">Optional</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 max-h-24 overflow-y-auto">
+                      {(overview.lists || []).map((list) => {
+                        const checked = scanTargetListIds.includes(list.id);
+                        return (
+                          <button
+                            key={list.id}
+                            type="button"
+                            onClick={() =>
+                              setScanTargetListIds((prev) =>
+                                checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
+                              checked
+                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-400"
+                                : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-[13px]">
+                              {checked ? "check_box" : "check_box_outline_blank"}
+                            </span>
+                            {list.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
+                      <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to new list:</span>
+                      <input
+                        type="text"
+                        value={scanNewListName}
+                        onChange={(e) => setScanNewListName(e.target.value)}
+                        placeholder="e.g. Trenzy / Bahria"
+                        className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1 focus:outline-none focus:border-electric-blue"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Validation Preview Card */}
+                  {validationResult && (
+                    <div className="border border-border-subtle rounded-xl overflow-hidden">
+                      <div className="bg-input-bg px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-text-main">
+                          Validation: {validationResult.validCount} Valid ({validationResult.gamesCount || 0} Games, {validationResult.publishersCount || 0} Publishers) · {validationResult.duplicateCount} Duplicates · {validationResult.invalidCount} Invalid
+                        </span>
+                        {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                          <button
+                            type="button"
+                            onClick={handleRemoveInvalidAndDuplicates}
+                            className="text-[11px] text-amber-400 font-semibold hover:underline"
+                          >
+                            Clean Invalid/Duplicates
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-36 overflow-y-auto divide-y divide-border-subtle text-xs">
+                        {validationResult.validation.map((item, idx) => (
+                          <div key={idx} className="px-4 py-2 flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-medium text-text-main truncate flex items-center gap-1.5">
+                                <span className="material-symbols-outlined text-[14px] text-text-muted">
+                                  {item.type === "game" ? "sports_esports" : "storefront"}
+                                </span>
+                                {item.valid ? (item.type === "game" ? item.packageName : item.publisher) : item.raw}
+                              </div>
+                              <div className="text-[10px] text-text-muted truncate">
+                                {item.valid ? item.normalizedUrl : item.reason}
+                              </div>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
+                                !item.valid
+                                  ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
+                                  : item.duplicate
+                                  ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                                  : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                              }`}
+                            >
+                              {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : item.type === "game" ? "Game" : "Publisher"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={!linksInput.trim() || isValidating}
+                      onClick={() => handleValidateLinks(linksInput)}
+                      className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
+                    >
+                      {isValidating ? "Validating..." : "Validate Links"}
+                    </button>
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={handleRemoveInvalidAndDuplicates}
-                        className="text-[11px] text-amber-400 font-semibold hover:underline"
+                        onClick={() => setShowScannerModal(false)}
+                        className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
                       >
-                        Clean Invalid/Duplicates
+                        Cancel
                       </button>
-                    )}
-                  </div>
-                  <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
-                    {validationResult.validation.map((item, idx) => (
-                      <div key={idx} className="px-4 py-2 flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-medium text-text-main truncate">
-                            {item.valid ? item.publisher : item.raw}
-                          </div>
-                          <div className="text-[10px] text-text-muted truncate">
-                            {item.valid ? item.normalizedUrl : item.reason}
-                          </div>
-                        </div>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
-                            !item.valid
-                              ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
-                              : item.duplicate
-                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                              : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                          }`}
-                        >
-                          {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
-                        </span>
-                      </div>
-                    ))}
+                      <button
+                        type="button"
+                        disabled={!linksInput.trim() || scanStatus.running}
+                        onClick={() => handleStartScan()}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold transition disabled:opacity-50 shadow-sm"
+                      >
+                        {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
 
-              <div className="flex items-center justify-between gap-2 pt-2">
-                <button
-                  type="button"
-                  disabled={!linksInput.trim() || isValidating}
-                  onClick={() => handleValidateLinks(linksInput)}
-                  className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
-                >
-                  {isValidating ? "Validating..." : "Validate Links"}
-                </button>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowScannerModal(false)}
-                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!linksInput.trim() || scanStatus.running}
-                    onClick={() => handleStartScan()}
-                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
-                  >
-                    {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
-                  </button>
+              {/* TAB 2: INDIVIDUAL GAME */}
+              {scanModalTab === "single_game" && (
+                <div className="flex flex-col gap-4">
+                  <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/25 flex items-start gap-3">
+                    <span className="material-symbols-outlined text-sky-400 text-[20px] shrink-0 mt-0.5">
+                      info
+                    </span>
+                    <div className="text-xs text-text-muted leading-relaxed">
+                      <strong className="text-text-main font-semibold">1-Click Game Telemetry Refresh:</strong>{" "}
+                      Enter an individual package ID or Play Store game URL. Atlas will fetch the listing, link or create its publisher, update pricing/ratings, and refresh install velocity telemetry — without scanning the publisher's entire catalogue.
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-text-main">
+                      Google Play Game Package ID or Listing URL
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={singleGameInput}
+                        onChange={(e) => setSingleGameInput(e.target.value)}
+                        placeholder="e.g. com.voodoo.paperio2 or https://play.google.com/store/apps/details?id=..."
+                        className="w-full rounded-xl bg-input-bg border border-border-subtle pl-3 pr-24 py-2.5 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
+                      />
+                      {singleGameInput.trim() && (
+                        <div className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold">
+                          {singleGameValidation.valid ? (
+                            <span className="text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                              Valid Package
+                            </span>
+                          ) : (
+                            <span className="text-amber-400 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-full">
+                              Format Check
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {singleGameValidation.normalized && (
+                      <div className="text-[11px] text-text-muted font-mono">
+                        Target Package: <span className="text-electric-blue font-semibold">{singleGameValidation.normalized}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Optional Competitor List */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-medium text-text-muted">
+                      Optionally assign to Competitor List:
+                    </label>
+                    <select
+                      value={singleGameListId}
+                      onChange={(e) => setSingleGameListId(e.target.value)}
+                      className="h-9 px-3 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-medium focus:border-electric-blue focus:outline-none"
+                    >
+                      <option value="">None (Don't assign to list)</option>
+                      {(overview.lists || []).map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-subtle">
+                    <button
+                      type="button"
+                      onClick={() => setShowScannerModal(false)}
+                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!singleGameValidation.valid || scanStatus.running}
+                      onClick={() => {
+                        const pkg = singleGameValidation.normalized;
+                        handleStartScan({
+                          mode: "batch",
+                          links: [pkg],
+                          listIds: singleGameListId ? [Number(singleGameListId)] : []
+                        });
+                        setSingleGameInput("");
+                      }}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold transition disabled:opacity-50 shadow-sm inline-flex items-center gap-1.5"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">download</span>
+                      Import &amp; Refresh Game
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* TAB 3: BY COMPETITOR */}
+              {scanModalTab === "competitor" && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-text-main">Select Competitor:</label>
+                    <select
+                      value={scannerCompetitorId}
+                      onChange={(e) => setScannerCompetitorId(e.target.value)}
+                      className="h-9 px-3 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold focus:border-electric-blue focus:outline-none cursor-pointer"
+                    >
+                      <option value="all">All Tracked Competitors ({overview.publishers.length} accounts)</option>
+                      {(overview.lists || []).map((list) => (
+                        <option key={list.id} value={list.id}>
+                          {list.name} ({list.account_count || 0} accounts)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Account Selector & Checkboxes */}
+                  <div className="border border-border-subtle rounded-xl overflow-hidden flex flex-col">
+                    <div className="bg-input-bg/80 px-3.5 py-2.5 border-b border-border-subtle flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-text-main">
+                          Accounts in Scope ({selectedCompetitorPubIds.length} of {competitorPubsList.length} selected)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCompetitorPubIds(competitorPubsList.map((p) => p.id))}
+                          className="text-[11px] font-semibold text-electric-blue hover:underline"
+                        >
+                          Select All
+                        </button>
+                        <span className="text-text-muted">·</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCompetitorPubIds([])}
+                          className="text-[11px] font-semibold text-text-muted hover:underline"
+                        >
+                          Deselect All
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Filter inside competitor accounts */}
+                    <div className="p-2 border-b border-border-subtle bg-surface-solid">
+                      <input
+                        type="text"
+                        value={competitorPubFilter}
+                        onChange={(e) => setCompetitorPubFilter(e.target.value)}
+                        placeholder="Filter accounts by name..."
+                        className="w-full rounded-lg bg-input-bg border border-border-subtle px-3 py-1.5 text-xs text-text-main focus:outline-none focus:border-electric-blue"
+                      />
+                    </div>
+
+                    {/* Accounts Checklist */}
+                    <div className="max-h-52 overflow-y-auto divide-y divide-border-subtle">
+                      {competitorPubsList.length === 0 ? (
+                        <div className="p-6 text-center text-xs text-text-muted">
+                          No publisher accounts found in this competitor list.
+                        </div>
+                      ) : (
+                        competitorPubsList.map((pub) => {
+                          const checked = selectedCompetitorPubIds.includes(pub.id);
+                          const isUnscanned = !pub.total_games && pub.last_scan_status === "unscanned";
+                          return (
+                            <label
+                              key={pub.id}
+                              className={`px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg/60 transition ${
+                                checked ? "bg-electric-blue/5" : ""
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setSelectedCompetitorPubIds((prev) =>
+                                      checked ? prev.filter((id) => id !== pub.id) : [...prev, pub.id]
+                                    );
+                                  }}
+                                  className="rounded border-border-subtle text-electric-blue focus:ring-0"
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-xs font-semibold text-text-main truncate">
+                                    {getDisplayName(pub.publisher_name)}
+                                  </div>
+                                  <div className="text-[10px] text-text-muted truncate">
+                                    {pub.developer_id ? `dev?id=${pub.developer_id}` : pub.publisher_name}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-input-bg text-text-muted">
+                                  {pub.game_count || pub.total_games || 0} games
+                                </span>
+                                {isUnscanned ? (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                                    Unscanned
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+                                    Synced {formatRelativeTime(pub.last_scanned_at)}
+                                  </span>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-between gap-2 pt-3 border-t border-border-subtle">
+                    <span className="text-xs text-text-muted">
+                      Will scan <strong className="text-text-main">{selectedCompetitorPubIds.length}</strong> publisher catalogues
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowScannerModal(false)}
+                        className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={selectedCompetitorPubIds.length === 0 || scanStatus.running}
+                        onClick={() => {
+                          const listIdNum = scannerCompetitorId !== "all" ? Number(scannerCompetitorId) : undefined;
+                          handleStartScan({
+                            mode: "batch",
+                            publisherIds: selectedCompetitorPubIds,
+                            listIds: listIdNum ? [listIdNum] : []
+                          });
+                        }}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold transition disabled:opacity-50 shadow-sm inline-flex items-center gap-1.5"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">sync</span>
+                        Scan Selected Accounts ({selectedCompetitorPubIds.length})
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: INDIVIDUAL PUBLISHER ACCOUNT */}
+              {scanModalTab === "publisher" && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-text-main">
+                      Select Publisher Account ({searchablePublishers.length} accounts):
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={publisherFilterQuery}
+                        onChange={(e) => setPublisherFilterQuery(e.target.value)}
+                        placeholder="Search publishers by name..."
+                        className="w-full rounded-xl bg-input-bg border border-border-subtle pl-3 pr-8 py-2 text-xs text-text-main focus:outline-none focus:border-electric-blue"
+                      />
+                      <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                        search
+                      </span>
+                    </div>
+
+                    <select
+                      size={5}
+                      value={selectedSinglePubId}
+                      onChange={(e) => setSelectedSinglePubId(e.target.value)}
+                      className="w-full rounded-xl bg-input-bg border border-border-subtle p-2 text-xs text-text-main focus:outline-none focus:border-electric-blue font-medium mt-1"
+                    >
+                      {searchablePublishers.map((pub) => (
+                        <option key={pub.id} value={pub.id} className="p-1.5 rounded cursor-pointer">
+                          {getDisplayName(pub.publisher_name)} ({pub.game_count || pub.total_games || 0} games · {pub.last_scan_status || 'unscanned'})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Selected Publisher Card */}
+                  {selectedPubObj ? (
+                    <div className="p-4 rounded-xl bg-input-bg/60 border border-border-subtle flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-bold text-text-main">
+                            {getDisplayName(selectedPubObj.publisher_name)}
+                          </div>
+                          <div className="text-[11px] text-text-muted font-mono">
+                            {selectedPubObj.developer_id ? `dev?id=${selectedPubObj.developer_id}` : selectedPubObj.source_url || selectedPubObj.publisher_name}
+                          </div>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-electric-blue/15 text-electric-blue">
+                          {selectedPubObj.game_count || selectedPubObj.total_games || 0} Games
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="p-2.5 rounded-lg bg-surface-solid border border-border-subtle">
+                          <span className="text-text-muted block text-[10px]">Catalogue Breakdown</span>
+                          <span className="font-semibold text-text-main">
+                            {selectedPubObj.free_games || 0} Free · {selectedPubObj.paid_games || 0} Paid
+                          </span>
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-surface-solid border border-border-subtle">
+                          <span className="text-text-muted block text-[10px]">Last Sync Status</span>
+                          <span className="font-semibold text-text-main">
+                            {selectedPubObj.last_scan_status || "unscanned"} ({formatRelativeTime(selectedPubObj.last_scanned_at)})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-6 text-center text-xs text-text-muted border border-dashed border-border-subtle rounded-xl">
+                      Select a publisher from the list above to inspect details and refresh.
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-border-subtle">
+                    <button
+                      type="button"
+                      onClick={() => setShowScannerModal(false)}
+                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!selectedPubObj || scanStatus.running}
+                      onClick={() => {
+                        handleStartScan({
+                          mode: "batch",
+                          publisherIds: [selectedPubObj.id],
+                          listIds: Array.isArray(selectedPubObj.list_ids) ? selectedPubObj.list_ids : []
+                        });
+                      }}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold transition disabled:opacity-50 shadow-sm inline-flex items-center gap-1.5"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">sync</span>
+                      Scan Publisher Catalogue
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>,
           document.body
@@ -2860,6 +3383,33 @@ function PlayStoreIntelligenceView({
                 >
                   <span className="material-symbols-outlined">close</span>
                 </button>
+              </div>
+
+              {/* Dedicated Campaign Transparency Center Sync Box */}
+              <div className="bg-sky-500/10 border border-sky-500/30 rounded-xl p-3.5 flex flex-col gap-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sky-400 text-[20px]">campaign</span>
+                    <div>
+                      <div className="text-xs font-semibold text-text-main">Google Ads Transparency Center Sync</div>
+                      <div className="text-[11px] text-text-muted">Sync active campaign packages from Sheet1 to tag games with the "Campaign" badge</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isSyncingCampaigns}
+                    onClick={handleSyncSheetCampaigns}
+                    className="px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5 shrink-0"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">sync</span>
+                    {isSyncingCampaigns ? "Syncing..." : "Sync Active Campaigns"}
+                  </button>
+                </div>
+                {campaignSyncResult && (
+                  <div className="text-[11px] font-mono text-sky-400 bg-sky-500/10 p-2 rounded-lg border border-sky-500/20">
+                    ✓ Synced {campaignSyncResult.matchedCount} campaigns across {campaignSyncResult.uniqueCount} packages from Sheet1 ({campaignSyncResult.unmatchedCount} unmatched).
+                  </div>
+                )}
               </div>
 
               {isLoadingSheet ? (

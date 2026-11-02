@@ -157,11 +157,18 @@ function validatePlayStoreUrl(rawInput) {
         return { valid: false, raw, reason: 'Empty search query' };
       }
       publisher = cleanedQ;
-    } else if (/\/store\/apps\/details\/?$/i.test(pathname)) {
+    } else if (/\/store\/apps\/details\/?$/i.test(pathname) && idParam) {
+      const cleanPkg = decodeURIComponent(idParam).trim().toLowerCase();
       return {
-        valid: false,
+        valid: true,
+        type: 'game',
         raw,
-        reason: 'This is a single game URL (/store/apps/details), not a publisher developer page (/store/apps/developer?id=...)'
+        packageName: cleanPkg,
+        publisher: cleanPkg,
+        developerId: null,
+        isNumericDevPage: false,
+        normalizedKey: cleanPkg,
+        normalizedUrl: `https://play.google.com/store/apps/details?id=${encodeURIComponent(cleanPkg)}`
       };
     } else {
       return {
@@ -171,8 +178,21 @@ function validatePlayStoreUrl(rawInput) {
       };
     }
   } else {
-    // Allow raw publisher name or numeric developer ID
+    // Allow raw publisher name, numeric developer ID, or raw package ID (com...)
     const cleanRaw = raw.replace(/^pub:/i, '').trim();
+    if (/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(cleanRaw) && (cleanRaw.startsWith('com.') || cleanRaw.includes('.'))) {
+      return {
+        valid: true,
+        type: 'game',
+        raw,
+        packageName: cleanRaw.toLowerCase(),
+        publisher: cleanRaw.toLowerCase(),
+        developerId: null,
+        isNumericDevPage: false,
+        normalizedKey: cleanRaw.toLowerCase(),
+        normalizedUrl: `https://play.google.com/store/apps/details?id=${encodeURIComponent(cleanRaw.toLowerCase())}`
+      };
+    }
     if (cleanRaw.length < 2 || cleanRaw.length > 120) {
       return { valid: false, raw, reason: 'Publisher name must be between 2 and 120 characters' };
     }
@@ -191,6 +211,7 @@ function validatePlayStoreUrl(rawInput) {
 
   return {
     valid: true,
+    type: 'publisher',
     raw,
     publisher,
     developerId,
@@ -772,6 +793,200 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
   };
 }
 
+
+/**
+ * Scan and import an individual Google Play game/package, link to its developer account,
+ * fetch install velocity telemetry, and preserve campaign evidence.
+ */
+async function scanAndSavePlayGame(pool, targetInput, options = {}) {
+  const pkg = normalizePackageName(
+    typeof targetInput === 'object' ? targetInput.packageName || targetInput.raw : targetInput
+  );
+  if (!pkg) throw new Error('Invalid package name');
+
+  let appData = null;
+  try {
+    appData = await runWithTimeout(
+      () => gplay.app({ appId: pkg, country: 'us', lang: 'en' }),
+      8000,
+      `gplay.app(${pkg})`
+    );
+  } catch (err) {
+    const ds5 = await fetchPlayStoreDs5(pkg, { timeoutMs: 8000 });
+    if (ds5 && (ds5.title || ds5.realInstalls > 0)) {
+      appData = {
+        title: ds5.title,
+        developer: ds5.developerName,
+        developerId: ds5.developerId,
+        score: ds5.rating,
+        ratings: ds5.ratingsCount,
+        installs: ds5.installsTier,
+        minInstalls: ds5.realInstalls,
+        released: ds5.releaseDate,
+        genre: ds5.category || 'Game',
+        free: true,
+        price: 0
+      };
+    }
+  }
+
+  if (!appData) {
+    return {
+      success: false,
+      packageName: pkg,
+      status: 'not_found',
+      error: `Could not locate listing for package "${pkg}" on Google Play.`
+    };
+  }
+
+  const isPaid = appData.free === false && Number(appData.price) > 0;
+  const priceNum = isPaid && Number.isFinite(Number(appData.price)) ? Number(appData.price) : null;
+  const currency = isPaid ? (appData.currency || 'USD') : null;
+  const priceText = isPaid ? (appData.priceText || (priceNum ? `${priceNum}` : null)) : 'Free';
+  const pubName = appData.developer || 'Unknown Publisher';
+  const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const devId = appData.developerId ? String(appData.developerId) : null;
+  const developerUrl = devId
+    ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(devId)}`
+    : `https://play.google.com/store/search?q=${encodeURIComponent(pubName)}&c=apps`;
+  const relIso = appData.releaseDateIso || parseReleaseDateIso(appData.released);
+
+  // 1. Ensure publisher account exists in play_publishers & accounts
+  let pubRes = await pool.query(
+    `SELECT id, publisher_name FROM play_publishers WHERE normalized_name = $1 LIMIT 1`,
+    [normalizedPub]
+  );
+  let pubId = pubRes.rows[0]?.id;
+
+  if (!pubId) {
+    let accRes = await pool.query(
+      `SELECT id FROM accounts WHERE normalized_name = $1 LIMIT 1`,
+      [normalizedPub]
+    );
+    let accId = accRes.rows[0]?.id;
+    if (!accId) {
+      const insAcc = await pool.query(
+        `INSERT INTO accounts (publisher_name, normalized_name) VALUES ($1, $2) RETURNING id`,
+        [pubName, normalizedPub]
+      );
+      accId = insAcc.rows[0].id;
+    }
+
+    const insPub = await pool.query(
+      `INSERT INTO play_publishers (id, publisher_name, normalized_name, developer_id, source_url, last_scan_status)
+       VALUES ($1, $2, $3, $4, $5, 'complete')
+       ON CONFLICT (normalized_name) DO UPDATE SET developer_id = COALESCE(play_publishers.developer_id, EXCLUDED.developer_id)
+       RETURNING id`,
+      [accId, pubName, normalizedPub, devId, developerUrl]
+    );
+    pubId = insPub.rows[0].id;
+  }
+
+  // 2. UPSERT into games table (preserving campaign evidence!)
+  const upsertGame = await pool.query(
+    `INSERT INTO games (
+       package_name, title, category, rating, ratings_count, icon, header_image,
+       description, short_description, installs, min_installs, released, release_date,
+       updated, is_paid, price, currency, price_text, developer_name, developer_id, developer_url,
+       first_seen_at, last_seen_at, store_scanned_at, discovery_source
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, $7,
+       $8, $9, $10, $11, $12, $13::date,
+       $14, $15, $16, $17, $18, $19, $20, $21,
+       now(), now(), now(), 'single_game_import'
+     )
+     ON CONFLICT (package_name) DO UPDATE SET
+       title = COALESCE(NULLIF(EXCLUDED.title, ''), games.title),
+       rating = CASE WHEN EXCLUDED.rating > 0 THEN EXCLUDED.rating ELSE games.rating END,
+       ratings_count = CASE WHEN EXCLUDED.ratings_count > 0 THEN EXCLUDED.ratings_count ELSE games.ratings_count END,
+       icon = COALESCE(EXCLUDED.icon, games.icon),
+       header_image = COALESCE(EXCLUDED.header_image, games.header_image),
+       description = COALESCE(NULLIF(EXCLUDED.description, ''), games.description),
+       short_description = COALESCE(NULLIF(EXCLUDED.short_description, ''), games.short_description),
+       installs = COALESCE(EXCLUDED.installs, games.installs),
+       min_installs = GREATEST(COALESCE(EXCLUDED.min_installs, 0), COALESCE(games.min_installs, 0)),
+       released = CASE WHEN EXCLUDED.released IS NOT NULL AND EXCLUDED.released <> 'Unknown' THEN EXCLUDED.released ELSE games.released END,
+       release_date = COALESCE(EXCLUDED.release_date, games.release_date),
+       updated = COALESCE(EXCLUDED.updated, games.updated),
+       is_paid = EXCLUDED.is_paid,
+       price = COALESCE(EXCLUDED.price, games.price),
+       currency = COALESCE(EXCLUDED.currency, games.currency),
+       price_text = COALESCE(EXCLUDED.price_text, games.price_text),
+       developer_name = COALESCE(EXCLUDED.developer_name, games.developer_name),
+       developer_id = COALESCE(EXCLUDED.developer_id, games.developer_id),
+       developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url),
+       last_seen_at = now(),
+       store_scanned_at = now()
+     RETURNING id, package_name, title, real_installs`,
+    [
+      pkg,
+      appData.title || pkg,
+      appData.genre || 'Game',
+      Number(appData.score) || 0,
+      Number(appData.ratings) || 0,
+      fixUrl(appData.icon),
+      fixUrl(appData.headerImage),
+      appData.description || null,
+      appData.summary || null,
+      appData.installs || null,
+      Number(appData.minInstalls) || 0,
+      appData.released || 'Unknown',
+      relIso,
+      appData.updated || Date.now(),
+      isPaid,
+      priceNum,
+      currency,
+      priceText,
+      pubName,
+      devId,
+      developerUrl
+    ]
+  );
+
+  const gameId = upsertGame.rows[0].id;
+
+  if (pubId && gameId) {
+    await pool.query(
+      `INSERT INTO account_games (account_id, game_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [pubId, gameId]
+    );
+  }
+
+  try {
+    await runFullTelemetryForPackage(pool, pkg, { forceRefresh: true });
+  } catch {}
+
+  await pool.query(
+    `UPDATE play_publishers p
+     SET
+       total_games = sub.total_cnt,
+       free_games = sub.free_cnt,
+       paid_games = sub.paid_cnt
+     FROM (
+       SELECT
+         ag.account_id,
+         COUNT(DISTINCT g.id)::int AS total_cnt,
+         COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false OR COALESCE(g.price, 0) <= 0)::int AS free_cnt,
+         COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true AND COALESCE(g.price, 0) > 0)::int AS paid_cnt
+       FROM account_games ag
+       JOIN games g ON g.id = ag.game_id AND COALESCE(g.is_suspended, false) = false
+       WHERE ag.account_id = $1
+       GROUP BY ag.account_id
+     ) sub
+     WHERE p.id = sub.account_id`,
+    [pubId]
+  );
+
+  return {
+    success: true,
+    packageName: pkg,
+    title: appData.title || pkg,
+    publisher: pubName,
+    isPaid,
+    priceText
+  };
+}
+
 /**
  * Initialize Play Store Intelligence schema non-destructively and backfill from
  * existing `competitors`, `accounts`, `account_games`, and `games`.
@@ -1313,12 +1528,17 @@ function registerPlayStoreRoutes({ app, pool }) {
   app.post('/api/play/validate', (req, res) => {
     const links = parseInputLinks(req.body?.links || req.body?.urls || '');
     const validation = validatePlayBatch(links);
-    const validCount = validation.filter((v) => v.valid && !v.duplicate).length;
+    const validItems = validation.filter((v) => v.valid && !v.duplicate);
+    const validCount = validItems.length;
+    const gamesCount = validItems.filter((v) => v.type === 'game').length;
+    const publishersCount = validItems.filter((v) => v.type === 'publisher').length;
     const duplicateCount = validation.filter((v) => v.duplicate).length;
     const invalidCount = validation.filter((v) => !v.valid).length;
     res.json({
       totalSubmitted: validation.length,
       validCount,
+      gamesCount,
+      publishersCount,
       duplicateCount,
       invalidCount,
       validation
@@ -1395,7 +1615,9 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.installs_scanned_at,
             g.discovery_source,
             COALESCE(g.campaign_active, false) AS campaign_active,
-            g.last_campaign_seen_at
+            g.first_campaign_seen_at,
+            g.last_campaign_seen_at,
+            g.campaign_source
           FROM account_games ag
           JOIN play_publishers p ON p.id = ag.account_id
           JOIN games g ON g.id = ag.game_id
@@ -1486,6 +1708,10 @@ function registerPlayStoreRoutes({ app, pool }) {
         return {
           ...g,
           has_campaign: Boolean(g.campaign_active) || Number(g.ad_count) > 0,
+          campaign_active: Boolean(g.campaign_active),
+          campaign_source: g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null),
+          first_campaign_seen_at: g.first_campaign_seen_at || null,
+          last_campaign_seen_at: g.last_campaign_seen_at || null,
           pricing: isPaid ? 'paid' : 'free',
           price: g.price != null ? Number(g.price) : null,
           rating: g.rating != null ? Number(g.rating) : null,
@@ -1766,17 +1992,32 @@ function registerPlayStoreRoutes({ app, pool }) {
 
       const updateRes = await pool.query(`
         UPDATE games
-        SET campaign_active = true, last_campaign_seen_at = COALESCE(last_campaign_seen_at, now())
+        SET
+          campaign_active = true,
+          campaign_source = COALESCE(campaign_source, 'sheets_import'),
+          first_campaign_seen_at = COALESCE(first_campaign_seen_at, last_campaign_seen_at, now()),
+          last_campaign_seen_at = COALESCE(last_campaign_seen_at, now())
         WHERE LOWER(package_name) = ANY($1::text[])
         RETURNING id
       `, [uniquePkgs]);
+
+      const matchedRes = await pool.query(`
+        SELECT package_name FROM games WHERE LOWER(package_name) = ANY($1::text[])
+      `, [uniquePkgs]);
+      const matchedSet = new Set(matchedRes.rows.map(r => r.package_name.toLowerCase()));
+      const unmatched = uniquePkgs.filter(p => !matchedSet.has(p));
 
       invalidatePlayOverviewCache();
 
       res.json({
         status: 'ok',
+        totalRows: sheetRes.data.values?.length || 0,
+        validCount: packagesInSheet.length,
+        uniqueCount: uniquePkgs.length,
         updatedCount: updateRes.rowCount,
-        totalFound: uniquePkgs.length
+        matchedCount: matchedSet.size,
+        unmatchedCount: unmatched.length,
+        unmatchedSample: unmatched.slice(0, 5)
       });
     } catch (err) {
       console.error('[Sync Sheet Campaigns Error]:', err);
@@ -1813,7 +2054,22 @@ function registerPlayStoreRoutes({ app, pool }) {
     const forceTelemetry = req.body?.forceTelemetry === true;
     let validTargets = [];
 
-    if (mode === 'update_all' || mode === 'unscanned_only') {
+    if (Array.isArray(req.body?.publisherIds) && req.body.publisherIds.length > 0) {
+      const ids = req.body.publisherIds.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+      const pubsRes = await pool.query(
+        `SELECT id, publisher_name, source_url, developer_id
+         FROM play_publishers
+         WHERE id = ANY($1::int[])`,
+        [ids]
+      );
+      validTargets = pubsRes.rows
+        .map((p) => {
+          const v = validatePlayStoreUrl(p.source_url || p.publisher_name);
+          if (v.valid) v.publisherId = p.id;
+          return v;
+        })
+        .filter((v) => v.valid);
+    } else if (mode === 'update_all' || mode === 'unscanned_only') {
       const whereClause =
         mode === 'unscanned_only' ? `WHERE COALESCE(total_games, 0) = 0 OR last_scan_status = 'unscanned'` : '';
       const pubsRes = await pool.query(
@@ -1914,7 +2170,48 @@ function registerPlayStoreRoutes({ app, pool }) {
             log: `> [${i + 1}/${validTargets.length}] Scanning Google Play catalogue for "${target.publisher}"...`
           };
 
-          const result = await scanAndSavePlayPublisher(pool, target, {
+          let result;
+          if (target.type === 'game') {
+            playScanStatus = {
+              ...playScanStatus,
+              phase: 'enriching_games',
+              currentPublisher: target.packageName,
+              publisherIndex: i + 1,
+              gamesFoundInCurrent: 1,
+              log: `> [${i + 1}/${validTargets.length}] Fetching Play Store telemetry & metadata for "${target.packageName}"...`
+            };
+            const gameRes = await scanAndSavePlayGame(pool, target, { forceTelemetry });
+            doneCount += 1;
+            if (gameRes.success) {
+              savedGamesTotal += 1;
+              newGamesTotal += 1;
+              resultsSummary.push({
+                type: 'game',
+                publisher: gameRes.publisher,
+                packageName: gameRes.packageName,
+                title: gameRes.title,
+                status: 'complete',
+                gamesFound: 1,
+                newGames: 1,
+                freeGames: gameRes.isPaid ? 0 : 1,
+                paidGames: gameRes.isPaid ? 1 : 0
+              });
+            } else {
+              failedLinks.push(target.raw);
+              resultsSummary.push({
+                type: 'game',
+                publisher: target.packageName,
+                packageName: target.packageName,
+                status: 'error',
+                statusDetail: gameRes.error,
+                gamesFound: 0,
+                newGames: 0
+              });
+            }
+            continue;
+          }
+
+          result = await scanAndSavePlayPublisher(pool, target, {
             forceTelemetry,
             isCancelled: () => activePlayScanCancelled,
             onProgress: (p) => {
@@ -1938,6 +2235,7 @@ function registerPlayStoreRoutes({ app, pool }) {
           newGamesTotal += newCount;
 
           resultsSummary.push({
+            type: 'publisher',
             publisher: result.publisher,
             sourceUrl: result.sourceUrl,
             status: result.status,
