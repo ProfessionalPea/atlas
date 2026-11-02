@@ -737,19 +737,51 @@ function App() {
   // Parallel data load without blocking on a sequential /api/health call first
   const loadAllData = useCallback(async () => {
     if (!authToken || !currentUser) return;
+    const freshData = {};
     const requests = [
       fetchJson(`${API_BASE}/api/stats`).then(data => {
         setIsNodeOnline(true);
-        setStats(data?.error ? { competitors: 0, accounts: 0, games: 0 } : data);
+        const val = data?.error ? { competitors: 0, accounts: 0, games: 0 } : data;
+        setStats(val);
+        freshData.stats = val;
       }),
-      fetchJson(`${API_BASE}/api/competitors`).then(data => setCompetitorTree(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/trending`).then(data => setTrending(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/lists`).then(data => setTargetLists(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/saved-competitors`).then(data => setSavedCompetitors(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/emails`).then(data => setEmailLists(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/settings`).then(data => { if (data && !data.error) setSettings(prev => ({ ...prev, ...data })); }),
-      fetchJson(`${API_BASE}/api/country-scans`).then(data => setCountryScanLibrary(Array.isArray(data) ? data : [])),
-      fetchJson(`${API_BASE}/api/suspended-games`).then(data => setSuspendedGames(Array.isArray(data) ? data : [])),
+      fetchJson(`${API_BASE}/api/competitors`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setCompetitorTree(val);
+        freshData.competitorTree = val;
+      }),
+      fetchJson(`${API_BASE}/api/trending`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setTrending(val);
+        freshData.trending = val;
+      }),
+      fetchJson(`${API_BASE}/api/lists`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setTargetLists(val);
+        freshData.targetLists = val;
+      }),
+      fetchJson(`${API_BASE}/api/saved-competitors`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setSavedCompetitors(val);
+        freshData.savedCompetitors = val;
+      }),
+      fetchJson(`${API_BASE}/api/emails`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setEmailLists(val);
+      }),
+      fetchJson(`${API_BASE}/api/settings`).then(data => {
+        if (data && !data.error) setSettings(prev => ({ ...prev, ...data }));
+      }),
+      fetchJson(`${API_BASE}/api/country-scans`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setCountryScanLibrary(val);
+        freshData.countryScanLibrary = val;
+      }),
+      fetchJson(`${API_BASE}/api/suspended-games`).then(data => {
+        const val = Array.isArray(data) ? data : [];
+        setSuspendedGames(val);
+        freshData.suspendedGames = val;
+      }),
     ];
     const results = await Promise.allSettled(requests);
     const anyFulfilled = results.some(result => result.status === "fulfilled");
@@ -758,17 +790,9 @@ function App() {
 
     if (anyFulfilled) {
       // Background write to IndexedDB so next tab open or refresh renders instantly with 0ms delay
-      void setCachedCatalogue("atlas_dashboard_meta", {
-        stats,
-        competitorTree,
-        trending,
-        targetLists,
-        savedCompetitors,
-        countryScanLibrary,
-        suspendedGames
-      });
+      void setCachedCatalogue("atlas_dashboard_meta", freshData);
     }
-  }, [authToken, currentUser, stats, competitorTree, trending, targetLists, savedCompetitors, countryScanLibrary, suspendedGames]);
+  }, [authToken, currentUser]);
 
   // 0ms instant startup from local IndexedDB cache
   useEffect(() => {
@@ -919,6 +943,16 @@ function App() {
     }
   }, [loadAllData]);
 
+  const applyScanStatusRef = useRef(applyScanStatus);
+  useEffect(() => {
+    applyScanStatusRef.current = applyScanStatus;
+  }, [applyScanStatus]);
+
+  const isScanningRef = useRef(isScanning);
+  useEffect(() => {
+    isScanningRef.current = isScanning;
+  }, [isScanning]);
+
   // Adaptive scan polling: 1.5s while scanning, 8s while idle, paused when tab is hidden
   useEffect(() => {
     if (!authToken || !currentUser) return;
@@ -929,19 +963,19 @@ function App() {
 
     const pollScanStatus = async () => {
       if (disposed) return;
-      if (document.hidden && !isScanning && !scanLaunchPendingRef.current) {
+      if (document.hidden && !isScanningRef.current && !scanLaunchPendingRef.current) {
         timerId = window.setTimeout(pollScanStatus, 8000);
         return;
       }
       if (requestInFlight) return;
       requestInFlight = true;
 
-      let nextInterval = isScanning || scanLaunchPendingRef.current ? 1500 : 8000;
+      let nextInterval = isScanningRef.current || scanLaunchPendingRef.current ? 1500 : 8000;
 
       try {
         const status = await fetchJson(`${API_BASE}/api/scan-status`);
         if (!disposed) {
-          applyScanStatus(status);
+          applyScanStatusRef.current(status);
           const active = status?.running || ["starting", "running", "cancelling"].includes(status?.state);
           nextInterval = active || scanLaunchPendingRef.current ? 1500 : 8000;
         }
@@ -963,7 +997,7 @@ function App() {
       disposed = true;
       if (timerId) window.clearTimeout(timerId);
     };
-  }, [authToken, currentUser, isScanning, applyScanStatus]);
+  }, [authToken, currentUser]);
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
