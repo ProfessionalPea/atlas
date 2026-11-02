@@ -659,10 +659,61 @@ function App() {
     return () => document.removeEventListener("click", closeDropdowns);
   }, []);
 
+  const toggleTheme = useCallback(() => {
+    const root = window.document.documentElement;
+    const currentlyDark = root.classList.contains("dark");
+    const nextDark = !currentlyDark;
+
+    // 1. Temporarily freeze transitions across DOM during the theme switch
+    let style = document.getElementById("atlas-theme-switch-style");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "atlas-theme-switch-style";
+      style.textContent = `
+        *, *::before, *::after {
+          -webkit-transition: none !important;
+          -moz-transition: none !important;
+          -o-transition: none !important;
+          -ms-transition: none !important;
+          transition: none !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    // 2. Synchronously update DOM classes and localStorage
+    if (nextDark) {
+      root.classList.add("dark");
+      localStorage.setItem("atlas_theme", "dark");
+    } else {
+      root.classList.remove("dark");
+      localStorage.setItem("atlas_theme", "light");
+    }
+
+    // 3. Update React state
+    setIsDarkMode(nextDark);
+
+    // 4. Force synchronous reflow so all elements adopt new CSS variables instantly
+    void window.getComputedStyle(document.body).opacity;
+
+    // 5. Restore transitions cleanly on next frame
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById("atlas-theme-switch-style");
+        if (el) el.remove();
+      });
+    });
+  }, []);
+
   useEffect(() => {
     const root = window.document.documentElement;
-    if (isDarkMode) { root.classList.add("dark"); localStorage.setItem("atlas_theme", "dark"); } 
-    else { root.classList.remove("dark"); localStorage.setItem("atlas_theme", "light"); }
+    if (isDarkMode && !root.classList.contains("dark")) {
+      root.classList.add("dark");
+      localStorage.setItem("atlas_theme", "dark");
+    } else if (!isDarkMode && root.classList.contains("dark")) {
+      root.classList.remove("dark");
+      localStorage.setItem("atlas_theme", "light");
+    }
   }, [isDarkMode]);
 
   useEffect(() => {
@@ -2378,7 +2429,7 @@ function App() {
                   <div className="text-[11px] text-text-muted mt-0.5">{isAdmin ? "Administrator" : "View-only access"}</div>
                 </div>
                 <div className="p-2">
-                  <button type="button" onClick={() => { setIsDarkMode(!isDarkMode); setActiveDropdown(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-input-bg text-left transition-colors">
+                  <button type="button" onClick={() => { toggleTheme(); setActiveDropdown(null); }} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-input-bg text-left transition-colors">
                     <span className="material-symbols-outlined text-text-muted text-[19px]">{isDarkMode ? "light_mode" : "dark_mode"}</span>
                     <span className="text-sm text-text-main">{isDarkMode ? "Light theme" : "Dark theme"}</span>
                   </button>
@@ -2405,7 +2456,7 @@ function App() {
           {[
             { id: "playStore", customIcon: GooglePlayIcon, label: "Market Intelligence" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
-            { id: "automated", icon: "groups", label: "Competitors" },
+            { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin
               ? [
                   { id: "dashboard", icon: "dashboard", label: "Dashboard" },
@@ -3083,7 +3134,7 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-7xl mx-auto">
               <motion.div variants={FADE_UP} className="flex justify-between items-end mb-4">
                 <div>
-                  <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">Competitors</h1>
+                  <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">Targets</h1>
                   <p className="text-sm text-text-muted mt-2">
                     {isAdmin ? "Manage saved competitors, batch lists, and email reporting targets." : "View saved competitor targets and active batch lists."}
                   </p>
@@ -3289,7 +3340,7 @@ function App() {
           {[
             { id: "playStore", customIcon: GooglePlayIcon, label: "Market Intelligence" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
-            { id: "automated", icon: "groups", label: "Competitors" },
+            { id: "automated", icon: "track_changes", label: "Targets" },
             ...(isAdmin
               ? [
                   { id: "dashboard", icon: "dashboard", label: "Dashboard" },

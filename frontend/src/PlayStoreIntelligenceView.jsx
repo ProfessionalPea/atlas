@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence } from "framer-motion";
 import { API_BASE } from "./apiConfig";
@@ -102,7 +102,7 @@ function getPublisherSyncState(pub) {
   };
 }
 
-export default function PlayStoreIntelligenceView({
+function PlayStoreIntelligenceView({
   onOpenCountryScan,
   initialSearchQuery = "",
   isAdmin = false
@@ -3291,3 +3291,5 @@ export default function PlayStoreIntelligenceView({
     </div>
   );
 }
+
+export default memo(PlayStoreIntelligenceView);

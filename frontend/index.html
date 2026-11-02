@@ -29,7 +29,7 @@
       try {
         const theme = localStorage.getItem("atlas_theme");
         if (theme === "light") document.documentElement.classList.remove("dark");
-        else if (theme === "dark") document.documentElement.classList.add("dark");
+        else document.documentElement.classList.add("dark");
       } catch (_) {}
     </script>
   </head>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
 
@@ -112,7 +112,7 @@ function getPublisherSyncState(pub) {
   };
 }
 
-export default function AmazonIntelligenceView({ isAdmin = false }) {
+function AmazonIntelligenceView({ isAdmin = false }) {
   const fetcher = useCallback((url, options = {}) => {
     const token = localStorage.getItem("atlas_auth_token");
     return fetch(url, {
@@ -2649,3 +2649,5 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
     </div>
   );
 }
+
+export default memo(AmazonIntelligenceView);
