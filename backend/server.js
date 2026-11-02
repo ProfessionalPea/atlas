@@ -18,6 +18,8 @@ const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require(".
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
 const { runFullTelemetryForPackage, fetchPlayStoreDs5 } = require("./PlayStoreTelemetry");
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
 require("./AtlasExtensions");
 const cors = require("cors");
 const crypto = require("crypto");
@@ -360,6 +362,11 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(compression({ threshold: 1024, level: 6 }));
 app.use(express.json({ limit: "1mb" }));
+
+const frontendDist = path.join(__dirname, "../frontend/dist");
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+}
 
 // Public health check
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
@@ -2360,6 +2367,13 @@ app.get("/api/competitors", async (_req, res) => {
     res.status(500).json({ error: "Fail" }); 
   }
 });
+
+if (fs.existsSync(frontendDist)) {
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(frontendDist, "index.html"));
+  });
+}
 
 const PORT = process.env.PORT || 3000;
 
