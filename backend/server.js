@@ -332,6 +332,7 @@ async function mapWithConcurrency(items, concurrency, worker, shouldStop = () =>
   return output;
 }
 
+const compression = require("compression");
 const app = express();
 
 // Permissive CORS for Vercel + ngrok tunnel headers
@@ -339,6 +340,7 @@ const corsOptions = {
   origin: true,
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  exposedHeaders: ["ETag"],
   allowedHeaders: [
     "Origin",
     "X-Requested-With",
@@ -348,11 +350,15 @@ const corsOptions = {
     "x-atlas-token",
     "x-atlas-admin-key",
     "ngrok-skip-browser-warning",
-    "Bypass-Tunnel-Reminder"
+    "Bypass-Tunnel-Reminder",
+    "If-None-Match",
+    "If-Modified-Since",
+    "ETag"
   ]
 };
 
 app.use(cors(corsOptions));
+app.use(compression({ threshold: 1024, level: 6 }));
 app.use(express.json({ limit: "1mb" }));
 
 // Public health check

@@ -4,6 +4,7 @@ import { AnimatePresence } from "framer-motion";
 import { API_BASE } from "./apiConfig";
 import { KeywordPanel } from "./KeywordPanel.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
+import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
 
 const SAMPLE_PLAY_LINKS = [
   "https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio",
@@ -214,13 +215,32 @@ function PlayStoreIntelligenceView({
   const [keywordTarget, setKeywordTarget] = useState(null);
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
+  const cachedEtagRef = useRef(null);
 
-  const loadOverview = useCallback(async () => {
+  const loadOverview = useCallback(async (options = {}) => {
     try {
-      const res = await fetcher(`${API_BASE}/api/play/overview`);
+      const headers = {};
+      const forceFresh = options?.fresh === true;
+      if (!forceFresh && cachedEtagRef.current) {
+        headers["If-None-Match"] = cachedEtagRef.current;
+      }
+
+      const res = await fetcher(`${API_BASE}/api/play/overview${forceFresh ? "?fresh=1" : ""}`, {
+        headers
+      });
+
+      // 304 Not Modified: Cache is 100% up to date! 0 byte body transferred
+      if (res.status === 304) {
+        setLoading(false);
+        return;
+      }
+
       if (res.ok) {
         const data = await res.json();
-        setOverview({
+        const newEtag = res.headers.get("ETag");
+        if (newEtag) cachedEtagRef.current = newEtag;
+
+        const normalized = {
           summary: data.summary || {
             publisherCount: 0,
             listCount: 0,
@@ -238,7 +258,11 @@ function PlayStoreIntelligenceView({
           publishers: data.publishers || [],
           games: data.games || [],
           snapshots: data.snapshots || []
-        });
+        };
+
+        setOverview(normalized);
+        void setCachedCatalogue("play_overview", normalized, newEtag);
+        broadcastCatalogueUpdate("play", newEtag);
       }
     } catch (err) {
       console.error("Failed to load Play Store overview:", err);
@@ -247,13 +271,53 @@ function PlayStoreIntelligenceView({
     }
   }, [fetcher]);
 
+  // Instant render from IndexedDB + Stale-While-Revalidate + Multi-tab sync
   useEffect(() => {
+    let isMounted = true;
+
+    // 1. Instantly populate UI from local IndexedDB cache (0ms render time)
+    getCachedCatalogue("play_overview").then((cached) => {
+      if (isMounted && cached?.data) {
+        setOverview(cached.data);
+        if (cached.etag) cachedEtagRef.current = cached.etag;
+        setLoading(false);
+      }
+    });
+
+    // 2. Background revalidation over network (returns 304 if data has not mutated)
     loadOverview();
+
+    // 3. Multi-tab synchronization: if another tab updates the data, refresh silently
+    const unsubscribe = onCatalogueUpdate((msg) => {
+      if (msg.platform === "play") {
+        getCachedCatalogue("play_overview").then((fresh) => {
+          if (isMounted && fresh?.data) {
+            setOverview(fresh.data);
+            if (fresh.etag) cachedEtagRef.current = fresh.etag;
+          }
+        });
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [loadOverview]);
 
-  // Poll Play Store publisher scan status & Country Batch Queue status
+  // Adaptive scan status polling: 2s while actively scanning, 10s while idle, paused when tab is hidden
   useEffect(() => {
+    let disposed = false;
+    let timerId = null;
+
     const checkStatuses = async () => {
+      if (disposed) return;
+      if (document.hidden && !scanStatus.running && !countryQueueStatus.running) {
+        // Paused in background tab
+        return;
+      }
+
+      let isActive = false;
       try {
         const [scanRes, cqRes] = await Promise.all([
           fetcher(`${API_BASE}/api/play/scan-status`),
@@ -261,28 +325,49 @@ function PlayStoreIntelligenceView({
         ]);
         if (scanRes.ok) {
           const st = await scanRes.json();
+          if (st.running) isActive = true;
           setScanStatus((prev) => {
             if (prev.running && !st.running) {
-              loadOverview();
+              loadOverview({ fresh: true });
             }
             return st;
           });
         }
         if (cqRes.ok) {
           const cq = await cqRes.json();
+          if (cq.running) isActive = true;
           setCountryQueueStatus((prev) => {
             if (prev.running && !cq.running) {
-              loadOverview();
+              loadOverview({ fresh: true });
             }
             return cq;
           });
         }
       } catch {}
+
+      if (!disposed) {
+        const nextDelay = isActive ? 2000 : 10000;
+        timerId = setTimeout(checkStatuses, nextDelay);
+      }
     };
+
     checkStatuses();
-    const timer = setInterval(checkStatuses, 2000);
-    return () => clearInterval(timer);
-  }, [fetcher, loadOverview]);
+
+    // Wake up immediately when user switches back to tab
+    const handleVisibility = () => {
+      if (!document.hidden && !disposed) {
+        clearTimeout(timerId);
+        checkStatuses();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      disposed = true;
+      clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [fetcher, loadOverview, scanStatus.running, countryQueueStatus.running]);
 
   // Live elapsed timer during active publisher scan
   useEffect(() => {

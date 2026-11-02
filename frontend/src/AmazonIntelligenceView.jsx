@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
+import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
 
 const SAMPLE_LINKS = [
   "https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AOrigin%2BGame%2BArena&search-type=ss",
@@ -183,13 +184,31 @@ function AmazonIntelligenceView({ isAdmin = false }) {
 
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
+  const cachedEtagRef = useRef(null);
 
-  const loadOverview = useCallback(async () => {
+  const loadOverview = useCallback(async (options = {}) => {
     try {
-      const res = await fetcher(`${API_BASE}/api/amazon/overview`);
+      const headers = {};
+      const forceFresh = options?.fresh === true;
+      if (!forceFresh && cachedEtagRef.current) {
+        headers["If-None-Match"] = cachedEtagRef.current;
+      }
+
+      const res = await fetcher(`${API_BASE}/api/amazon/overview${forceFresh ? "?fresh=1" : ""}`, {
+        headers
+      });
+
+      if (res.status === 304) {
+        setLoading(false);
+        return;
+      }
+
       if (res.ok) {
         const data = await res.json();
-        setOverview({
+        const newEtag = res.headers.get("ETag");
+        if (newEtag) cachedEtagRef.current = newEtag;
+
+        const normalized = {
           summary: data.summary || {
             publisherCount: 0,
             listCount: 0,
@@ -206,7 +225,11 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           publishers: data.publishers || [],
           games: data.games || [],
           snapshots: data.snapshots || []
-        });
+        };
+
+        setOverview(normalized);
+        void setCachedCatalogue("amazon_overview", normalized, newEtag);
+        broadcastCatalogueUpdate("amazon", newEtag);
       }
     } catch (err) {
       console.error("Failed to load Amazon overview:", err);
@@ -215,30 +238,83 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     }
   }, [fetcher]);
 
+  // Instant render from IndexedDB + Stale-While-Revalidate + Multi-tab sync
   useEffect(() => {
+    let isMounted = true;
+
+    getCachedCatalogue("amazon_overview").then((cached) => {
+      if (isMounted && cached?.data) {
+        setOverview(cached.data);
+        if (cached.etag) cachedEtagRef.current = cached.etag;
+        setLoading(false);
+      }
+    });
+
     loadOverview();
+
+    const unsubscribe = onCatalogueUpdate((msg) => {
+      if (msg.platform === "amazon") {
+        getCachedCatalogue("amazon_overview").then((fresh) => {
+          if (isMounted && fresh?.data) {
+            setOverview(fresh.data);
+            if (fresh.etag) cachedEtagRef.current = fresh.etag;
+          }
+        });
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, [loadOverview]);
 
-  // Poll scan status
+  // Adaptive scan status polling: 2s while actively scanning, 10s while idle, paused when tab is hidden
   useEffect(() => {
+    let disposed = false;
+    let timerId = null;
+
     const checkStatus = async () => {
+      if (disposed) return;
+      if (document.hidden && !scanStatus.running) return;
+
+      let isActive = false;
       try {
         const res = await fetcher(`${API_BASE}/api/amazon/scan-status`);
         if (res.ok) {
           const st = await res.json();
+          if (st.running) isActive = true;
           setScanStatus((prev) => {
             if (prev.running && !st.running) {
-              loadOverview();
+              loadOverview({ fresh: true });
             }
             return st;
           });
         }
       } catch {}
+
+      if (!disposed) {
+        const nextDelay = isActive ? 2000 : 10000;
+        timerId = setTimeout(checkStatus, nextDelay);
+      }
     };
+
     checkStatus();
-    const timer = setInterval(checkStatus, 2000);
-    return () => clearInterval(timer);
-  }, [fetcher, loadOverview]);
+
+    const handleVisibility = () => {
+      if (!document.hidden && !disposed) {
+        clearTimeout(timerId);
+        checkStatus();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      disposed = true;
+      clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [fetcher, loadOverview, scanStatus.running]);
 
   // Live elapsed timer during active scan
   useEffect(() => {

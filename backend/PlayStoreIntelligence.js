@@ -1295,8 +1295,10 @@ async function processCountryBatchLoop(pool) {
 
 // In-memory TTL cache for /api/play/overview so repeated tab switches and page reloads respond in <5ms
 let playOverviewCache = { payload: null, expiresAt: 0 };
+let playCatalogueVersion = Date.now();
 function invalidatePlayOverviewCache() {
   playOverviewCache = { payload: null, expiresAt: 0 };
+  playCatalogueVersion = Date.now();
 }
 
 function registerPlayStoreRoutes({ app, pool }) {
@@ -1326,8 +1328,16 @@ function registerPlayStoreRoutes({ app, pool }) {
   // 2. Full Play Store Intelligence Overview
   app.get('/api/play/overview', async (req, res) => {
     try {
-      res.set('Cache-Control', 'no-store');
+      const clientEtag = req.get('if-none-match');
+      const currentEtag = `W/"play-${playCatalogueVersion}"`;
+      res.set('ETag', currentEtag);
+      res.set('Cache-Control', 'private, no-cache');
+
       const forceFresh = req.query?.fresh === '1';
+      if (!forceFresh && clientEtag && clientEtag === currentEtag) {
+        return res.status(304).end();
+      }
+
       if (!forceFresh && playOverviewCache.payload && playOverviewCache.expiresAt > Date.now()) {
         return res.json(playOverviewCache.payload);
       }

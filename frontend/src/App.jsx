@@ -4,6 +4,7 @@ import { cn } from "./lib/utils";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
+import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {
@@ -754,6 +755,36 @@ function App() {
     const anyFulfilled = results.some(result => result.status === "fulfilled");
     setIsNodeOnline(anyFulfilled);
     results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
+
+    if (anyFulfilled) {
+      // Background write to IndexedDB so next tab open or refresh renders instantly with 0ms delay
+      void setCachedCatalogue("atlas_dashboard_meta", {
+        stats,
+        competitorTree,
+        trending,
+        targetLists,
+        savedCompetitors,
+        countryScanLibrary,
+        suspendedGames
+      });
+    }
+  }, [authToken, currentUser, stats, competitorTree, trending, targetLists, savedCompetitors, countryScanLibrary, suspendedGames]);
+
+  // 0ms instant startup from local IndexedDB cache
+  useEffect(() => {
+    if (authToken && currentUser) {
+      getCachedCatalogue("atlas_dashboard_meta").then((cached) => {
+        if (cached?.data) {
+          if (cached.data.stats) setStats(cached.data.stats);
+          if (cached.data.competitorTree) setCompetitorTree(cached.data.competitorTree);
+          if (cached.data.trending) setTrending(cached.data.trending);
+          if (cached.data.targetLists) setTargetLists(cached.data.targetLists);
+          if (cached.data.savedCompetitors) setSavedCompetitors(cached.data.savedCompetitors);
+          if (cached.data.countryScanLibrary) setCountryScanLibrary(cached.data.countryScanLibrary);
+          if (cached.data.suspendedGames) setSuspendedGames(cached.data.suspendedGames);
+        }
+      });
+    }
   }, [authToken, currentUser]);
 
   useEffect(() => { 

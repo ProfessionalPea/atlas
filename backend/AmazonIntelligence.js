@@ -435,8 +435,10 @@ function parseInputLinks(raw) {
 
 // In-memory TTL cache for /api/amazon/overview so repeated tab switches and page reloads respond in <5ms
 let amazonOverviewCache = { payload: null, expiresAt: 0 };
+let amazonCatalogueVersion = Date.now();
 function invalidateAmazonOverviewCache() {
   amazonOverviewCache = { payload: null, expiresAt: 0 };
+  amazonCatalogueVersion = Date.now();
 }
 
 function registerAmazonRoutes({ app, pool }) {
@@ -465,8 +467,16 @@ function registerAmazonRoutes({ app, pool }) {
 
   app.get('/api/amazon/overview', async (req, res) => {
     try {
-      res.set('Cache-Control', 'no-store');
+      const clientEtag = req.get('if-none-match');
+      const currentEtag = `W/"amazon-${amazonCatalogueVersion}"`;
+      res.set('ETag', currentEtag);
+      res.set('Cache-Control', 'private, no-cache');
+
       const forceFresh = req.query?.fresh === '1';
+      if (!forceFresh && clientEtag && clientEtag === currentEtag) {
+        return res.status(304).end();
+      }
+
       if (!forceFresh && amazonOverviewCache.payload && amazonOverviewCache.expiresAt > Date.now()) {
         return res.json(amazonOverviewCache.payload);
       }

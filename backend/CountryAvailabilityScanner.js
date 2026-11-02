@@ -1,9 +1,10 @@
 const gplayRaw = require("google-play-scraper");
 const gplay = gplayRaw.default || gplayRaw;
+const { parsePlayStoreDs5Html } = require("./PlayStoreTelemetry");
 
 const DEFAULT_CONCURRENCY = Math.max(
   1,
-  Math.min(12, Number(process.env.COUNTRY_SCAN_CONCURRENCY) || 8)
+  Math.min(10, Number(process.env.COUNTRY_SCAN_CONCURRENCY) || 8)
 );
 
 const REQUEST_TIMEOUT_MS = Math.max(
@@ -22,28 +23,28 @@ const REQUEST_TIMEOUT_MS = Math.max(
 // Source of truth checked against Google's "Supported locations for
 // distribution to Google Play users" table (176 named locations, Sep 2026).
 const COUNTRY_CODES = [
-  // United States and Canada
-  "CA","US",
+  // Priority Tier 1 Global Markets (Scanned First)
+  "US","GB","DE","FR","JP","KR","CA","AU","BR","IN",
 
   // Europe
-  "AL","AT","BY","BE","BA","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GI",
+  "AL","AT","BY","BE","BA","BG","HR","CY","CZ","DK","EE","FI","GI",
   "GR","HU","IS","IE","IT","LV","LI","LT","LU","MT","MD","MC","NL","MK","NO",
-  "PL","PT","RO","RU","SM","RS","SK","SI","ES","SE","CH","TR","UA","GB","VA",
+  "PL","PT","RO","RU","SM","RS","SK","SI","ES","SE","CH","TR","UA","VA",
 
   // Africa, Middle East, and India
   "DZ","AO","AM","AZ","BH","BJ","BW","BF","CM","CV","TD","KM","CD","CG","CI",
-  "DJ","EG","ER","GA","GM","GE","GH","GN","GW","IN","IR","IQ","IL","JO","KE",
+  "DJ","EG","ER","GA","GM","GE","GH","GN","GW","IR","IQ","IL","JO","KE",
   "KW","LB","LR","LY","ML","MU","MA","MZ","NA","NE","NG","OM","QA","RW","SA",
   "SN","SC","SL","SO","ZA","SD","TZ","TG","TN","UG","AE","YE","ZM","ZW",
 
   // Latin America and the Caribbean
-  "AG","AR","AW","BS","BZ","BM","BO","BR","VG","KY","CL","CO","CR","CU","DM",
+  "AG","AR","AW","BS","BZ","BM","BO","VG","KY","CL","CO","CR","CU","DM",
   "DO","EC","SV","GD","GT","HT","HN","JM","MX","NI","PA","PY","PE","KN","LC",
   "SR","TT","TC","UY","VE",
 
   // Asia Pacific
-  "AU","BD","KH","CN","FJ","HK","ID","JP","KZ","KG","LA","MO","MY","MV","FM",
-  "MN","MM","NP","NZ","PK","PG","PH","WS","SG","SB","KR","LK","TW","TJ","TH",
+  "BD","KH","CN","FJ","HK","ID","KZ","KG","LA","MO","MY","MV","FM",
+  "MN","MM","NP","NZ","PK","PG","PH","WS","SG","SB","LK","TW","TJ","TH",
   "TO","TM","UZ","VU","VN"
 ]
 
@@ -396,7 +397,7 @@ async function probeCountry(packageName, countryCode) {
   url.searchParams.set("gl", countryCode);
 
   try {
-    const response = await fetch(url, {
+    const fetchOptions = {
       redirect: "follow",
       signal: controller.signal,
       headers: {
@@ -406,7 +407,16 @@ async function probeCountry(packageName, countryCode) {
         "pragma": "no-cache",
         "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 AtlasCountryScanner/1.0"
       }
-    });
+    };
+
+    let response;
+    try {
+      response = await fetch(url, fetchOptions);
+    } catch (netErr) {
+      if (controller.signal.aborted) throw netErr;
+      await new Promise(r => setTimeout(r, 200));
+      response = await fetch(url, fetchOptions);
+    }
 
     const body = await response.text();
     const pageClassification = classifyStorePage({
@@ -444,25 +454,50 @@ async function probeCountry(packageName, countryCode) {
     let metadataError = null;
     let appData = null;
 
+    // Fast path: parse metadata directly from the HTML body already fetched
+    // This avoids redundant second HTTP requests for live countries
     try {
-      appData = await withTimeout(
-        gplay.app({
-          appId: packageName,
-          country: countryCode.toLowerCase(),
-          lang: "en"
-        }),
-        REQUEST_TIMEOUT_MS,
-        "Google Play metadata lookup timed out."
-      );
-      metadataClassification = classifyAppMetadata(appData);
-    } catch (error) {
-      metadataError = error;
-      if (isNotFoundError(error)) {
-        metadataClassification = {
-          state: "unavailable",
-          confidence: "high",
-          marker: "metadata_not_found"
+      const parsedDs5 = parsePlayStoreDs5Html(body, packageName);
+      if (parsedDs5 && (parsedDs5.realInstalls > 0 || parsedDs5.ratingsCount > 0 || parsedDs5.title)) {
+        const storeOffer = getStoreOffer(null, body);
+        appData = {
+          title: parsedDs5.title,
+          installs: parsedDs5.installsTier,
+          minInstalls: parsedDs5.realInstalls,
+          ratings: parsedDs5.ratingsCount,
+          score: parsedDs5.rating,
+          released: parsedDs5.releaseDate,
+          free: !storeOffer.isPaid,
+          price: storeOffer.price || 0,
+          currency: storeOffer.currency || null,
+          priceText: storeOffer.priceText || null
         };
+        metadataClassification = classifyAppMetadata(appData);
+      }
+    } catch (_) {}
+
+    // Fallback path: only make the expensive second HTTP request if fast path didn't resolve
+    if (!metadataClassification) {
+      try {
+        appData = await withTimeout(
+          gplay.app({
+            appId: packageName,
+            country: countryCode.toLowerCase(),
+            lang: "en"
+          }),
+          REQUEST_TIMEOUT_MS,
+          "Google Play metadata lookup timed out."
+        );
+        metadataClassification = classifyAppMetadata(appData);
+      } catch (error) {
+        metadataError = error;
+        if (isNotFoundError(error)) {
+          metadataClassification = {
+            state: "unavailable",
+            confidence: "high",
+            marker: "metadata_not_found"
+          };
+        }
       }
     }
 
@@ -534,7 +569,7 @@ async function scanPackageCountries(packageNameInput, options = {}) {
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : () => {};
   const concurrency = Math.max(
     1,
-    Math.min(12, Number(options.concurrency) || DEFAULT_CONCURRENCY)
+    Math.min(10, Number(options.concurrency) || DEFAULT_CONCURRENCY)
   );
 
   const results = new Array(COUNTRY_CODES.length);
