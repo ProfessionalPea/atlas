@@ -173,17 +173,24 @@ export default function UniversalGameDetailDrawer({
                   </div>
                 )}
                 <div className="min-w-0">
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border ${
-                      isFree
-                        ? "bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400"
-                        : "bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300"
-                    }`}
-                  >
-                    {isFree
-                      ? "Free Play Store Title"
-                      : `Paid Title · $${Number(game.price || 0).toFixed(2)}`}
-                  </span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border ${
+                        isFree
+                          ? "bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400"
+                          : "bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300"
+                      }`}
+                    >
+                      {isFree
+                        ? "Free Play Store Title"
+                        : `Paid Title · $${Number(game.price || 0).toFixed(2)}`}
+                    </span>
+                    {(game.has_campaign || game.campaign_active) && (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-blue-50 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/30 text-blue-800 dark:text-blue-300">
+                        Active Campaign
+                      </span>
+                    )}
+                  </div>
                   <h3 className="text-base font-semibold text-text-main mt-1 truncate" title={game.title}>
                     {game.title || game.package_name}
                   </h3>

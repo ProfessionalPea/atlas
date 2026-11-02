@@ -1979,14 +1979,17 @@ app.post("/api/scan", async (req, res) => {
               screenshots, description, installs, min_installs, released,
               updated, similar_apps, ad_count, header_image, video, video_image,
               developer_id, developer_url, is_paid, price, currency, price_text,
-              short_description, release_date
+              short_description, release_date, campaign_active, last_campaign_seen_at
             )
             VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9,
               $10, $11, $12, $13, $14, $15, $16, $17,
-              $18, $19, $20, $21, $22, $23, $24, $25::date
+              $18, $19, $20, $21, $22, $23, $24, $25::date,
+              true, now()
             )
             ON CONFLICT (package_name) DO UPDATE SET
+              campaign_active = true,
+              last_campaign_seen_at = now(),
               title = EXCLUDED.title,
               category = EXCLUDED.category,
               rating = EXCLUDED.rating,

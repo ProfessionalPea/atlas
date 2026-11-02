@@ -540,7 +540,7 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       addedPackages.push(pkg);
     }
 
-    const isPaid = appItem.free === false || Number(appItem.price) > 0;
+    const isPaid = appItem.free === false && Number(appItem.price) > 0;
     const priceNum = isPaid && Number.isFinite(Number(appItem.price)) ? Number(appItem.price) : null;
     const currency = isPaid ? (appItem.currency || 'USD') : null;
     const priceText = isPaid ? (appItem.priceText || (priceNum ? `$${priceNum}` : null)) : 'Free';
@@ -690,8 +690,8 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
   const aggRes = await pool.query(
     `SELECT
        COUNT(DISTINCT g.id)::int AS total_games,
-       COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false)::int AS free_games,
-       COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true)::int AS paid_games,
+       COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false OR COALESCE(g.price, 0) <= 0)::int AS free_games,
+       COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true AND COALESCE(g.price, 0) > 0)::int AS paid_games,
        AVG(NULLIF(g.rating, 0))::double precision AS avg_rating,
        COALESCE(SUM(COALESCE(g.ratings_count, 0)), 0)::bigint AS total_reviews,
        COALESCE(SUM(COALESCE(g.real_installs, g.min_installs, 0)), 0)::bigint AS total_installs,
@@ -932,8 +932,8 @@ async function syncLegacyAccountsAndCompetitors(pool) {
       SELECT
         p.id AS pub_id,
         COUNT(DISTINCT g.id)::int AS total_games,
-        COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false)::int AS free_games,
-        COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true)::int AS paid_games,
+        COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false OR COALESCE(g.price, 0) <= 0)::int AS free_games,
+        COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true AND COALESCE(g.price, 0) > 0)::int AS paid_games,
         AVG(NULLIF(g.rating, 0))::double precision AS avg_rating,
         COALESCE(SUM(COALESCE(g.ratings_count, 0)), 0)::bigint AS total_reviews,
         COALESCE(SUM(COALESCE(g.real_installs, g.min_installs, 0)), 0)::bigint AS total_installs,
@@ -1393,7 +1393,9 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.last_seen_at,
             g.store_scanned_at,
             g.installs_scanned_at,
-            g.discovery_source
+            g.discovery_source,
+            COALESCE(g.campaign_active, false) AS campaign_active,
+            g.last_campaign_seen_at
           FROM account_games ag
           JOIN play_publishers p ON p.id = ag.account_id
           JOIN games g ON g.id = ag.game_id
@@ -1477,12 +1479,13 @@ function registerPlayStoreRoutes({ app, pool }) {
       }
 
       const games = gamesRes.rows.map((g) => {
-        const isPaid = Boolean(g.is_paid);
+        const isPaid = Boolean(g.is_paid) && Number(g.price) > 0;
         const countrySummary = countryByPkg.get(g.package_name) || null;
         const sharedPubs = publishersByPkg.get(g.package_name) || [g.publisher_name];
         const parsedRel = g.release_date || parseReleaseDateIso(g.released);
         return {
           ...g,
+          has_campaign: Boolean(g.campaign_active) || Number(g.ad_count) > 0,
           pricing: isPaid ? 'paid' : 'free',
           price: g.price != null ? Number(g.price) : null,
           rating: g.rating != null ? Number(g.rating) : null,
@@ -1509,8 +1512,8 @@ function registerPlayStoreRoutes({ app, pool }) {
         }
         const uniqueListGames = [...seenPkgs.values()];
         const uniqueGamesCount = uniqueListGames.length;
-        const uniqueFree = uniqueListGames.filter((g) => !g.is_paid).length;
-        const uniquePaid = uniqueListGames.filter((g) => g.is_paid).length;
+        const uniqueFree = uniqueListGames.filter((g) => !g.is_paid || Number(g.price) <= 0).length;
+        const uniquePaid = uniqueListGames.filter((g) => g.is_paid && Number(g.price) > 0).length;
         const listInstalls = uniqueListGames.reduce(
           (s, g) => s + (Number(g.real_installs ?? g.min_installs) || 0),
           0
@@ -1730,6 +1733,54 @@ function registerPlayStoreRoutes({ app, pool }) {
     } catch (err) {
       console.error('[Play Sheet Import Error]:', err);
       res.status(500).json({ error: err.message || 'Failed to import from Google Sheet.' });
+    }
+  });
+
+  // 3b. Sync Active Campaign flags from Google Sheet ("Sheet1" Transparency Centre rows)
+  app.post('/api/play/sync-sheet-campaigns', async (_req, res) => {
+    try {
+      let authConfig = { scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'] };
+      if (process.env.GOOGLE_CREDENTIALS_JSON) {
+        authConfig.credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS_JSON);
+      } else {
+        authConfig.keyFile = path.join(__dirname, 'google-credentials.json');
+      }
+      const auth = new google.auth.GoogleAuth(authConfig);
+      const sheets = google.sheets({ version: 'v4', auth });
+      const settingsQuery = await pool.query("SELECT value FROM settings WHERE key = 'google_sheet_id'");
+      const sheetId = settingsQuery.rows[0]?.value || '1tQysvSfuGZ3p9sydcueagW4fS_h2PufqDN0nx3i7ohs';
+
+      const sheetRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: sheetId,
+        range: "'Sheet1'!E4:E"
+      });
+
+      const packagesInSheet = (sheetRes.data.values || [])
+        .map(r => r[0] ? String(r[0]).trim().toLowerCase() : '')
+        .filter(p => p.startsWith('com.'));
+
+      const uniquePkgs = [...new Set(packagesInSheet)];
+      if (uniquePkgs.length === 0) {
+        return res.json({ status: 'ok', updatedCount: 0, totalFound: 0 });
+      }
+
+      const updateRes = await pool.query(`
+        UPDATE games
+        SET campaign_active = true, last_campaign_seen_at = COALESCE(last_campaign_seen_at, now())
+        WHERE LOWER(package_name) = ANY($1::text[])
+        RETURNING id
+      `, [uniquePkgs]);
+
+      invalidatePlayOverviewCache();
+
+      res.json({
+        status: 'ok',
+        updatedCount: updateRes.rowCount,
+        totalFound: uniquePkgs.length
+      });
+    } catch (err) {
+      console.error('[Sync Sheet Campaigns Error]:', err);
+      res.status(500).json({ error: err.message || 'Failed to sync campaign flags from Google Sheet.' });
     }
   });
 

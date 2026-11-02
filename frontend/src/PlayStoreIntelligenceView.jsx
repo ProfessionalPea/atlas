@@ -2374,6 +2374,14 @@ function PlayStoreIntelligenceView({
                                   ${Number(g.price || 0).toFixed(2)}
                                 </span>
                               )}
+                              {(g.has_campaign || g.campaign_active) && (
+                                <span
+                                  className="px-1.5 py-0.2 rounded bg-blue-500/15 text-blue-500 dark:text-cyan-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-blue-500/30"
+                                  title="Active Ad Campaign detected via Google Ads Transparency Centre"
+                                >
+                                  Campaign
+                                </span>
+                              )}
                             </div>
                             <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
                               <span className="truncate max-w-[200px]">{g.package_name}</span>
