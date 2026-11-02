@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { API_BASE } from "./apiConfig.js";
-import { KeywordPanel } from "./AtlasIntelligenceLayer.jsx";
+import { KeywordPanel } from "./KeywordPanel.jsx";
 
 function formatCompactNumber(val) {
   const n = Number(val);
@@ -174,10 +174,10 @@ export default function UniversalGameDetailDrawer({
                 )}
                 <div className="min-w-0">
                   <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border ${
                       isFree
-                        ? "bg-emerald-500/15 text-emerald-400"
-                        : "bg-amber-500/15 text-amber-400"
+                        ? "bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400"
+                        : "bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300"
                     }`}
                   >
                     {isFree
@@ -215,7 +215,7 @@ export default function UniversalGameDetailDrawer({
               </div>
               <div className="bg-input-bg rounded-xl p-3">
                 <div className="text-[10px] text-text-muted">Real Installs</div>
-                <div className="text-xs font-mono font-semibold text-emerald-400 mt-0.5">
+                <div className="text-xs font-mono font-semibold text-emerald-700 dark:text-emerald-400 mt-0.5">
                   {realInstallsVal}
                 </div>
               </div>
@@ -253,7 +253,7 @@ export default function UniversalGameDetailDrawer({
                   type="button"
                   disabled={isRefreshing}
                   onClick={(e) => onRefreshTelemetry && onRefreshTelemetry(game, e)}
-                  className="py-2.5 px-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  className="py-2.5 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-500/25 transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                 >
                   <span
                     className={`material-symbols-outlined text-[16px] ${
@@ -270,7 +270,7 @@ export default function UniversalGameDetailDrawer({
                 <button
                   type="button"
                   onClick={() => onOpenCountryScan && onOpenCountryScan(game.package_name)}
-                  className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
+                  className="py-2.5 px-3 rounded-xl bg-amber-100/90 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300 text-xs font-semibold hover:bg-amber-200/80 dark:hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
                 >
                   <span className="material-symbols-outlined text-[16px]">public</span>
                   Live in {countryLiveCount}/176 Countries
@@ -279,7 +279,7 @@ export default function UniversalGameDetailDrawer({
                 <button
                   type="button"
                   onClick={() => onOpenCountryScan && onOpenCountryScan(game.package_name)}
-                  className="py-2.5 px-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
+                  className="py-2.5 px-3 rounded-xl bg-amber-100/90 dark:bg-amber-500/15 border border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300 text-xs font-semibold hover:bg-amber-200/80 dark:hover:bg-amber-500/25 transition flex items-center justify-center gap-1.5"
                 >
                   <span className="material-symbols-outlined text-[16px]">public</span>
                   Scan 176 Countries
@@ -405,7 +405,7 @@ export default function UniversalGameDetailDrawer({
             {/* Sibling Games by Same Publisher */}
             {siblings.length > 0 && (
               <div className="flex flex-col gap-3 border-t border-border-subtle pt-4">
-                <h4 className="text-xs font-semibold text-emerald-400">
+                <h4 className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
                   Other Games by {publisherDisplayName} ({siblings.length})
                 </h4>
                 <div className="flex flex-col gap-1.5 max-h-60 overflow-y-auto custom-scrollbar pr-1">
@@ -428,7 +428,7 @@ export default function UniversalGameDetailDrawer({
                         )}
                         <span className="truncate text-text-main font-medium">{s.title}</span>
                       </div>
-                      <span className="font-mono text-emerald-400 shrink-0 text-[11px]">
+                      <span className="font-mono text-emerald-700 dark:text-emerald-400 shrink-0 text-[11px]">
                         {formatCompactNumber(s.real_installs ?? s.min_installs)} inst ·{" "}
                         {s.release_date ? String(s.release_date).slice(0, 10) : "—"}
                       </span>

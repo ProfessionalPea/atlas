@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { createPortal } from "react-dom";
 import { AnimatePresence } from "framer-motion";
 import { API_BASE } from "./apiConfig";
-import { KeywordPanel } from "./AtlasIntelligenceLayer.jsx";
+import { KeywordPanel } from "./KeywordPanel.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
 const SAMPLE_PLAY_LINKS = [
@@ -579,6 +579,7 @@ export default function PlayStoreIntelligenceView({
         installs: 0,
         dailyDelta: 0,
         unknownDate: 0,
+        allTimeMatching: 0,
         allTimeTotal: Number(pub.total_games) || 0
       });
     }
@@ -587,6 +588,7 @@ export default function PlayStoreIntelligenceView({
       if (appTypeFilter === "app" && isGameItem(g)) continue;
       const entry = map.get(g.publisher_name);
       if (!entry) continue;
+      entry.allTimeMatching += 1;
       const dEval = evaluateGameDate(g);
       if (!dEval.known) entry.unknownDate += 1;
       if (dEval.inRange) {
@@ -600,15 +602,25 @@ export default function PlayStoreIntelligenceView({
     return map;
   }, [visiblePublishers, overview.games, evaluateGameDate, appTypeFilter]);
 
+  // When filtering by Game or App, omit publishers that have 0 titles in this category
+  const comparisonPublishers = useMemo(() => {
+    return visiblePublishers.filter((pub) => {
+      const st = publisherStatsByName.get(pub.publisher_name);
+      if (!st) return false;
+      if (appTypeFilter !== "all" && st.allTimeMatching === 0) return false;
+      return true;
+    });
+  }, [visiblePublishers, publisherStatsByName, appTypeFilter]);
+
   const maxPublisherGames = useMemo(() => {
     return Math.max(
       1,
-      ...visiblePublishers.map((p) => {
+      ...comparisonPublishers.map((p) => {
         const st = publisherStatsByName.get(p.publisher_name);
-        return st ? st.total : Number(p.total_games) || 0;
+        return st ? st.total : 0;
       })
     );
-  }, [visiblePublishers, publisherStatsByName]);
+  }, [comparisonPublishers, publisherStatsByName]);
 
   const filteredGames = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -647,7 +659,8 @@ export default function PlayStoreIntelligenceView({
     searchQuery,
     sortBy,
     getDisplayName,
-    evaluateGameDate
+    evaluateGameDate,
+    appTypeFilter
   ]);
 
   const gamesByPublisher = useMemo(() => {
@@ -1203,8 +1216,8 @@ export default function PlayStoreIntelligenceView({
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 px-1">
         <div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-[11px] font-semibold mb-1.5">
-            <span className="material-symbols-outlined text-[15px]">shop</span>
-            Play Store Intelligence · Primary Discovery Engine
+            <span className="material-symbols-outlined text-[15px]">insights</span>
+            Market Intelligence · Primary Discovery Engine
           </div>
           <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
             Publisher Catalogues &amp; Early Launch Radar
@@ -1732,7 +1745,7 @@ export default function PlayStoreIntelligenceView({
               {scopedStats.unknownDateCount > 0 && (
                 <>
                   {" "}
-                  · Unknown dates: <strong className="text-amber-400">{scopedStats.unknownDateCount.toLocaleString()}</strong>
+                  · Unknown dates: <strong className="text-amber-800 dark:text-amber-400 font-semibold">{scopedStats.unknownDateCount.toLocaleString()}</strong>
                 </>
               )}
             </span>
@@ -1795,7 +1808,7 @@ export default function PlayStoreIntelligenceView({
           onClick={() => setShowCountryBatchModal(true)}
           className="cursor-pointer bg-surface-solid border border-border-subtle hover:border-electric-blue/50 rounded-2xl p-4 transition"
         >
-          <div className="text-[11px] text-amber-400 font-medium">Country Availability Coverage</div>
+          <div className="text-[11px] text-amber-800 dark:text-amber-400 font-semibold">Country Availability Coverage</div>
           <div className="text-2xl font-semibold text-text-main mt-1">
             {scopedStats.countryScannedCount.toLocaleString()}{" "}
             <span className="text-sm font-normal text-text-muted">/ {scopedStats.matchingUnique.toLocaleString()}</span>
@@ -1840,9 +1853,13 @@ export default function PlayStoreIntelligenceView({
           </div>
         </div>
 
-        {visiblePublishers.length === 0 ? (
+        {comparisonPublishers.length === 0 ? (
           <div className="py-8 text-center text-xs text-text-muted flex flex-col items-center gap-2">
-            <span>No Play Store publisher accounts in this Competitor List yet.</span>
+            <span>
+              {visiblePublishers.length === 0
+                ? "No publisher accounts in this Competitor List yet."
+                : `No publisher accounts found with ${appTypeFilter === "all" ? "titles" : appTypeFilter + "s"} in this view.`}
+            </span>
             {activeListObj && (
               <div className="flex items-center gap-2">
                 <button
@@ -1867,15 +1884,17 @@ export default function PlayStoreIntelligenceView({
           </div>
         ) : (
           <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto pr-1">
-            {visiblePublishers.map((pub) => {
+            {comparisonPublishers.map((pub) => {
               const pSt = publisherStatsByName.get(pub.publisher_name) || {
                 total: Number(pub.total_games) || 0,
                 free: Number(pub.free_games) || 0,
                 paid: Number(pub.paid_games) || 0,
                 installs: Number(pub.total_installs) || 0,
                 dailyDelta: Number(pub.daily_installs_delta) || 0,
+                allTimeMatching: Number(pub.total_games) || 0,
                 allTimeTotal: Number(pub.total_games) || 0
               };
+              const effectiveAllTime = appTypeFilter !== "all" ? (pSt.allTimeMatching ?? 0) : (Number(pub.total_games) || 0);
               const total = pSt.total;
               const free = pSt.free;
               const paid = pSt.paid;
@@ -1986,9 +2005,9 @@ export default function PlayStoreIntelligenceView({
                     <div className="flex-1 flex items-center gap-1.5 h-7 bg-bg-base/60 rounded-lg p-1 overflow-hidden">
                       {total === 0 ? (
                         <span className="text-[10px] text-text-muted px-2">
-                          {pSt.allTimeTotal === 0
+                          {effectiveAllTime === 0
                             ? "Unscanned — Click refresh icon to fetch full Play Store catalogue"
-                            : `No games in selected period (${pSt.allTimeTotal} all-time)`}
+                            : `No ${appTypeFilter === "app" ? "apps" : appTypeFilter === "game" ? "games" : "titles"} in selected period (${effectiveAllTime} all-time)`}
                         </span>
                       ) : (
                         <>
@@ -2000,7 +2019,7 @@ export default function PlayStoreIntelligenceView({
                                 setSelectedPricing("free");
                               }}
                               style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
-                              title={`${dispName}: ${free} Free games (click to filter)`}
+                              title={`${dispName}: ${free} Free ${appTypeFilter === "app" ? "apps" : "games"} (click to filter)`}
                               className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
                             >
                               {freeWidthPct >= 18 ? `${free} Free` : freeWidthPct >= 10 ? `${free}F` : freeWidthPct >= 5 ? String(free) : ""}
@@ -2014,7 +2033,7 @@ export default function PlayStoreIntelligenceView({
                                 setSelectedPricing("paid");
                               }}
                               style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
-                              title={`${dispName}: ${paid} Paid games (click to filter)`}
+                              title={`${dispName}: ${paid} Paid ${appTypeFilter === "app" ? "apps" : "games"} (click to filter)`}
                               className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
                             >
                               {paidWidthPct >= 18 ? `${paid} Paid` : paidWidthPct >= 10 ? `${paid}P` : paidWidthPct >= 5 ? String(paid) : ""}
@@ -2028,7 +2047,7 @@ export default function PlayStoreIntelligenceView({
                     <div className="md:w-72 shrink-0 flex items-center justify-between md:justify-end gap-3 text-[11px] text-text-muted font-mono">
                       <span>
                         <strong className="text-text-main">{total}</strong>
-                        {dateWindow.active ? `/${pSt.allTimeTotal}` : " games"}
+                        {dateWindow.active ? `/${effectiveAllTime}` : (appTypeFilter === "app" ? " apps" : appTypeFilter === "game" ? " games" : " titles")}
                       </span>
                       <span title="Total Real Installs" className="text-emerald-700 dark:text-emerald-400 font-semibold">
                         {formatCompactNumber(pSt.installs)} inst
@@ -2144,7 +2163,10 @@ export default function PlayStoreIntelligenceView({
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-text-main flex items-center gap-2">
-              <span>Play Store Games ({filteredGames.length.toLocaleString()})</span>
+              <span>
+                {appTypeFilter === "app" ? "Play Store Apps" : appTypeFilter === "game" ? "Play Store Games" : "Play Store Catalog"}{" "}
+                ({filteredGames.length.toLocaleString()})
+              </span>
               {appTypeFilter !== "all" && (
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 capitalize">
                   {appTypeFilter}s only

@@ -447,6 +447,7 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
         free: 0,
         paid: 0,
         unknownDate: 0,
+        allTimeMatching: 0,
         allTimeTotal: Number(pub.total_games) || 0
       });
     }
@@ -455,6 +456,7 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
       if (appTypeFilter === "app" && isGameItem(g)) continue;
       const entry = map.get(g.publisher_name);
       if (!entry) continue;
+      entry.allTimeMatching += 1;
       const dEval = evaluateGameDate(g);
       if (!dEval.known) entry.unknownDate += 1;
       if (dEval.inRange) {
@@ -466,15 +468,25 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
     return map;
   }, [visiblePublishers, overview.games, evaluateGameDate, appTypeFilter]);
 
+  // When filtering by Game or App, omit publishers that have 0 titles in this category
+  const comparisonPublishers = useMemo(() => {
+    return visiblePublishers.filter((pub) => {
+      const st = publisherStatsByName.get(pub.publisher_name);
+      if (!st) return false;
+      if (appTypeFilter !== "all" && st.allTimeMatching === 0) return false;
+      return true;
+    });
+  }, [visiblePublishers, publisherStatsByName, appTypeFilter]);
+
   const maxPublisherGames = useMemo(() => {
     return Math.max(
       1,
-      ...visiblePublishers.map((p) => {
+      ...comparisonPublishers.map((p) => {
         const st = publisherStatsByName.get(p.publisher_name);
-        return st ? st.total : Number(p.total_games) || 0;
+        return st ? st.total : 0;
       })
     );
-  }, [visiblePublishers, publisherStatsByName]);
+  }, [comparisonPublishers, publisherStatsByName]);
 
   const filteredGames = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -501,7 +513,7 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
         if (sortBy === "release") return String(b.release_date || "").localeCompare(String(a.release_date || ""));
         return (Number(b.review_count) || 0) - (Number(a.review_count) || 0);
       });
-  }, [overview.games, visiblePublisherNames, selectedPublisher, selectedPricing, searchQuery, sortBy, getDisplayName, evaluateGameDate]);
+  }, [overview.games, visiblePublisherNames, selectedPublisher, selectedPricing, searchQuery, sortBy, getDisplayName, evaluateGameDate, appTypeFilter]);
 
   const gamesByPublisher = useMemo(() => {
     const map = new Map();
@@ -1422,9 +1434,13 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
           </div>
         </div>
 
-        {visiblePublishers.length === 0 ? (
+        {comparisonPublishers.length === 0 ? (
           <div className="py-8 text-center text-xs text-text-muted flex flex-col items-center gap-2">
-            <span>No Amazon accounts in this Competitor List yet.</span>
+            <span>
+              {visiblePublishers.length === 0
+                ? "No Amazon accounts in this Competitor List yet."
+                : `No publisher accounts found with ${appTypeFilter === "all" ? "titles" : appTypeFilter + "s"} in this view.`}
+            </span>
             {activeListObj && (
               <div className="flex items-center gap-2">
                 <button
@@ -1449,13 +1465,15 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {visiblePublishers.map((pub) => {
+            {comparisonPublishers.map((pub) => {
               const pSt = publisherStatsByName.get(pub.publisher_name) || {
                 total: Number(pub.total_games) || 0,
                 free: Number(pub.free_games) || 0,
                 paid: Number(pub.paid_games) || 0,
+                allTimeMatching: Number(pub.total_games) || 0,
                 allTimeTotal: Number(pub.total_games) || 0
               };
+              const effectiveAllTime = appTypeFilter !== "all" ? (pSt.allTimeMatching ?? 0) : (Number(pub.total_games) || 0);
               const total = pSt.total;
               const free = pSt.free;
               const paid = pSt.paid;
@@ -1554,7 +1572,7 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
                     <div className="flex-1 flex items-center gap-1.5 h-7 bg-bg-base/60 rounded-lg p-1 overflow-hidden">
                       {total === 0 ? (
                         <span className="text-[10px] text-text-muted px-2">
-                          No games in selected period ({pSt.allTimeTotal} all-time)
+                          No {appTypeFilter === "app" ? "apps" : appTypeFilter === "game" ? "games" : "titles"} in selected period ({effectiveAllTime} all-time)
                         </span>
                       ) : (
                         <>
@@ -1594,7 +1612,7 @@ export default function AmazonIntelligenceView({ isAdmin = false }) {
                     <div className="md:w-64 shrink-0 flex items-center justify-between md:justify-end gap-3 text-[11px] text-text-muted font-mono">
                       <span>
                         <strong className="text-text-main">{total}</strong>
-                        {dateWindow.active ? `/${pSt.allTimeTotal}` : " total"}
+                        {dateWindow.active ? `/${effectiveAllTime}` : (appTypeFilter === "app" ? " apps" : appTypeFilter === "game" ? " games" : " total")}
                       </span>
                       <span className="text-emerald-400">{free}F</span>
                       <span className="text-amber-400">{paid}P</span>

@@ -3,8 +3,6 @@ import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { cn } from "./lib/utils";
 import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
-import MarketIntelligenceView from "./MarketIntelligenceView.jsx";
-import CreativesView from "./CreativesView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
 // Authentic platform brand marks
@@ -2343,12 +2341,14 @@ function App() {
         </div>
 
         <div className="relative flex items-center justify-end gap-1 sm:gap-2 sm:w-[330px]" onClick={(e) => e.stopPropagation()}>
-          <div className="hidden lg:flex items-center bg-input-bg rounded-full p-1 border border-border-subtle">
-            <button type="button" onClick={() => setViewMode("all")} className={cn("px-3.5 py-1.5 rounded-full text-[10px] font-medium transition-colors", viewMode === "all" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main")}>All time</button>
-            <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3.5 py-1.5 rounded-full text-[10px] font-medium transition-colors flex items-center gap-1.5", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main")}>
-              <span className={cn("w-1.5 h-1.5 rounded-full", viewMode === "latest" ? "bg-emerald-metric" : "bg-text-muted/50")}></span>Latest
-            </button>
-          </div>
+          {isAdmin && (
+            <div className="hidden lg:flex items-center bg-input-bg rounded-full p-1 border border-border-subtle">
+              <button type="button" onClick={() => setViewMode("all")} className={cn("px-3.5 py-1.5 rounded-full text-[10px] font-medium transition-colors", viewMode === "all" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main")}>All time</button>
+              <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3.5 py-1.5 rounded-full text-[10px] font-medium transition-colors flex items-center gap-1.5", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main")}>
+                <span className={cn("w-1.5 h-1.5 rounded-full", viewMode === "latest" ? "bg-emerald-metric" : "bg-text-muted/50")}></span>Latest
+              </button>
+            </div>
+          )}
 
           <button type="button" onClick={() => setIsGuideOpen(true)} className="w-10 h-10 rounded-full hover:bg-input-bg flex items-center justify-center text-text-muted hover:text-text-main transition-colors" title="How Atlas works">
             <span className="material-symbols-outlined text-[20px]">help</span>
@@ -2403,14 +2403,12 @@ function App() {
       <aside className="hidden md:flex fixed left-0 top-16 bottom-0 z-40 w-[88px] bg-bg-base border-r border-border-subtle flex-col items-center py-3">
         <nav className="w-full flex flex-col items-center gap-1 px-2">
           {[
-            { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
+            { id: "playStore", customIcon: GooglePlayIcon, label: "Market Intelligence" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
-            { id: "directory", icon: "insights", label: "Market Intelligence" },
-            { id: "videos", icon: "movie", label: "Creatives" },
             { id: "automated", icon: "groups", label: "Competitors" },
-            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             ...(isAdmin
               ? [
+                  { id: "dashboard", icon: "dashboard", label: "Dashboard" },
                   { id: "countryScans", icon: "public", label: "Country Scans" },
                   { id: "settings", icon: "settings", label: "Settings" }
                 ]
@@ -2463,10 +2461,12 @@ function App() {
                   <h1 className="text-xl md:text-2xl font-medium text-text-main tracking-tight">Dashboard</h1>
                   <p className="text-xs md:text-sm text-text-muted mt-1">Competitive game intelligence at a glance.</p>
                 </div>
-                <div className="lg:hidden flex items-center bg-input-bg rounded-full p-1 border border-border-subtle">
-                  <button type="button" onClick={() => setViewMode("all")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "all" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>All time</button>
-                  <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>Latest</button>
-                </div>
+                {isAdmin && (
+                  <div className="lg:hidden flex items-center bg-input-bg rounded-full p-1 border border-border-subtle">
+                    <button type="button" onClick={() => setViewMode("all")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "all" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>All time</button>
+                    <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>Latest</button>
+                  </div>
+                )}
               </motion.div>
 
               {isAdmin && (
@@ -2804,39 +2804,27 @@ function App() {
                   { id: "competitors", label: "Competitors", value: displayStats.competitors, icon: "groups", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Tracked groups" },
                   { id: "publishers", label: "Publishers", value: displayStats.accounts, icon: "business_center", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Discovered accounts" },
                   { id: "games", label: "Games", value: displayStats.games, icon: "sports_esports", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Unique titles" }
-                ].map((stat) => {
-                  const isExpandable = Boolean(stat.id);
-
-                  return (
-                    <motion.button
-                      type="button"
-                      key={stat.label}
-                      variants={FADE_UP}
-                      whileTap={isExpandable ? { scale: 0.99 } : undefined}
-                      onClick={() => isExpandable && openStatPanel(stat.id)}
-                      disabled={!isExpandable}
-                      className={cn(
-                        "bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between transition-colors outline-none",
-                        isExpandable ? "cursor-pointer hover:bg-input-bg/45 focus-visible:ring-2 focus-visible:ring-electric-blue/40" : "cursor-default"
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", stat.iconBg, stat.tone)}>
-                          <span className="material-symbols-outlined text-[20px]">{stat.icon}</span>
-                        </div>
-                        {isExpandable && <span className="material-symbols-outlined text-[18px] text-text-muted">chevron_right</span>}
+                ].map((stat) => (
+                  <motion.div
+                    key={stat.label}
+                    variants={FADE_UP}
+                    className="bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", stat.iconBg, stat.tone)}>
+                        <span className="material-symbols-outlined text-[20px]">{stat.icon}</span>
                       </div>
+                    </div>
 
-                      <div className="mt-5">
-                        <p className="text-[10px] md:text-[11px] text-text-muted font-medium">{stat.label}</p>
-                        <div className="flex items-end justify-between gap-2 mt-1">
-                          <span className="text-2xl md:text-3xl font-medium text-text-main tracking-tight">{stat.value}</span>
-                          <span className="text-[9px] md:text-[10px] text-text-muted text-right hidden sm:block">{stat.note}</span>
-                        </div>
+                    <div className="mt-5">
+                      <p className="text-[10px] md:text-[11px] text-text-muted font-medium">{stat.label}</p>
+                      <div className="flex items-end justify-between gap-2 mt-1">
+                        <span className="text-2xl md:text-3xl font-medium text-text-main tracking-tight">{stat.value}</span>
+                        <span className="text-[9px] md:text-[10px] text-text-muted text-right hidden sm:block">{stat.note}</span>
                       </div>
-                    </motion.button>
-                  );
-                })}
+                    </div>
+                  </motion.div>
+                ))}
               </div>
 
               <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-5">
@@ -3293,36 +3281,18 @@ function App() {
             />
           )}
 
-          {/* MARKET INTELLIGENCE TAB */}
-          {activeTab === "directory" && (
-            <MarketIntelligenceView
-              isAdmin={isAdmin}
-              onOpenCountryScan={handleViewSavedCountryScan}
-            />
-          )}
-
-          {/* CREATIVES (VIDEOS) TAB */}
-          {activeTab === "videos" && (
-            <CreativesView
-              isAdmin={isAdmin}
-              onGameClick={handleGameClick}
-            />
-          )}
-
         </main>
       </div>
 {/* MOBILE MATERIAL NAVIGATION BAR */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-bg-base/95 backdrop-blur-xl border-t border-border-subtle px-2 pb-[env(safe-area-inset-bottom)]">
         <div className="h-[72px] flex items-center justify-around">
           {[
-            { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
+            { id: "playStore", customIcon: GooglePlayIcon, label: "Market Intelligence" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
-            { id: "directory", icon: "insights", label: "Market Intelligence" },
-            { id: "videos", icon: "movie", label: "Creatives" },
             { id: "automated", icon: "groups", label: "Competitors" },
-            { id: "dashboard", icon: "dashboard", label: "Dashboard" },
             ...(isAdmin
               ? [
+                  { id: "dashboard", icon: "dashboard", label: "Dashboard" },
                   { id: "countryScans", icon: "public", label: "Country Scans" },
                   { id: "settings", icon: "settings", label: "Settings" }
                 ]
