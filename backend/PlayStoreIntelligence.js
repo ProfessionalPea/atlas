@@ -560,16 +560,16 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
 
     const insPub = await pool.query(
       `INSERT INTO play_publishers (
-         id, publisher_name, normalized_name, developer_id, source_url,
+         publisher_name, normalized_name, developer_id, source_url,
          last_scan_status, last_scanned_at
-       ) VALUES ($1, $2, $3, $4, $5, 'scanning', now())
+       ) VALUES ($1, $2, $3, $4, 'scanning', now())
        ON CONFLICT (normalized_name) DO UPDATE SET
          publisher_name = EXCLUDED.publisher_name,
          developer_id = COALESCE(EXCLUDED.developer_id, play_publishers.developer_id),
          source_url = COALESCE(EXCLUDED.source_url, play_publishers.source_url),
          last_scanned_at = now()
        RETURNING *`,
-      [accountId, pubName, normKey, devId, sourceUrl]
+      [pubName, normKey, devId, sourceUrl]
     );
     pubRecord = insPub.rows[0];
   }
@@ -935,11 +935,11 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
     }
 
     const insPub = await pool.query(
-      `INSERT INTO play_publishers (id, publisher_name, normalized_name, developer_id, source_url, last_scan_status)
-       VALUES ($1, $2, $3, $4, $5, 'complete')
+      `INSERT INTO play_publishers (publisher_name, normalized_name, developer_id, source_url, last_scan_status)
+       VALUES ($1, $2, $3, $4, 'complete')
        ON CONFLICT (normalized_name) DO UPDATE SET developer_id = COALESCE(play_publishers.developer_id, EXCLUDED.developer_id)
        RETURNING id`,
-      [accId, pubName, normalizedPub, devId, developerUrl]
+      [pubName, normalizedPub, devId, developerUrl]
     );
     pubId = insPub.rows[0].id;
   }
@@ -1171,19 +1171,33 @@ async function syncLegacyAccountsAndCompetitors(pool) {
     );
   `);
 
+  // Advance play_publishers sequence past max(id) first to prevent primary key collision
+  await pool.query(`
+    SELECT setval(
+      pg_get_serial_sequence('play_publishers', 'id'),
+      GREATEST(COALESCE((SELECT MAX(id) FROM play_publishers), 1), COALESCE((SELECT MAX(id) FROM accounts), 1))
+    );
+  `);
+
   // Consolidate duplicate accounts in `accounts` (same LOWER(TRIM(publisher_name))) into the lowest account_id
-  // in 3 bulk SQL statements instead of per-row round-trips over remote PostgreSQL!
+  // in bulk SQL statements with NOT EXISTS guards to prevent duplicate key violations across both id and normalized_name
   await pool.query(`
     INSERT INTO play_publishers (id, publisher_name, normalized_name, source_url)
     SELECT
-      MIN(id) AS canonical_id,
-      (array_agg(publisher_name ORDER BY id ASC))[1] AS canonical_name,
-      LOWER(TRIM(publisher_name)) AS norm_key,
-      'https://play.google.com/store/apps/developer?id=' || REPLACE( (array_agg(publisher_name ORDER BY id ASC))[1], ' ', '+' ) AS source_url
-    FROM accounts
-    WHERE TRIM(COALESCE(publisher_name, '')) <> ''
-    GROUP BY LOWER(TRIM(publisher_name))
-    ON CONFLICT (normalized_name) DO NOTHING;
+      MIN(a.id) AS canonical_id,
+      (array_agg(a.publisher_name ORDER BY a.id ASC))[1] AS canonical_name,
+      LOWER(TRIM(a.publisher_name)) AS norm_key,
+      'https://play.google.com/store/apps/developer?id=' || REPLACE( (array_agg(a.publisher_name ORDER BY a.id ASC))[1], ' ', '+' ) AS source_url
+    FROM accounts a
+    WHERE TRIM(COALESCE(a.publisher_name, '')) <> ''
+      AND NOT EXISTS (
+        SELECT 1 FROM play_publishers p
+        WHERE p.id = a.id
+           OR p.normalized_name = LOWER(TRIM(a.publisher_name))
+           OR p.normalized_name = LOWER(REGEXP_REPLACE(a.publisher_name, '[^a-zA-Z0-9]', '', 'g'))
+      )
+    GROUP BY LOWER(TRIM(a.publisher_name))
+    ON CONFLICT DO NOTHING;
   `);
 
   // Copy any `account_games` links from secondary duplicate account rows onto their canonical `play_publishers.id`

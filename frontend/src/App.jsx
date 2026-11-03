@@ -6,6 +6,9 @@ import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 
+// Atlas Build Marker: forces new content hash for cache busting
+export const ATLAS_BUILD_REV = "2026.11.03-status-col";
+
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {
   return (
@@ -488,6 +491,7 @@ const LiveDirectory = memo(function LiveDirectory({
 });
 
 function App() {
+  console.log("[Atlas Intelligence] Active build:", ATLAS_BUILD_REV);
   const [authToken, setAuthToken] = useState(() => localStorage.getItem(AUTH_TOKEN_KEY));
   const [currentUser, setCurrentUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem(AUTH_USER_KEY)) || null; } catch { return null; }

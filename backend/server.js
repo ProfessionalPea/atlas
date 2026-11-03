@@ -366,12 +366,12 @@ app.use(express.json({ limit: "1mb" }));
 const frontendDist = path.join(__dirname, "../frontend/dist");
 if (fs.existsSync(frontendDist)) {
   app.use(express.static(frontendDist, {
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith("index.html") || !filePath.includes("assets")) {
-        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-        res.setHeader("Pragma", "no-cache");
-        res.setHeader("Expires", "0");
-      }
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
     }
   }));
 }

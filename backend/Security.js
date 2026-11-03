@@ -118,7 +118,7 @@ function getDatabasePool() {
 
   sharedPool = new Pool({
     ...connectionConfig,
-    connectionTimeoutMillis: 8000,
+    connectionTimeoutMillis: 30000,
     max,
     idleTimeoutMillis: 30000,
     keepAlive: true,
