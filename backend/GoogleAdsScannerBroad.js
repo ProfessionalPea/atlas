@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { chromium } = require('playwright');
 const { getDatabasePool } = require('./Security');
 const {
@@ -475,8 +477,13 @@ async function scanCompetitor(
   };
 
   const proxyServer = process.env.ATLAS_SCANNER_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null;
+  const isHeadless = String(process.env.ATLAS_SCANNER_HEADLESS || 'true').toLowerCase() !== 'false';
+  const profileDir = process.env.ATLAS_SCANNER_PROFILE_DIR || path.join(__dirname, '.playwright_transparency_profile');
+  const cookiesFilePath = path.join(__dirname, 'google_cookies.json');
+
   const launchOptions = {
-    headless: true,
+    headless: isHeadless,
+    ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--no-sandbox',
       '--disable-dev-shm-usage',
@@ -503,20 +510,60 @@ async function scanCompetitor(
     }
   }
 
-  const browser = await chromium.launch(launchOptions);
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  const contextSettings = {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
     viewport: { width: 1920, height: 1080 },
     locale: 'en-US',
     timezoneId: 'America/New_York',
     extraHTTPHeaders: {
-      'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      'sec-ch-ua': '"Google Chrome";v="133", "Chromium";v="133", "Not_A Brand";v="24"',
       'sec-ch-ua-mobile': '?0',
       'sec-ch-ua-platform': '"Windows"',
       'accept-language': 'en-US,en;q=0.9'
     }
+  };
+
+  let browser = null;
+  let context = null;
+  try {
+    fs.mkdirSync(profileDir, { recursive: true });
+    context = await chromium.launchPersistentContext(profileDir, {
+      ...launchOptions,
+      ...contextSettings,
+      channel: 'chrome'
+    }).catch(() =>
+      chromium.launchPersistentContext(profileDir, {
+        ...launchOptions,
+        ...contextSettings
+      })
+    );
+  } catch {
+    browser = await chromium.launch({ ...launchOptions, channel: 'chrome' }).catch(() => chromium.launch(launchOptions));
+    context = await browser.newContext(contextSettings);
+  }
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    if (!window.chrome) window.chrome = { runtime: {}, app: {}, csi: () => {}, loadTimes: () => {} };
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
   });
-  const searchPage = await context.newPage();
+
+  // Load any persisted Google cookies (e.g. GOOGLE_ABUSE_EXEMPTION / SOCS / NID from CAPTCHA clearance)
+  try {
+    const rawCookies = process.env.ATLAS_GOOGLE_COOKIES
+      ? JSON.parse(process.env.ATLAS_GOOGLE_COOKIES)
+      : fs.existsSync(cookiesFilePath)
+        ? JSON.parse(fs.readFileSync(cookiesFilePath, 'utf8'))
+        : null;
+    if (Array.isArray(rawCookies) && rawCookies.length > 0) {
+      await context.addCookies(rawCookies);
+    }
+  } catch (cookieErr) {
+    console.warn('[Broad Scanner] Could not load saved Google cookies:', cookieErr.message);
+  }
+
+  const searchPage = context.pages()[0] || await context.newPage();
   await searchPage.route('**/*', route => {
     const type = route.request().resourceType();
     // Only abort images, media, and fonts; let stylesheets load so Google's web components render properly
@@ -1296,7 +1343,15 @@ async function scanCompetitor(
       searchPage.off('requestfinished', finishDiscoveryRequest);
       searchPage.off('requestfailed', handleFailedDiscoveryRequest);
     } catch {}
-    await browser.close().catch(() => {});
+    try {
+      const cookies = await context.cookies();
+      const googleCookies = cookies.filter(c => c.domain && c.domain.includes('google.com'));
+      if (googleCookies.length > 0) {
+        fs.writeFileSync(cookiesFilePath, JSON.stringify(googleCookies, null, 2), 'utf8');
+      }
+    } catch {}
+    if (context) await context.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
   }
 
 

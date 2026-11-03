@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test:security": "node --test Security.test.js",
-    "test:scan": "node --test ScanAccounting.test.js"
+    "test:scan": "node --test ScanAccounting.test.js",
+    "solve-captcha": "node solve_google_captcha.js"
   },
   "dependencies": {
     "compression": "^1.8.2",

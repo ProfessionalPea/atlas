@@ -19,6 +19,8 @@ backend/uploads/
 backend/atlas.db*
 backend/playmax_ads.json
 backend/extracted_packages.json
+backend/google_cookies.json
+backend/.playwright_transparency_profile/
 **/browser-profile/
 
 # Logs and local machine files
