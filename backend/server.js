@@ -365,7 +365,15 @@ app.use(express.json({ limit: "1mb" }));
 
 const frontendDist = path.join(__dirname, "../frontend/dist");
 if (fs.existsSync(frontendDist)) {
-  app.use(express.static(frontendDist));
+  app.use(express.static(frontendDist, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith("index.html") || !filePath.includes("assets")) {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Expires", "0");
+      }
+    }
+  }));
 }
 
 // Public health check
@@ -2376,6 +2384,9 @@ app.get("/api/competitors", async (_req, res) => {
 if (fs.existsSync(frontendDist)) {
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.sendFile(path.join(frontendDist, "index.html"));
   });
 }
