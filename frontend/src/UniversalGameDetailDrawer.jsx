@@ -213,6 +213,11 @@ export default function UniversalGameDetailDrawer({
                 )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
+                    {game.release_status === "PRE_REGISTERED" && game.pricing !== "tba" && game.price_status !== "PRICE_TBA" && (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-purple-50 dark:bg-purple-500/15 border-purple-300 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 select-none">
+                        Pre-Registration
+                      </span>
+                    )}
                     {game.pricing === "tba" || game.price_status === "PRICE_TBA" ? (
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-purple-50 dark:bg-purple-500/15 border-purple-300 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 select-none">
                         Pre-Registration · Price TBA

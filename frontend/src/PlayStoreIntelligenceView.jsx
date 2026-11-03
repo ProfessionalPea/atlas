@@ -149,7 +149,8 @@ function PlayStoreIntelligenceView({
   // Competitor List & Account Filter state
   const [selectedListId, setSelectedListId] = useState("all"); // "all" | "ungrouped" | number | "group_<id>"
   const [selectedPublisher, setSelectedPublisher] = useState("all");
-  const [selectedPricing, setSelectedPricing] = useState("all"); // all | free | paid
+  const [selectedPricing, setSelectedPricing] = useState("all"); // all | free | paid | tba
+  const [selectedStatus, setSelectedStatus] = useState("all"); // all | prereg | live | early_access
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery || "");
   const [sortBy, setSortBy] = useState("installs"); // installs | delta | release | first_seen | reviews | rating
 
@@ -502,6 +503,24 @@ function PlayStoreIntelligenceView({
     [publisherByRawName]
   );
 
+  const getAppReleaseStatus = useCallback((g) => {
+    if (!g) return "LIVE";
+    const isPreReg =
+      g.release_status === "PRE_REGISTERED" ||
+      g.pricing === "tba" ||
+      g.price_status === "PRICE_TBA" ||
+      (Number(g.country_scan?.preRegisterCount || 0) > 0 && Number(g.country_scan?.liveCount || 0) === 0);
+
+    const isEarlyAccess =
+      !isPreReg &&
+      Number(g.country_scan?.earlyAccessCount || 0) > 0 &&
+      Number(g.country_scan?.liveCount || 0) === 0;
+
+    if (isPreReg) return "PRE_REGISTERED";
+    if (isEarlyAccess) return "EARLY_ACCESS";
+    return "LIVE";
+  }, []);
+
   // Active Competitor Group (Batch) if selected (e.g. "group_1")
   const activeGroupObj = useMemo(() => {
     if (typeof selectedListId === "string" && selectedListId.startsWith("group_")) {
@@ -730,6 +749,9 @@ function PlayStoreIntelligenceView({
         if (!visiblePublisherNames.has(g.publisher_name)) return false;
         if (selectedPublisher !== "all" && g.publisher_name !== selectedPublisher) return false;
         if (selectedPricing !== "all" && g.pricing !== selectedPricing) return false;
+        if (selectedStatus === "prereg" && getAppReleaseStatus(g) !== "PRE_REGISTERED") return false;
+        if (selectedStatus === "live" && getAppReleaseStatus(g) !== "LIVE") return false;
+        if (selectedStatus === "early_access" && getAppReleaseStatus(g) !== "EARLY_ACCESS") return false;
         const dEval = evaluateGameDate(g);
         if (!dEval.inRange) return false;
         if (q) {
@@ -755,9 +777,11 @@ function PlayStoreIntelligenceView({
     visiblePublisherNames,
     selectedPublisher,
     selectedPricing,
+    selectedStatus,
     searchQuery,
     sortBy,
     getDisplayName,
+    getAppReleaseStatus,
     evaluateGameDate,
     appTypeFilter
   ]);
@@ -1285,6 +1309,7 @@ function PlayStoreIntelligenceView({
       "Play Store Publisher",
       "Package Name",
       "Title",
+      "Status",
       "Pricing",
       "Price (USD)",
       "Real Installs",
@@ -1301,6 +1326,7 @@ function PlayStoreIntelligenceView({
       `"${String(g.publisher_name || "").replace(/"/g, '""')}"`,
       g.package_name,
       `"${String(g.title || "").replace(/"/g, '""')}"`,
+      getAppReleaseStatus(g),
       g.pricing,
       g.price ?? 0,
       g.real_installs ?? g.min_installs ?? 0,
@@ -2402,6 +2428,22 @@ function PlayStoreIntelligenceView({
 
             <div className="relative">
               <select
+                value={selectedStatus}
+                onChange={(e) => setSelectedStatus(e.target.value)}
+                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer"
+              >
+                <option value="all">All Statuses</option>
+                <option value="live">Live Only</option>
+                <option value="prereg">Pre-Register Only</option>
+                <option value="early_access">Early Access Only</option>
+              </select>
+              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
+                unfold_more
+              </span>
+            </div>
+
+            <div className="relative">
+              <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
                 className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer"
@@ -2442,6 +2484,7 @@ function PlayStoreIntelligenceView({
                 <tr>
                   <th className="py-3 px-4">Game</th>
                   <th className="py-3 px-3">Account</th>
+                  <th className="py-3 px-3 text-center">Status</th>
                   <th className="py-3 px-3 text-right">Real Installs</th>
                   <th className="py-3 px-3 text-right">Daily Velocity</th>
                   <th className="py-3 px-3 text-right">Rating &amp; Reviews</th>
@@ -2472,6 +2515,14 @@ function PlayStoreIntelligenceView({
                           <div className="min-w-0">
                             <div className="font-semibold text-text-main truncate max-w-xs flex items-center gap-1.5">
                               <span className="truncate">{g.title}</span>
+                              {getAppReleaseStatus(g) === "PRE_REGISTERED" && (
+                                <span
+                                  className="px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-purple-500/30 select-none"
+                                  title="Google Play Pre-Registration title"
+                                >
+                                  Pre-Register
+                                </span>
+                              )}
                               {g.pricing === "paid" && (
                                 <span
                                   className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-500 text-[9px] font-mono shrink-0 border border-amber-500/30"
@@ -2527,8 +2578,47 @@ function PlayStoreIntelligenceView({
 
                       <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
 
+                      <td className="py-2.5 px-3 text-center">
+                        {(() => {
+                          const status = getAppReleaseStatus(g);
+                          if (status === "PRE_REGISTERED") {
+                            return (
+                              <span
+                                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 select-none whitespace-nowrap"
+                                title="App is currently in Pre-Registration on Google Play"
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                                Pre-Register
+                              </span>
+                            );
+                          }
+                          if (status === "EARLY_ACCESS") {
+                            return (
+                              <span
+                                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30 select-none whitespace-nowrap"
+                                title="App is in Early Access on Google Play"
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                Early Access
+                              </span>
+                            );
+                          }
+                          return (
+                            <span
+                              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 select-none whitespace-nowrap"
+                              title="App is Live on Google Play"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              Live
+                            </span>
+                          );
+                        })()}
+                      </td>
+
                       <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">
-                        {g.real_installs != null
+                        {getAppReleaseStatus(g) === "PRE_REGISTERED" && !g.real_installs ? (
+                          <span className="text-text-muted text-[11px] font-sans font-normal italic">Pre-Reg</span>
+                        ) : g.real_installs != null
                           ? Number(g.real_installs).toLocaleString()
                           : g.installs || Number(g.min_installs || 0).toLocaleString()}
                       </td>
