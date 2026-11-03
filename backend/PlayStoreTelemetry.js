@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createBoundedQueue } = require('./ScannerResilience');
+const { applyPriceClassification, offerFromDs5 } = require('./PriceClassification');
 
 const execFileAsync = promisify(execFile);
 
@@ -192,6 +193,16 @@ function parsePlayStoreDs5Html(html, packageName = '') {
 
   const subcategories = extractSubcategoriesFromDs5(data, title || packageName, `${shortDescription} ${longDescription}`);
 
+  // Pricing evidence (offer block). Pre-registration titles return a zero/empty placeholder here, so the
+  // classifier (PriceClassification.js) - not this parser - decides what it means.
+  const preregister = getAtPath(data, [1, 2, 18, 0]) === 1;
+  const offerMicrosRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 0]);
+  const offerMicros = typeof offerMicrosRaw === 'number' && Number.isFinite(offerMicrosRaw)
+    ? Math.max(0, Math.round(offerMicrosRaw))
+    : null;
+  const offerCurrencyRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 1]);
+  const offerTextRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 2]);
+
   return {
     packageName,
     title,
@@ -208,6 +219,10 @@ function parsePlayStoreDs5Html(html, packageName = '') {
     headerImage,
     rating: Number.isFinite(Number(ratingRaw)) ? Number(ratingRaw) : null,
     ratingsCount: Number.isFinite(Number(ratingsCountRaw)) ? Math.trunc(Number(ratingsCountRaw)) : null,
+    preregister,
+    offerMicros,
+    offerCurrency: typeof offerCurrencyRaw === 'string' && offerCurrencyRaw ? offerCurrencyRaw : null,
+    offerText: typeof offerTextRaw === 'string' && offerTextRaw ? offerTextRaw : null,
     rawDs5: data
   };
 }
@@ -469,6 +484,20 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
       ds5.longDescription || null
     ]
   );
+
+  // Price classification from the same ds:5 payload (kept separate from install telemetry;
+  // a classification failure must never fail the velocity pipeline).
+  try {
+    await applyPriceClassification(
+      pool,
+      packageName,
+      offerFromDs5(ds5),
+      [ds5.shortDescription, ds5.longDescription],
+      { source: 'ds5_scan' }
+    );
+  } catch (err) {
+    console.warn(`[PriceClassification] ${packageName}: ${err.message}`);
+  }
 
   const { rows: updatedHistory } = await pool.query(
     `SELECT snapshot_date::text AS snapshot_date, real_installs, daily_delta

@@ -28,6 +28,50 @@ export default function UniversalGameDetailDrawer({
   const [videosLoading, setVideosLoading] = useState(false);
   const videoCacheRef = useRef(new Map());
 
+  // Manual monetization override state
+  const [manualOverrideStatus, setManualOverrideStatus] = useState(game?.manual_price_status || "AUTO");
+  const [manualOverrideNote, setManualOverrideNote] = useState(game?.manual_price_note || "");
+  const [isSavingManual, setIsSavingManual] = useState(false);
+  const [manualMessage, setManualMessage] = useState(null);
+
+  useEffect(() => {
+    setManualOverrideStatus(game?.manual_price_status || "AUTO");
+    setManualOverrideNote(game?.manual_price_note || "");
+    setManualMessage(null);
+  }, [game?.package_name, game?.manual_price_status, game?.manual_price_note]);
+
+  const handleSaveManualPricing = async () => {
+    if (!game?.package_name) return;
+    setIsSavingManual(true);
+    setManualMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/play/games/${encodeURIComponent(game.package_name)}/manual-pricing`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-atlas-token": localStorage.getItem("atlas_auth_token") || ""
+        },
+        body: JSON.stringify({
+          status: manualOverrideStatus === "AUTO" ? "CLEAR" : manualOverrideStatus,
+          note: manualOverrideNote.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setManualMessage({ type: "success", text: "Monetization override updated successfully." });
+        if (onRefreshTelemetry) {
+          await onRefreshTelemetry(game.package_name);
+        }
+      } else {
+        setManualMessage({ type: "error", text: data.error || "Failed to save override." });
+      }
+    } catch (e) {
+      setManualMessage({ type: "error", text: e.message });
+    } finally {
+      setIsSavingManual(false);
+    }
+  };
+
   // Close on Escape key
   useEffect(() => {
     function handleKeyDown(e) {
@@ -174,17 +218,27 @@ export default function UniversalGameDetailDrawer({
                 )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border ${
-                        isFree
-                          ? "bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400"
-                          : "bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300"
-                      }`}
-                    >
-                      {isFree
-                        ? "Free Play Store Title"
-                        : `Paid Title · $${Number(game.price || 0).toFixed(2)}`}
-                    </span>
+                    {game.pricing === "tba" || game.price_status === "PRICE_TBA" ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-purple-50 dark:bg-purple-500/15 border-purple-300 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 select-none">
+                        Pre-Registration · Price TBA
+                      </span>
+                    ) : game.pricing === "paid" ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300 select-none">
+                        {game.is_manual_price ? "Paid (Manual Override)" : `Paid Title · ${Number(game.price || 0).toFixed(2)}`}
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400 select-none">
+                        {game.is_manual_price ? "Free (Manual Override)" : "Free Play Store Title"}
+                      </span>
+                    )}
+                    {game.monetization_hint === "LIKELY_PAID" && (
+                      <span
+                        className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-indigo-50 dark:bg-indigo-500/15 border-indigo-300 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300 select-none cursor-help"
+                        title={game.monetization_hint_evidence ? `Likely Paid: "${game.monetization_hint_evidence}"` : "Likely Paid based on developer metadata"}
+                      >
+                        Likely Paid
+                      </span>
+                    )}
                     {(game.has_campaign || game.campaign_active) && (
                       <span
                         className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-sky-50 dark:bg-sky-500/15 border-sky-300 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 select-none cursor-help"
@@ -215,6 +269,66 @@ export default function UniversalGameDetailDrawer({
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
+
+            {/* Monetization Hint & Admin Override Cards */}
+            {game.monetization_hint === "LIKELY_PAID" && game.monetization_hint_evidence && (
+              <div className="bg-purple-500/10 border border-purple-500/25 rounded-2xl p-3.5 flex flex-col gap-1.5 text-xs">
+                <div className="font-semibold text-purple-400 flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[17px]">monetization_on</span>
+                  <span>Developer Monetization Signal: Likely Paid</span>
+                </div>
+                <div className="text-[11px] text-text-muted italic bg-surface-solid/60 p-2.5 rounded-xl border border-purple-500/20 font-sans leading-relaxed">
+                  "{game.monetization_hint_evidence}"
+                </div>
+              </div>
+            )}
+
+            {isAdmin && (
+              <div className="bg-surface-solid border border-border-subtle rounded-2xl p-3.5 flex flex-col gap-2.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-text-main flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[17px] text-electric-blue">tune</span>
+                    <span>Monetization Override (Admin)</span>
+                  </span>
+                  {game.is_manual_price && (
+                    <span className="text-[10px] text-amber-400 font-semibold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                      Manual by {game.manual_price_by || 'admin'}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <select
+                    value={manualOverrideStatus}
+                    onChange={(e) => setManualOverrideStatus(e.target.value)}
+                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs font-semibold text-text-main focus:border-electric-blue focus:outline-none flex-1"
+                  >
+                    <option value="AUTO">Automatic (Play Store Detection)</option>
+                    <option value="PAID">Paid (Manual Override)</option>
+                    <option value="FREE">Free (Manual Override)</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={manualOverrideNote}
+                    onChange={(e) => setManualOverrideNote(e.target.value)}
+                    placeholder="Reason / source note (optional)..."
+                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main focus:border-electric-blue focus:outline-none flex-1"
+                  />
+                  <button
+                    type="button"
+                    disabled={isSavingManual}
+                    onClick={handleSaveManualPricing}
+                    className="h-8 px-3.5 rounded-lg bg-electric-blue text-white font-semibold text-xs hover:opacity-90 transition disabled:opacity-50 shrink-0"
+                  >
+                    {isSavingManual ? "Saving..." : "Apply"}
+                  </button>
+                </div>
+                {manualMessage && (
+                  <div className={`text-[11px] font-medium ${manualMessage.type === "success" ? "text-emerald-400" : "text-urgent-red"}`}>
+                    {manualMessage.text}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 6 Metric Cards Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">

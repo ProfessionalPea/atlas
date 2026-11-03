@@ -9,6 +9,20 @@ const {
   runFullTelemetryForPackage
 } = require('./PlayStoreTelemetry');
 const {
+  PRICE_STATUS,
+  RELEASE_STATUS,
+  PRICE_SOURCE,
+  classifyPlayPrice,
+  resolveEffectivePricing,
+  effectiveStatusSql,
+  initializePriceClassificationStorage,
+  applyPriceClassification,
+  recomputePublisherPriceCounts,
+  setManualPriceOverride,
+  offerFromGplayApp,
+  offerFromDs5
+} = require('./PriceClassification');
+const {
   COUNTRY_CODES,
   normalizePackageName,
   scanPackageCountries
@@ -628,6 +642,18 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       [publisherId, gameRow.id]
     );
 
+    try {
+      await applyPriceClassification(
+        pool,
+        pkg,
+        offerFromGplayApp(appItem),
+        [appItem.summary, appItem.description],
+        { source: 'publisher_scan' }
+      );
+    } catch (e) {
+      console.warn('[PriceClassification] publisher scan error for ' + pkg + ':', e.message);
+    }
+
     const needsDs5 =
       options.forceTelemetry === true ||
       !gameRow.release_date ||
@@ -945,6 +971,18 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
 
   const gameId = upsertGame.rows[0].id;
 
+  try {
+    await applyPriceClassification(
+      pool,
+      pkg,
+      offerFromGplayApp(appData),
+      [appData.summary, appData.description],
+      { source: 'single_game_scan' }
+    );
+  } catch (e) {
+    console.warn('[PriceClassification] single game error for ' + pkg + ':', e.message);
+  }
+
   if (pubId && gameId) {
     await pool.query(
       `INSERT INTO account_games (account_id, game_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -992,6 +1030,7 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
  * existing `competitors`, `accounts`, `account_games`, and `games`.
  */
 async function initializePlayStoreStorage(pool) {
+  await initializePriceClassificationStorage(pool);
   await pool.query(`
     ALTER TABLE games
       ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ,
@@ -1617,7 +1656,16 @@ function registerPlayStoreRoutes({ app, pool }) {
             COALESCE(g.campaign_active, false) AS campaign_active,
             g.first_campaign_seen_at,
             g.last_campaign_seen_at,
-            g.campaign_source
+            g.campaign_source,
+            g.release_status,
+            g.price_status,
+            g.price_source,
+            g.monetization_hint,
+            g.monetization_hint_evidence,
+            g.manual_price_status,
+            g.manual_price_note,
+            g.manual_price_by,
+            g.manual_price_at
           FROM account_games ag
           JOIN play_publishers p ON p.id = ag.account_id
           JOIN games g ON g.id = ag.game_id
@@ -1701,10 +1749,11 @@ function registerPlayStoreRoutes({ app, pool }) {
       }
 
       const games = gamesRes.rows.map((g) => {
-        const isPaid = Boolean(g.is_paid) && Number(g.price) > 0;
+        const effective = resolveEffectivePricing(g);
         const countrySummary = countryByPkg.get(g.package_name) || null;
         const sharedPubs = publishersByPkg.get(g.package_name) || [g.publisher_name];
         const parsedRel = g.release_date || parseReleaseDateIso(g.released);
+        const relStatus = g.release_status || (countrySummary?.preRegisterCount > 0 && countrySummary?.liveCount === 0 ? 'PRE_REGISTERED' : 'LIVE');
         return {
           ...g,
           has_campaign: Boolean(g.campaign_active) || Number(g.ad_count) > 0,
@@ -1712,7 +1761,17 @@ function registerPlayStoreRoutes({ app, pool }) {
           campaign_source: g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null),
           first_campaign_seen_at: g.first_campaign_seen_at || null,
           last_campaign_seen_at: g.last_campaign_seen_at || null,
-          pricing: isPaid ? 'paid' : 'free',
+          pricing: effective.pricing, // 'paid' | 'free' | 'tba' | 'unknown'
+          effective_price_status: effective.effective_price_status,
+          is_manual_price: effective.is_manual,
+          release_status: relStatus,
+          price_status: g.price_status || (effective.pricing === 'paid' ? 'PAID' : effective.pricing === 'free' ? 'FREE' : 'UNKNOWN'),
+          monetization_hint: g.monetization_hint || 'NONE',
+          monetization_hint_evidence: g.monetization_hint_evidence || null,
+          manual_price_status: g.manual_price_status || null,
+          manual_price_note: g.manual_price_note || null,
+          manual_price_by: g.manual_price_by || null,
+          manual_price_at: g.manual_price_at || null,
           price: g.price != null ? Number(g.price) : null,
           rating: g.rating != null ? Number(g.rating) : null,
           review_count: Number(g.ratings_count) || 0,
@@ -1738,8 +1797,9 @@ function registerPlayStoreRoutes({ app, pool }) {
         }
         const uniqueListGames = [...seenPkgs.values()];
         const uniqueGamesCount = uniqueListGames.length;
-        const uniqueFree = uniqueListGames.filter((g) => !g.is_paid || Number(g.price) <= 0).length;
-        const uniquePaid = uniqueListGames.filter((g) => g.is_paid && Number(g.price) > 0).length;
+        const uniqueFree = uniqueListGames.filter((g) => resolveEffectivePricing(g).pricing === 'free').length;
+        const uniquePaid = uniqueListGames.filter((g) => resolveEffectivePricing(g).pricing === 'paid').length;
+        const uniqueTba = uniqueListGames.filter((g) => resolveEffectivePricing(g).pricing === 'tba').length;
         const listInstalls = uniqueListGames.reduce(
           (s, g) => s + (Number(g.real_installs ?? g.min_installs) || 0),
           0
@@ -1752,6 +1812,7 @@ function registerPlayStoreRoutes({ app, pool }) {
           total_games: uniqueGamesCount,
           free_games: uniqueFree,
           paid_games: uniquePaid,
+          tba_games: uniqueTba,
           total_installs: listInstalls
         };
       });
@@ -1765,6 +1826,7 @@ function registerPlayStoreRoutes({ app, pool }) {
       const uniqueGames = uniqueGamesArr.length;
       const freeGames = uniqueGamesArr.filter((g) => g.pricing === 'free').length;
       const paidGames = uniqueGamesArr.filter((g) => g.pricing === 'paid').length;
+      const tbaGames = uniqueGamesArr.filter((g) => g.pricing === 'tba').length;
       const totalInstalls = uniqueGamesArr.reduce(
         (s, g) => s + (Number(g.real_installs ?? g.min_installs) || 0),
         0
@@ -2316,6 +2378,21 @@ function registerPlayStoreRoutes({ app, pool }) {
     })();
   });
 
+  // 5.5 Admin Manual Monetization Override
+  app.post('/api/play/games/:packageName/manual-pricing', async (req, res) => {
+    try {
+      const pkg = normalizePackageName(req.params.packageName);
+      const { status, note } = req.body || {};
+      const actor = req.user?.username || 'admin';
+      const result = await setManualPriceOverride(pool, pkg, { status, note, actor });
+      invalidatePlayOverviewCache();
+      res.json({ success: true, ...result });
+    } catch (err) {
+      console.error('[Manual Pricing Error]:', err);
+      res.status(err.statusCode || 500).json({ error: err.message || 'Failed to update manual price' });
+    }
+  });
+
   // 6. Refresh Single Game Telemetry & Metadata (1-Click Game Refresh)
   app.post('/api/play/games/:packageName/refresh', async (req, res) => {
     try {
@@ -2726,5 +2803,6 @@ module.exports = {
   validatePlayStoreUrl,
   validatePlayBatch,
   scanAndSavePlayPublisher,
+  scanAndSavePlayGame,
   fetchSheetCompetitorAnalysis
 };

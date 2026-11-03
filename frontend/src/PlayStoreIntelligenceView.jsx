@@ -646,6 +646,7 @@ function PlayStoreIntelligenceView({
     const allTimeArr = [...uniqueAllTimeByPkg.values()];
     const freeMatching = matchingArr.filter((g) => g.pricing === "free").length;
     const paidMatching = matchingArr.filter((g) => g.pricing === "paid").length;
+    const tbaMatching = matchingArr.filter((g) => g.pricing === "tba").length;
     const totalInstalls = matchingArr.reduce((s, g) => s + (Number(g.real_installs ?? g.min_installs) || 0), 0);
     const totalDailyDelta = matchingArr.reduce((s, g) => s + (Number(g.installs_delta_1d) || 0), 0);
     const countryScannedCount = matchingArr.filter((g) => Boolean(g.country_scan)).length;
@@ -656,6 +657,7 @@ function PlayStoreIntelligenceView({
       matchingUnique: matchingArr.length,
       freeMatching,
       paidMatching,
+      tbaMatching,
       freeShare: matchingArr.length ? freeMatching / matchingArr.length : 0,
       totalInstalls,
       totalDailyDelta,
@@ -1973,7 +1975,7 @@ function PlayStoreIntelligenceView({
           </div>
           <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.matchingUnique.toLocaleString()}</div>
           <div className="text-[10px] text-text-muted mt-1">
-            {scopedStats.freeMatching.toLocaleString()} Free · {scopedStats.paidMatching.toLocaleString()} Paid
+            {scopedStats.freeMatching.toLocaleString()} Free · {scopedStats.paidMatching.toLocaleString()} Paid{scopedStats.tbaMatching > 0 ? ` · ${scopedStats.tbaMatching.toLocaleString()} TBA` : ""}
           </div>
         </div>
 
@@ -2391,6 +2393,7 @@ function PlayStoreIntelligenceView({
                 <option value="all">All Pricing</option>
                 <option value="free">Free Only</option>
                 <option value="paid">Paid Only</option>
+                <option value="tba">Price TBA (Pre-reg)</option>
               </select>
               <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
                 unfold_more
@@ -2470,8 +2473,28 @@ function PlayStoreIntelligenceView({
                             <div className="font-semibold text-text-main truncate max-w-xs flex items-center gap-1.5">
                               <span className="truncate">{g.title}</span>
                               {g.pricing === "paid" && (
-                                <span className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-400 text-[9px] font-mono shrink-0">
-                                  ${Number(g.price || 0).toFixed(2)}
+                                <span
+                                  className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-500 text-[9px] font-mono shrink-0 border border-amber-500/30"
+                                  title={g.is_manual_price ? `Paid (Manual override by ${g.manual_price_by || 'admin'})` : `Paid app · ${g.price_text || `${Number(g.price || 0).toFixed(2)}`}`}
+                                >
+                                  {g.price != null && Number(g.price) > 0 ? `${Number(g.price).toFixed(2)}` : "Paid"}
+                                  {g.is_manual_price && <span className="ml-1 text-[8px] uppercase">Manual</span>}
+                                </span>
+                              )}
+                              {g.pricing === "tba" && (
+                                <span
+                                  className="px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 text-[9px] font-semibold shrink-0 border border-purple-500/30 select-none"
+                                  title="Pre-registration title · Launch price TBA"
+                                >
+                                  Price TBA
+                                </span>
+                              )}
+                              {g.monetization_hint === "LIKELY_PAID" && (
+                                <span
+                                  className="px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-400 text-[9px] font-semibold shrink-0 border border-indigo-500/30 select-none cursor-help"
+                                  title={g.monetization_hint_evidence ? `Likely Paid: "${g.monetization_hint_evidence}"` : "Likely Paid based on developer metadata"}
+                                >
+                                  Likely Paid
                                 </span>
                               )}
                               {(g.has_campaign || g.campaign_active) && (
