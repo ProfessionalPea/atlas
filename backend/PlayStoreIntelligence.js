@@ -28,6 +28,43 @@ const {
   scanPackageCountries
 } = require('./CountryAvailabilityScanner');
 
+function resolveAppPricing(appItem, existing = null) {
+  const priceNum = Number(appItem?.price);
+  const origPriceNum = Number(appItem?.originalPrice);
+  const isZeroPriceText = typeof appItem?.priceText === 'string' &&
+    /^\s*[$€£¥₹Rs]?\s*0(?:[.,]00?)?\s*[$€£¥₹Rs]?\s*$/i.test(appItem.priceText);
+
+  const hasOriginalPrice = Number.isFinite(origPriceNum) && origPriceNum > 0;
+  const isPositivePrice = Number.isFinite(priceNum) && priceNum > 0;
+  const isExplicitlyNotFree = appItem?.free === false;
+  const wasPreviouslyPaid = existing?.is_paid === true || existing?.price_status === 'PAID';
+
+  const isPaid = isPositivePrice || hasOriginalPrice || isExplicitlyNotFree || isZeroPriceText || wasPreviouslyPaid;
+
+  let effectivePrice = null;
+  if (isPositivePrice) effectivePrice = priceNum;
+  else if (hasOriginalPrice) effectivePrice = origPriceNum;
+  else if (existing?.price != null && Number(existing.price) > 0) effectivePrice = Number(existing.price);
+  else if (isPaid) effectivePrice = 0;
+
+  const currency = isPaid ? (appItem?.currency || existing?.currency || 'USD') : null;
+
+  let priceText;
+  if (!isPaid) {
+    priceText = 'Free';
+  } else if (hasOriginalPrice) {
+    priceText = appItem?.priceText || `$${origPriceNum.toFixed(2)} (On Offer)`;
+  } else if (isPositivePrice) {
+    priceText = appItem?.priceText || `$${priceNum.toFixed(2)}`;
+  } else if (effectivePrice > 0) {
+    priceText = appItem?.priceText || `$${effectivePrice.toFixed(2)} (On Offer)`;
+  } else {
+    priceText = appItem?.priceText || '$0.00 (On Offer)';
+  }
+
+  return { isPaid, price: effectivePrice, currency, priceText };
+}
+
 let playScanStatus = {
   running: false,
   state: 'idle',
@@ -575,10 +612,7 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       addedPackages.push(pkg);
     }
 
-    const isPaid = appItem.free === false && Number(appItem.price) > 0;
-    const priceNum = isPaid && Number.isFinite(Number(appItem.price)) ? Number(appItem.price) : null;
-    const currency = isPaid ? (appItem.currency || 'USD') : null;
-    const priceText = isPaid ? (appItem.priceText || (priceNum ? `$${priceNum}` : null)) : 'Free';
+    const { isPaid, price: priceNum, currency, priceText } = resolveAppPricing(appItem, existing);
     const developerUrl = devId
       ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(devId)}`
       : sourceUrl;
@@ -734,11 +768,12 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
   }
 
   // Recompute aggregate publisher metrics from all linked games
+  const effSql = effectiveStatusSql('g');
   const aggRes = await pool.query(
     `SELECT
        COUNT(DISTINCT g.id)::int AS total_games,
-       COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false OR COALESCE(g.price, 0) <= 0)::int AS free_games,
-       COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true AND COALESCE(g.price, 0) > 0)::int AS paid_games,
+       COUNT(DISTINCT g.id) FILTER (WHERE ${effSql} = 'FREE')::int AS free_games,
+       COUNT(DISTINCT g.id) FILTER (WHERE ${effSql} = 'PAID')::int AS paid_games,
        AVG(NULLIF(g.rating, 0))::double precision AS avg_rating,
        COALESCE(SUM(COALESCE(g.ratings_count, 0)), 0)::bigint AS total_reviews,
        COALESCE(SUM(COALESCE(g.real_installs, g.min_installs, 0)), 0)::bigint AS total_installs,
@@ -865,10 +900,11 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
     };
   }
 
-  const isPaid = appData.free === false && Number(appData.price) > 0;
-  const priceNum = isPaid && Number.isFinite(Number(appData.price)) ? Number(appData.price) : null;
-  const currency = isPaid ? (appData.currency || 'USD') : null;
-  const priceText = isPaid ? (appData.priceText || (priceNum ? `${priceNum}` : null)) : 'Free';
+  const curGameRes = await pool.query(
+    `SELECT is_paid, price, currency, price_status FROM games WHERE package_name = $1 LIMIT 1`,
+    [pkg]
+  );
+  const { isPaid, price: priceNum, currency, priceText } = resolveAppPricing(appData, curGameRes.rows[0]);
   const pubName = appData.developer || 'Unknown Publisher';
   const normalizedPub = pubName.toLowerCase().replace(/[^a-z0-9]/g, '');
   const devId = appData.developerId ? String(appData.developerId) : null;
@@ -1004,8 +1040,8 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
        SELECT
          ag.account_id,
          COUNT(DISTINCT g.id)::int AS total_cnt,
-         COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false OR COALESCE(g.price, 0) <= 0)::int AS free_cnt,
-         COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true AND COALESCE(g.price, 0) > 0)::int AS paid_cnt
+         COUNT(DISTINCT g.id) FILTER (WHERE ${effectiveStatusSql('g')} = 'FREE')::int AS free_cnt,
+         COUNT(DISTINCT g.id) FILTER (WHERE ${effectiveStatusSql('g')} = 'PAID')::int AS paid_cnt
        FROM account_games ag
        JOIN games g ON g.id = ag.game_id AND COALESCE(g.is_suspended, false) = false
        WHERE ag.account_id = $1
@@ -1186,8 +1222,8 @@ async function syncLegacyAccountsAndCompetitors(pool) {
       SELECT
         p.id AS pub_id,
         COUNT(DISTINCT g.id)::int AS total_games,
-        COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = false OR COALESCE(g.price, 0) <= 0)::int AS free_games,
-        COUNT(DISTINCT g.id) FILTER (WHERE COALESCE(g.is_paid, false) = true AND COALESCE(g.price, 0) > 0)::int AS paid_games,
+        COUNT(DISTINCT g.id) FILTER (WHERE ${effectiveStatusSql('g')} = 'FREE')::int AS free_games,
+        COUNT(DISTINCT g.id) FILTER (WHERE ${effectiveStatusSql('g')} = 'PAID')::int AS paid_games,
         AVG(NULLIF(g.rating, 0))::double precision AS avg_rating,
         COALESCE(SUM(COALESCE(g.ratings_count, 0)), 0)::bigint AS total_reviews,
         COALESCE(SUM(COALESCE(g.real_installs, g.min_installs, 0)), 0)::bigint AS total_installs,
@@ -2405,7 +2441,8 @@ function registerPlayStoreRoutes({ app, pool }) {
           `gplay.app(${pkg})`
         );
         if (appData) {
-          const isPaid = appData.free === false && Number(appData.price) > 0;
+          const curRes = await pool.query(`SELECT is_paid, price, currency, price_status FROM games WHERE package_name = $1 LIMIT 1`, [pkg]);
+          const { isPaid, price: priceNum, currency: appCurrency, priceText } = resolveAppPricing(appData, curRes.rows[0]);
           const relIso = parseReleaseDateIso(appData.released);
           await pool.query(
             `UPDATE games
@@ -2441,9 +2478,9 @@ function registerPlayStoreRoutes({ app, pool }) {
               relIso,
               appData.updated || Date.now(),
               isPaid,
-              isPaid ? Number(appData.price) : null,
-              isPaid ? appData.currency || 'USD' : null,
-              isPaid ? appData.priceText || `$${appData.price}` : 'Free'
+              priceNum,
+              appCurrency,
+              priceText
             ]
           );
         }

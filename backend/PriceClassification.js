@@ -39,38 +39,58 @@ const PRICE_SOURCE = Object.freeze({
  */
 function normalizeOfferInput(input = {}) {
   const micros = Number(input.offerMicros);
+  const origMicros = Number(input.originalMicros ?? input.originalPriceMicros);
   return {
     preregister: input.preregister === true,
+    free: input.free === false ? false : (input.free === true ? true : null),
     offerMicros: input.offerMicros == null || !Number.isFinite(micros) || micros < 0 ? null : micros,
+    originalMicros: (input.originalMicros == null && input.originalPriceMicros == null) || !Number.isFinite(origMicros) || origMicros <= 0 ? null : origMicros,
     currency: typeof input.currency === 'string' && input.currency.trim() ? input.currency.trim().toUpperCase() : null,
-    priceText: typeof input.priceText === 'string' && input.priceText.trim() ? input.priceText.trim() : null
+    priceText: typeof input.priceText === 'string' && input.priceText.trim() ? input.priceText.trim() : null,
+    offerType: Number.isInteger(input.offerType) ? input.offerType : null,
+    discountEndDate: input.discountEndDate || null,
+    existingPaid: input.existingPaid === true
   };
 }
 
 /** Adapter: google-play-scraper `gplay.app()` result. */
-function offerFromGplayApp(app) {
+function offerFromGplayApp(app, existingGame = null) {
   if (!app || typeof app !== 'object') return null;
   const price = Number(app.price);
+  const origPrice = Number(app.originalPrice);
   let offerMicros = null;
   if (Number.isFinite(price) && price > 0) offerMicros = Math.round(price * 1e6);
-  // scraper sets free = (offerMicros === 0); a missing offer yields free=false, price=0
-  else if (app.free === true) offerMicros = 0;
+  else if (app.free === true && !origPrice) offerMicros = 0;
+  else if (Number.isFinite(price)) offerMicros = Math.round(price * 1e6);
+
+  let originalMicros = null;
+  if (Number.isFinite(origPrice) && origPrice > 0) {
+    originalMicros = Math.round(origPrice * 1e6);
+  }
+
   return {
     preregister: app.preregister === true,
+    free: app.free === true,
     offerMicros,
+    originalMicros,
     currency: app.currency || null,
-    priceText: app.priceText || null
+    priceText: app.priceText || null,
+    existingPaid: existingGame?.price_status === 'PAID' || existingGame?.is_paid === true
   };
 }
 
 /** Adapter: parsed ds:5 payload from PlayStoreTelemetry.parsePlayStoreDs5Html. */
-function offerFromDs5(ds5) {
+function offerFromDs5(ds5, existingGame = null) {
   if (!ds5 || typeof ds5 !== 'object') return null;
   return {
     preregister: ds5.preregister === true,
     offerMicros: ds5.offerMicros ?? null,
+    originalMicros: ds5.originalPriceMicros ?? null,
+    offerType: ds5.offerType ?? null,
+    discountEndDate: ds5.discountEndDate ?? null,
     currency: ds5.offerCurrency || null,
-    priceText: ds5.offerText || null
+    priceText: ds5.offerText || null,
+    existingPaid: existingGame?.price_status === 'PAID' || existingGame?.is_paid === true
   };
 }
 
@@ -165,31 +185,54 @@ function detectMonetizationHint(...texts) {
 /**
  * @param {object} offerInput  see normalizeOfferInput
  * @param {string[]} texts     developer-provided text (description, short description)
+ * @param {object} existingGame previous database row if available
  */
-function classifyPlayPrice(offerInput, texts = []) {
+function classifyPlayPrice(offerInput, texts = [], existingGame = null) {
   const offer = normalizeOfferInput(offerInput || {});
   const release_status = offer.preregister ? RELEASE_STATUS.PRE_REGISTERED : RELEASE_STATUS.LIVE;
 
   let price_status;
   let price = null;
-  let currency = null;
-  let price_text = null;
+  let currency = offer.currency || null;
+  let price_text = offer.priceText || null;
+
+  const isZeroPriceText = typeof offer.priceText === 'string' &&
+    /^\s*[$€£¥₹Rs]?\s*0(?:[.,]00?)?\s*[$€£¥₹Rs]?\s*$/i.test(offer.priceText);
+
+  const hasOriginalPrice = offer.originalMicros != null && offer.originalMicros > 0;
+  const isPaidTier = offer.offerType === 2;
+  const isExplicitlyNotFree = offer.free === false;
+  const wasPreviouslyPaid = offer.existingPaid === true ||
+    existingGame?.price_status === PRICE_STATUS.PAID ||
+    existingGame?.is_paid === true;
 
   if (offer.offerMicros != null && offer.offerMicros > 0) {
-    // A real, positive offer is valid evidence of a paid game, before or after launch.
+    // Valid positive selling price -> Paid game
     price_status = PRICE_STATUS.PAID;
     price = offer.offerMicros / 1e6;
-    currency = offer.currency || null;
-    price_text = offer.priceText || null;
+    price_text = offer.priceText || `$${price.toFixed(2)}`;
+  } else if (hasOriginalPrice) {
+    // Paid game currently on a 100% off sale / temporary free promotion
+    price_status = PRICE_STATUS.PAID;
+    price = offer.originalMicros / 1e6;
+    price_text = `$${price.toFixed(2)} (On Offer)`;
   } else if (offer.preregister) {
-    // Zero / empty / missing offers are placeholders during pre-registration.
+    // Pre-registration titles always have placeholder pricing -> PRICE_TBA
     price_status = PRICE_STATUS.PRICE_TBA;
-  } else if (offer.offerMicros === 0 && offer.currency) {
-    // Live title with an explicit zero offer in a real currency.
+  } else if (isExplicitlyNotFree || isZeroPriceText || isPaidTier || wasPreviouslyPaid) {
+    // A game that has $0.00 as a price or is not free is STILL a paid game (free at the moment due to an offer).
+    // Never mark it as Free.
+    price_status = PRICE_STATUS.PAID;
+    price = existingGame?.price ? Number(existingGame.price) : (offer.offerMicros ? offer.offerMicros / 1e6 : 0);
+    currency = currency || existingGame?.currency || 'USD';
+    price_text = offer.priceText || (price > 0 ? `$${price.toFixed(2)} (On Offer)` : '$0.00 (On Offer)');
+  } else if (offer.offerMicros === 0 && offer.free !== false && !isZeroPriceText) {
+    // Live title explicitly verified as genuinely free (free: true, no original price, no $0.00 tag, no paid history)
     price_status = PRICE_STATUS.FREE;
+    price = null;
     price_text = 'Free';
   } else {
-    // Live but no explicit offer (missing / ambiguous) -> never guess.
+    // Live but missing or ambiguous offer -> UNKNOWN
     price_status = PRICE_STATUS.UNKNOWN;
   }
 
@@ -319,14 +362,14 @@ async function initializePriceClassificationStorage(pool) {
 async function applyPriceClassification(pool, packageName, offerInput, texts = [], options = {}) {
   if (!packageName || !offerInput) return null;
   const cur = await pool.query(
-    `SELECT id, release_status, price_status, price, currency
+    `SELECT id, release_status, price_status, price, currency, is_paid
      FROM games WHERE package_name = $1 LIMIT 1`,
     [packageName]
   );
   const prev = cur.rows[0];
   if (!prev) return null;
 
-  const cls = classifyPlayPrice(offerInput, texts);
+  const cls = classifyPlayPrice(offerInput, texts, prev);
 
   await pool.query(
     `UPDATE games

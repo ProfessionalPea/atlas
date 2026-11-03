@@ -52,44 +52,43 @@ describe('Play Store URL & Package Validation', () => {
 });
 
 describe('Pricing & Pre-registration Classification', () => {
-  // Pure pricing logic test matching PlayStoreIntelligence rules
-  function classifyPrice(appItem) {
-    const isPaid = appItem.free === false && Number(appItem.price) > 0;
-    const priceNum = isPaid && Number.isFinite(Number(appItem.price)) ? Number(appItem.price) : null;
-    const priceText = isPaid ? (appItem.priceText || (priceNum ? `$${priceNum}` : null)) : 'Free';
-    return { isPaid, priceNum, priceText };
-  }
+  const { classifyPlayPrice, offerFromGplayApp, PRICE_STATUS } = require('./PriceClassification');
 
   test('Standard free game is classified as free', () => {
-    const item = { free: true, price: 0, priceText: null };
-    const res = classifyPrice(item);
-    assert.equal(res.isPaid, false);
-    assert.equal(res.priceNum, null);
-    assert.equal(res.priceText, 'Free');
+    const item = { free: true, price: 0, priceText: 'Free' };
+    const res = classifyPlayPrice(offerFromGplayApp(item));
+    assert.equal(res.price_status, PRICE_STATUS.FREE);
+    assert.equal(res.price, null);
+    assert.equal(res.price_text, 'Free');
   });
 
-  test('Pre-registration game with free: false and price: 0 is correctly classified as Free (NOT Paid)', () => {
-    // This was the bug: free: false was causing $0.00 to show as Paid
-    const item = { free: false, price: 0, priceText: '$0.00' };
-    const res = classifyPrice(item);
-    assert.equal(res.isPaid, false);
-    assert.equal(res.priceNum, null);
-    assert.equal(res.priceText, 'Free');
+  test('Pre-registration game with price 0 is classified as PRICE_TBA (NOT free)', () => {
+    const item = { preregister: true, free: false, price: 0, priceText: '$0.00' };
+    const res = classifyPlayPrice(offerFromGplayApp(item));
+    assert.equal(res.price_status, PRICE_STATUS.PRICE_TBA);
+    assert.notEqual(res.price_status, PRICE_STATUS.FREE);
   });
 
   test('Genuinely paid game is correctly classified as Paid with price', () => {
     const item = { free: false, price: 1.79, priceText: '$1.79' };
-    const res = classifyPrice(item);
-    assert.equal(res.isPaid, true);
-    assert.equal(res.priceNum, 1.79);
-    assert.equal(res.priceText, '$1.79');
+    const res = classifyPlayPrice(offerFromGplayApp(item));
+    assert.equal(res.price_status, PRICE_STATUS.PAID);
+    assert.equal(res.price, 1.79);
+    assert.equal(res.price_text, '$1.79');
   });
 
-  test('Game with string zero price "0" or "0.00" is free', () => {
-    const item = { free: false, price: '0.00', priceText: '$0.00' };
-    const res = classifyPrice(item);
-    assert.equal(res.isPaid, false);
-    assert.equal(res.priceNum, null);
-    assert.equal(res.priceText, 'Free');
+  test('Live game with price 0.00 or $0.00 offer is NOT marked as free (still a paid game on offer)', () => {
+    const item = { free: false, price: 0, priceText: '$0.00' };
+    const res = classifyPlayPrice(offerFromGplayApp(item));
+    assert.equal(res.price_status, PRICE_STATUS.PAID);
+    assert.match(res.price_text, /Offer|\$0\.00/i);
+    assert.notEqual(res.price_status, PRICE_STATUS.FREE);
+  });
+
+  test('Live game on 100% off promotion with originalPrice is classified as Paid', () => {
+    const item = { free: true, price: 0, originalPrice: 2.99, priceText: '$0.00' };
+    const res = classifyPlayPrice(offerFromGplayApp(item));
+    assert.equal(res.price_status, PRICE_STATUS.PAID);
+    assert.equal(res.price, 2.99);
   });
 });

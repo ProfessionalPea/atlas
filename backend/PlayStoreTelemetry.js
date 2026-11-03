@@ -200,6 +200,12 @@ function parsePlayStoreDs5Html(html, packageName = '') {
   const offerMicros = typeof offerMicrosRaw === 'number' && Number.isFinite(offerMicrosRaw)
     ? Math.max(0, Math.round(offerMicrosRaw))
     : null;
+  const originalPriceMicrosRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 1, 0]);
+  const originalPriceMicros = typeof originalPriceMicrosRaw === 'number' && Number.isFinite(originalPriceMicrosRaw)
+    ? Math.max(0, Math.round(originalPriceMicrosRaw))
+    : null;
+  const offerType = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 5]); // 1 = free, 2 = paid
+  const discountEndDate = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 14, 1]) || null;
   const offerCurrencyRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 1]);
   const offerTextRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 2]);
 
@@ -221,6 +227,9 @@ function parsePlayStoreDs5Html(html, packageName = '') {
     ratingsCount: Number.isFinite(Number(ratingsCountRaw)) ? Math.trunc(Number(ratingsCountRaw)) : null,
     preregister,
     offerMicros,
+    originalPriceMicros,
+    offerType: typeof offerType === 'number' ? offerType : null,
+    discountEndDate,
     offerCurrency: typeof offerCurrencyRaw === 'string' && offerCurrencyRaw ? offerCurrencyRaw : null,
     offerText: typeof offerTextRaw === 'string' && offerTextRaw ? offerTextRaw : null,
     rawDs5: data

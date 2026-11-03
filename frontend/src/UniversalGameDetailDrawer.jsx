@@ -151,12 +151,7 @@ export default function UniversalGameDetailDrawer({
 
   if (!game) return null;
 
-  const isFree =
-    game.pricing === "free" ||
-    game.is_paid === false ||
-    game.is_paid === 0 ||
-    game.is_paid === null ||
-    Number(game.price || 0) === 0;
+  const isFree = game.pricing === "free";
 
   const publisherDisplayName =
     game.publisher_name || game.developer_name || "Unknown Publisher";
@@ -224,7 +219,11 @@ export default function UniversalGameDetailDrawer({
                       </span>
                     ) : game.pricing === "paid" ? (
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-amber-50 dark:bg-amber-500/15 border-amber-300 dark:border-amber-500/30 text-amber-900 dark:text-amber-300 select-none">
-                        {game.is_manual_price ? "Paid (Manual Override)" : `Paid Title · ${Number(game.price || 0).toFixed(2)}`}
+                        {game.is_manual_price
+                          ? "Paid (Manual Override)"
+                          : Number(game.price || 0) > 0
+                            ? `Paid Title · $${Number(game.price).toFixed(2)}`
+                            : `Paid Title · ${game.price_text || 'On Offer'}`}
                       </span>
                     ) : (
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-emerald-50 dark:bg-emerald-500/15 border-emerald-300 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-400 select-none">

@@ -2048,10 +2048,10 @@ app.post("/api/scan", async (req, res) => {
             fixUrl(appData.videoImage) || null,
             developerId,
             developerUrl,
-            appData.free === false && Number(appData.price) > 0,
-            appData.free === false && Number(appData.price) > 0 ? Number(appData.price) : null,
-            appData.free === false && Number(appData.price) > 0 ? (appData.currency || null) : null,
-            appData.free === false && Number(appData.price) > 0 ? (appData.priceText || null) : null,
+            (appData.free === false || (Number(appData.price) > 0) || (Number(appData.originalPrice) > 0) || (/^\s*[$€£¥₹Rs]?\s*0(?:[.,]00?)?\s*[$€£¥₹Rs]?\s*$/i.test(String(appData.priceText || '')))),
+            (Number(appData.price) > 0 ? Number(appData.price) : (Number(appData.originalPrice) > 0 ? Number(appData.originalPrice) : ((appData.free === false || /^\s*[$€£¥₹Rs]?\s*0(?:[.,]00?)?\s*[$€£¥₹Rs]?\s*$/i.test(String(appData.priceText || ''))) ? 0 : null))),
+            ((appData.free === false || Number(appData.price) > 0 || Number(appData.originalPrice) > 0) ? (appData.currency || 'USD') : null),
+            ((appData.free === false || Number(appData.price) > 0 || Number(appData.originalPrice) > 0) ? (appData.priceText || '$0.00 (On Offer)') : 'Free'),
             appData.summary || null,
             appData.releaseDateIso || parseReleaseDateIso(appData.released)
           ]);

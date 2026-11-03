@@ -2475,9 +2475,9 @@ function PlayStoreIntelligenceView({
                               {g.pricing === "paid" && (
                                 <span
                                   className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-500 text-[9px] font-mono shrink-0 border border-amber-500/30"
-                                  title={g.is_manual_price ? `Paid (Manual override by ${g.manual_price_by || 'admin'})` : `Paid app · ${g.price_text || `${Number(g.price || 0).toFixed(2)}`}`}
+                                  title={g.is_manual_price ? `Paid (Manual override by ${g.manual_price_by || 'admin'})` : (Number(g.price || 0) > 0 ? `Paid app · $${Number(g.price).toFixed(2)}` : `Paid app · ${g.price_text || 'On Offer ($0.00)'}`)}
                                 >
-                                  {g.price != null && Number(g.price) > 0 ? `${Number(g.price).toFixed(2)}` : "Paid"}
+                                  {g.price != null && Number(g.price) > 0 ? `${Number(g.price).toFixed(2)}` : (g.price_text && g.price_text.includes('Offer') ? 'Offer' : 'Paid')}
                                   {g.is_manual_price && <span className="ml-1 text-[8px] uppercase">Manual</span>}
                                 </span>
                               )}

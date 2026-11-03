@@ -160,6 +160,55 @@ describe('Scenario 8: Manual override is cleared -> automatic classification res
   });
 });
 
+describe('Scenario 9: Games with $0.00 price or on-offer promotions are classified as Paid', () => {
+  test('game with $0.00 priceText and free: false is classified as PAID (on offer)', () => {
+    const offer = {
+      preregister: false,
+      free: false,
+      offerMicros: 0,
+      currency: 'USD',
+      priceText: '$0.00'
+    };
+    const res = classifyPlayPrice(offer, ['Popular arcade game on limited-time offer']);
+    assert.equal(res.price_status, PRICE_STATUS.PAID);
+    assert.notEqual(res.price_status, PRICE_STATUS.FREE);
+    assert.match(res.price_text, /Offer|\$0\.00/i);
+  });
+
+  test('game with originalPrice is classified as PAID with regular price preserved', () => {
+    const offer = {
+      preregister: false,
+      offerMicros: 0,
+      originalMicros: 2990000,
+      currency: 'USD',
+      priceText: '$0.00'
+    };
+    const res = classifyPlayPrice(offer, []);
+    assert.equal(res.price_status, PRICE_STATUS.PAID);
+    assert.equal(res.price, 2.99);
+    assert.match(res.price_text, /2\.99/);
+  });
+
+  test('previously paid game re-scanned with zero price is NOT downgraded to free', () => {
+    const freshZeroOffer = {
+      preregister: false,
+      offerMicros: 0,
+      currency: 'USD',
+      priceText: 'Free'
+    };
+    const existingGame = {
+      price_status: PRICE_STATUS.PAID,
+      is_paid: true,
+      price: 1.99,
+      currency: 'USD'
+    };
+    const res = classifyPlayPrice(freshZeroOffer, [], existingGame);
+    assert.equal(res.price_status, PRICE_STATUS.PAID);
+    assert.equal(res.price, 1.99);
+    assert.notEqual(res.price_status, PRICE_STATUS.FREE);
+  });
+});
+
 describe('Regression test case: com.pid.lilguardsman', () => {
   test('accurately classifies com.pid.lilguardsman payload and description evidence', () => {
     const livePlayStorePayload = {
