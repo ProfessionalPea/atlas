@@ -18,6 +18,7 @@ export default function UniversalGameDetailDrawer({
   onClose,
   onSelectGame,
   onRefreshTelemetry,
+  onCardStatusUpdated,
   isRefreshing = false,
   onOpenCountryScan,
   allGames = [],
@@ -33,13 +34,16 @@ export default function UniversalGameDetailDrawer({
   const [manualOverrideNote, setManualOverrideNote] = useState(game?.manual_price_note || "");
   const [isSavingManual, setIsSavingManual] = useState(false);
   const [manualMessage, setManualMessage] = useState(null);
+  const [showMonetizationEditor, setShowMonetizationEditor] = useState(false);
 
   // Play Store Cards Open/Closed status & transition log state
   const [cardHistory, setCardHistory] = useState(null);
   const [cardHistoryLoading, setCardHistoryLoading] = useState(false);
   const [isScanningCardStatus, setIsScanningCardStatus] = useState(false);
   const [cardOverrideMode, setCardOverrideMode] = useState(
-    game?.card_status_source === "manual" ? (game?.card_status || "AUTO") : "AUTO"
+    game?.card_status_source === "manual" && (game?.card_status === "open" || game?.card_status === "closed")
+      ? game.card_status
+      : "unverified"
   );
   const [cardOverrideNote, setCardOverrideNote] = useState("");
   const [cardStatusMsg, setCardStatusMsg] = useState(null);
@@ -48,7 +52,12 @@ export default function UniversalGameDetailDrawer({
     setManualOverrideStatus(game?.manual_price_status || "AUTO");
     setManualOverrideNote(game?.manual_price_note || "");
     setManualMessage(null);
-    setCardOverrideMode(game?.card_status_source === "manual" ? (game?.card_status || "AUTO") : "AUTO");
+    setShowMonetizationEditor(false);
+    setCardOverrideMode(
+      game?.card_status_source === "manual" && (game?.card_status === "open" || game?.card_status === "closed")
+        ? game.card_status
+        : "unverified"
+    );
     setCardOverrideNote("");
     setCardStatusMsg(null);
   }, [game?.package_name, game?.manual_price_status, game?.manual_price_note, game?.card_status, game?.card_status_source]);
@@ -86,7 +95,7 @@ export default function UniversalGameDetailDrawer({
   }, [game?.package_name, game?.card_status, game?.card_scanned_at]);
 
   const handleUpdateCardStatus = async (action = "override") => {
-    if (!game?.package_name) return;
+    if (!game?.package_name || isScanningCardStatus) return;
     setIsScanningCardStatus(true);
     setCardStatusMsg(null);
     try {
@@ -109,18 +118,22 @@ export default function UniversalGameDetailDrawer({
       const data = await res.json();
       if (res.ok) {
         if (data.history) setCardHistory(data.history);
+        const nextStatus = String(data.result?.cardStatus || data.history?.cardStatus || "unverified").toLowerCase();
+        const statusLabel =
+          nextStatus === "open"
+            ? "Cards Open"
+            : nextStatus === "closed"
+            ? "Cards Closed"
+            : "Unverified";
         setCardStatusMsg({
           type: "success",
-          text:
-            action === "scan"
-              ? `Live Play Store check complete: Cards are ${(data.result?.cardStatus || data.history?.cardStatus || "checked").toUpperCase()}.`
-              : "Card status updated and logged."
+          text: action === "scan" ? `Checked: ${statusLabel}` : `Saved: ${statusLabel}`
         });
-        if (onRefreshTelemetry) {
-          await onRefreshTelemetry(game.package_name);
+        if (onCardStatusUpdated) {
+          onCardStatusUpdated(game.package_name, data.result || data.history);
         }
       } else {
-        setCardStatusMsg({ type: "error", text: data.error || "Failed to check card status." });
+        setCardStatusMsg({ type: "error", text: data.error || "Failed to update card status." });
       }
     } catch (e) {
       setCardStatusMsg({ type: "error", text: e.message });
@@ -302,6 +315,18 @@ export default function UniversalGameDetailDrawer({
                 )}
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
+                    {(game.competitor_name || (Array.isArray(game.competitor_names) && game.competitor_names[0])) && (
+                      <span
+                        className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold border bg-electric-blue/10 border-electric-blue/30 text-electric-blue select-none"
+                        title={
+                          game.has_competitor_conflict && Array.isArray(game.competitor_names)
+                            ? `Listed under multiple sheet columns: ${game.competitor_names.join(", ")}`
+                            : "Parent Competitor"
+                        }
+                      >
+                        {game.competitor_name || game.competitor_names[0]}
+                      </span>
+                    )}
                     {game.release_status === "PRE_REGISTERED" && game.pricing !== "tba" && game.price_status !== "PRICE_TBA" && (
                       <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-purple-50 dark:bg-purple-500/15 border-purple-300 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 select-none">
                         Pre-Registration
@@ -363,65 +388,59 @@ export default function UniversalGameDetailDrawer({
               </button>
             </div>
 
-            {/* Monetization Hint & Admin Override Cards */}
-            {game.monetization_hint === "LIKELY_PAID" && game.monetization_hint_evidence && (
-              <div className="bg-purple-500/10 border border-purple-500/25 rounded-2xl p-3.5 flex flex-col gap-1.5 text-xs">
-                <div className="font-semibold text-purple-400 flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[17px]">monetization_on</span>
-                  <span>Developer Monetization Signal: Likely Paid</span>
-                </div>
-                <div className="text-[11px] text-text-muted italic bg-surface-solid/60 p-2.5 rounded-xl border border-purple-500/20 font-sans leading-relaxed">
-                  "{game.monetization_hint_evidence}"
-                </div>
-              </div>
-            )}
-
-            {isAdmin && (
-              <div className="bg-surface-solid border border-border-subtle rounded-2xl p-3.5 flex flex-col gap-2.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-text-main flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-[17px] text-electric-blue">tune</span>
-                    <span>Monetization Override (Admin)</span>
-                  </span>
-                  {game.is_manual_price && (
-                    <span className="text-[10px] text-amber-400 font-semibold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
-                      Manual by {game.manual_price_by || 'admin'}
+            {/* Monetization Override — Only shown when relevant (Pre-Registration / Price TBA / Likely Paid / Manual Override active) */}
+            {isAdmin &&
+              (game.release_status === "PRE_REGISTERED" ||
+                game.pricing === "tba" ||
+                game.price_status === "PRICE_TBA" ||
+                game.is_manual_price ||
+                game.monetization_hint === "LIKELY_PAID" ||
+                showMonetizationEditor) && (
+                <div className="bg-surface-solid border border-border-subtle rounded-2xl p-3.5 flex flex-col gap-2.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-text-main flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[17px] text-electric-blue">tune</span>
+                      <span>Monetization Override</span>
                     </span>
+                    {game.is_manual_price && (
+                      <span className="text-[10px] text-amber-400 font-semibold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                        Manual ({game.manual_price_by || "admin"})
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={manualOverrideStatus}
+                      onChange={(e) => setManualOverrideStatus(e.target.value)}
+                      className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs font-semibold text-text-main focus:border-electric-blue focus:outline-none min-w-[140px] flex-1"
+                    >
+                      <option value="AUTO">Auto</option>
+                      <option value="PAID">Paid</option>
+                      <option value="FREE">Free</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={manualOverrideNote}
+                      onChange={(e) => setManualOverrideNote(e.target.value)}
+                      placeholder="Note (optional)..."
+                      className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main focus:border-electric-blue focus:outline-none min-w-[140px] flex-1"
+                    />
+                    <button
+                      type="button"
+                      disabled={isSavingManual}
+                      onClick={handleSaveManualPricing}
+                      className="h-8 px-3.5 rounded-lg bg-electric-blue text-white font-semibold text-xs hover:opacity-90 transition disabled:opacity-50 shrink-0"
+                    >
+                      {isSavingManual ? "Saving..." : "Apply"}
+                    </button>
+                  </div>
+                  {manualMessage && (
+                    <div className={`text-[11px] font-medium ${manualMessage.type === "success" ? "text-emerald-400" : "text-urgent-red"}`}>
+                      {manualMessage.text}
+                    </div>
                   )}
                 </div>
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <select
-                    value={manualOverrideStatus}
-                    onChange={(e) => setManualOverrideStatus(e.target.value)}
-                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs font-semibold text-text-main focus:border-electric-blue focus:outline-none flex-1"
-                  >
-                    <option value="AUTO">Automatic (Play Store Detection)</option>
-                    <option value="PAID">Paid (Manual Override)</option>
-                    <option value="FREE">Free (Manual Override)</option>
-                  </select>
-                  <input
-                    type="text"
-                    value={manualOverrideNote}
-                    onChange={(e) => setManualOverrideNote(e.target.value)}
-                    placeholder="Reason / source note (optional)..."
-                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main focus:border-electric-blue focus:outline-none flex-1"
-                  />
-                  <button
-                    type="button"
-                    disabled={isSavingManual}
-                    onClick={handleSaveManualPricing}
-                    className="h-8 px-3.5 rounded-lg bg-electric-blue text-white font-semibold text-xs hover:opacity-90 transition disabled:opacity-50 shrink-0"
-                  >
-                    {isSavingManual ? "Saving..." : "Apply"}
-                  </button>
-                </div>
-                {manualMessage && (
-                  <div className={`text-[11px] font-medium ${manualMessage.type === "success" ? "text-emerald-400" : "text-urgent-red"}`}>
-                    {manualMessage.text}
-                  </div>
-                )}
-              </div>
-            )}
+              )}
 
             {/* 6 Metric Cards Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
@@ -467,7 +486,7 @@ export default function UniversalGameDetailDrawer({
               </div>
             </div>
 
-            {/* Play Store Cards Open / Closed Status & Transition History Log */}
+            {/* Play Store Cards Status — Clean & Concise */}
             {(() => {
               const effectiveCardStatus = String(
                 cardHistory?.cardStatus || game.card_status || "unscanned"
@@ -476,8 +495,7 @@ export default function UniversalGameDetailDrawer({
                 .toLowerCase();
               const isCardsClosed = effectiveCardStatus === "closed";
               const isCardsOpen = effectiveCardStatus === "open" || effectiveCardStatus === "active";
-              const presCode =
-                cardHistory?.presentationCode ?? game.card_presentation_code ?? null;
+              const isCardsUnverified = effectiveCardStatus === "unverified";
               const closedAtRaw = cardHistory?.cardClosedAt || game.card_closed_at || null;
               const openedAtRaw = cardHistory?.cardOpenedAt || game.card_opened_at || null;
               const scannedAtRaw = cardHistory?.cardScannedAt || game.card_scanned_at || null;
@@ -503,17 +521,12 @@ export default function UniversalGameDetailDrawer({
                       <span className="material-symbols-outlined text-[18px] text-electric-blue">
                         view_agenda
                       </span>
-                      <div>
-                        <div className="font-semibold text-text-main">
-                          Play Store Cards Status
-                        </div>
-                        <div className="text-[10px] text-text-muted">
-                          Detects whether Play Store renders full cards or collapses behind "See details"
-                        </div>
-                      </div>
+                      <span className="font-semibold text-text-main">
+                        Play Store Cards
+                      </span>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {isCardsClosed ? (
                         <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 flex items-center gap-1.5">
                           <span className="w-2 h-2 rounded-full bg-rose-500" />
@@ -523,6 +536,11 @@ export default function UniversalGameDetailDrawer({
                         <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
                           <span className="w-2 h-2 rounded-full bg-emerald-500" />
                           Cards Open
+                        </span>
+                      ) : isCardsUnverified ? (
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-amber-500" />
+                          Unverified
                         </span>
                       ) : (
                         <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-input-bg text-text-muted border border-border-subtle">
@@ -535,7 +553,6 @@ export default function UniversalGameDetailDrawer({
                         disabled={isScanningCardStatus}
                         onClick={() => handleUpdateCardStatus("scan")}
                         className="px-2.5 py-1 rounded-lg bg-electric-blue/15 hover:bg-electric-blue/25 text-electric-blue border border-electric-blue/30 text-[10px] font-semibold transition flex items-center gap-1 disabled:opacity-50"
-                        title="Fetch live ds:5 & ds:8 presentation telemetry from Google Play right now"
                       >
                         <span
                           className={`material-symbols-outlined text-[13px] ${
@@ -544,36 +561,30 @@ export default function UniversalGameDetailDrawer({
                         >
                           sync
                         </span>
-                        {isScanningCardStatus ? "Checking..." : "Check Now"}
+                        {isScanningCardStatus ? "Checking..." : "Update Cards"}
                       </button>
                     </div>
                   </div>
 
-                  {/* Metadata & Timestamps */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                  {/* Concise Timestamps */}
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
                     <div className="bg-input-bg rounded-xl p-2.5">
                       <div className="text-[10px] text-text-muted">
-                        {isCardsClosed ? "Cards Closed Since" : "Cards Opened / Verified"}
+                        {isCardsClosed
+                          ? "Cards Closed Since"
+                          : isCardsOpen
+                          ? "Cards Opened Since"
+                          : "Verified State"}
                       </div>
                       <div className="font-mono font-semibold text-text-main mt-0.5 text-[11px]">
                         {isCardsClosed
                           ? formatTimestamp(closedAtRaw || scannedAtRaw)
                           : isCardsOpen
                           ? formatTimestamp(openedAtRaw || scannedAtRaw)
-                          : "Not scanned yet"}
+                          : "Unverified"}
                       </div>
                     </div>
                     <div className="bg-input-bg rounded-xl p-2.5">
-                      <div className="text-[10px] text-text-muted">Play Store ds:5 Signal</div>
-                      <div className="font-mono font-semibold text-text-main mt-0.5 text-[11px]">
-                        {presCode != null
-                          ? presCode === 11
-                            ? "Code 11 (Collapsed HSDP)"
-                            : `Code ${presCode} (Full Details)`
-                          : "—"}
-                      </div>
-                    </div>
-                    <div className="bg-input-bg rounded-xl p-2.5 col-span-2 sm:col-span-1">
                       <div className="text-[10px] text-text-muted">Last Checked</div>
                       <div className="font-mono font-semibold text-text-main mt-0.5 text-[11px]">
                         {formatTimestamp(scannedAtRaw)}
@@ -581,24 +592,24 @@ export default function UniversalGameDetailDrawer({
                     </div>
                   </div>
 
-                  {/* Admin Manual Override for Cards Open/Closed */}
+                  {/* Admin Manual Verification Controls (cleanly wrapped inside drawer bounds) */}
                   {isAdmin && (
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1 border-t border-border-subtle">
+                    <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border-subtle">
                       <select
                         value={cardOverrideMode}
                         onChange={(e) => setCardOverrideMode(e.target.value)}
-                        className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs font-semibold text-text-main focus:border-electric-blue focus:outline-none"
+                        className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs font-semibold text-text-main focus:border-electric-blue focus:outline-none min-w-[130px]"
                       >
-                        <option value="AUTO">Auto (Play Store ds:5)</option>
-                        <option value="open">Cards Open (Manual)</option>
-                        <option value="closed">Cards Closed (Manual)</option>
+                        <option value="unverified">Unverified</option>
+                        <option value="open">Cards Open</option>
+                        <option value="closed">Cards Closed</option>
                       </select>
                       <input
                         type="text"
                         value={cardOverrideNote}
                         onChange={(e) => setCardOverrideNote(e.target.value)}
-                        placeholder="Log note (optional)..."
-                        className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main focus:border-electric-blue focus:outline-none flex-1"
+                        placeholder="Note (optional)..."
+                        className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main focus:border-electric-blue focus:outline-none min-w-[120px] flex-1"
                       />
                       <button
                         type="button"
@@ -606,7 +617,7 @@ export default function UniversalGameDetailDrawer({
                         onClick={() => handleUpdateCardStatus("override")}
                         className="h-8 px-3 rounded-lg bg-input-bg hover:bg-electric-blue hover:text-white border border-border-subtle text-text-main font-semibold text-xs transition disabled:opacity-50 shrink-0"
                       >
-                        Log / Apply
+                        Apply
                       </button>
                     </div>
                   )}
@@ -621,20 +632,18 @@ export default function UniversalGameDetailDrawer({
                     </div>
                   )}
 
-                  {/* Transition History Log */}
-                  <div className="pt-1 border-t border-border-subtle">
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-1.5 flex items-center justify-between">
-                      <span>Cards Open / Closed History Log ({logs.length})</span>
-                      {cardHistoryLoading && <span>Loading...</span>}
-                    </div>
-                    {logs.length === 0 ? (
-                      <div className="text-[11px] text-text-muted italic py-1">
-                        No status transitions logged yet. Click "Check Now" or "Refresh Telemetry" to record current Play Store card status.
+                  {/* Transition History Log (only shown when transitions exist) */}
+                  {logs.length > 0 && (
+                    <div className="pt-1 border-t border-border-subtle">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-1.5 flex items-center justify-between">
+                        <span>History ({logs.length})</span>
+                        {cardHistoryLoading && <span>Loading...</span>}
                       </div>
-                    ) : (
                       <div className="max-h-36 overflow-y-auto divide-y divide-border-subtle border border-border-subtle rounded-xl bg-input-bg/40">
                         {logs.map((entry) => {
-                          const isClosedLog = String(entry.new_status).toLowerCase() === "closed";
+                          const st = String(entry.new_status || "").toLowerCase();
+                          const isClosedLog = st === "closed";
+                          const isOpenLog = st === "open";
                           return (
                             <div
                               key={entry.id}
@@ -645,17 +654,18 @@ export default function UniversalGameDetailDrawer({
                                   className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 ${
                                     isClosedLog
                                       ? "bg-rose-500/15 text-rose-500 border border-rose-500/30"
-                                      : "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30"
+                                      : isOpenLog
+                                      ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/30"
+                                      : "bg-amber-500/15 text-amber-500 border border-amber-500/30"
                                   }`}
                                 >
-                                  {isClosedLog ? "Cards Closed" : "Cards Open"}
+                                  {isClosedLog ? "Cards Closed" : isOpenLog ? "Cards Open" : "Unverified"}
                                 </span>
                                 <span className="text-text-muted truncate" title={entry.note || ""}>
-                                  {entry.previous_status
-                                    ? `${String(entry.previous_status).toUpperCase()} → ${String(entry.new_status).toUpperCase()}`
-                                    : `Initial: ${String(entry.new_status).toUpperCase()}`}
-                                  {entry.presentation_code != null ? ` (ds:5 code ${entry.presentation_code})` : ""}
-                                  {entry.source === "manual" ? " · Manual" : ""}
+                                  {entry.note ||
+                                    (entry.previous_status
+                                      ? `${String(entry.previous_status).toUpperCase()} → ${String(entry.new_status).toUpperCase()}`
+                                      : String(entry.new_status).toUpperCase())}
                                 </span>
                               </div>
                               <span className="font-mono text-[10px] text-text-muted shrink-0">
@@ -665,8 +675,8 @@ export default function UniversalGameDetailDrawer({
                           );
                         })}
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}

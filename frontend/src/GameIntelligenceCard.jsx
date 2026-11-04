@@ -49,6 +49,7 @@ export function resolveCardState(game) {
   const rawStatus = String(game?.card_status || "").trim().toLowerCase();
   if (rawStatus === "open" || rawStatus === "active") return "open";
   if (rawStatus === "closed") return "closed";
+  if (rawStatus === "unverified") return "unverified";
   return "unscanned";
 }
 
@@ -224,7 +225,7 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
           {cardState === "open" || cardState === "active" ? (
             <span
               className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
-              title="Play Store cards are Open (Full store listing with screenshots & description expanded)"
+              title="Cards Open"
             >
               🟢 Cards Open
             </span>
@@ -233,15 +234,22 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
               className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
               title={
                 game.card_closed_at
-                  ? `Play Store cards are Closed ("See details" collapsed view) since ${formatReleaseDate(game.card_closed_at) || String(game.card_closed_at).slice(0, 10)}`
-                  : 'Play Store cards are Closed ("See details" collapsed view)'
+                  ? `Cards Closed since ${formatReleaseDate(game.card_closed_at) || String(game.card_closed_at).slice(0, 10)}`
+                  : "Cards Closed"
               }
             >
               🔴 Cards Closed {game.card_closed_at ? `· ${formatShortScanDate(game.card_closed_at)}` : ""}
             </span>
+          ) : cardState === "unverified" ? (
+            <span
+              className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
+              title="Cards Unverified"
+            >
+              🟡 Unverified
+            </span>
           ) : (
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-input-bg text-text-muted border border-border-subtle">
-              ⚪ Cards Unscanned
+              ⚪ Unscanned
             </span>
           )}
           {adCount > 0 && (

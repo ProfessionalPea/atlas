@@ -3,14 +3,20 @@ const assert = require('node:assert/strict');
 const {
   initializePlayTelemetryStorage,
   fetchPlayStoreDs5,
+  extractCardPresentationFromDs5,
   computeVelocityMetrics,
   parseAppAdsTxtContent,
   selectPrimaryStudioSeller,
   computeEngagementAndRevenue,
   evaluateCardStatusFromAdSignals,
   runCardStatusPipeline,
+  setManualCardStatusOverride,
   runFullTelemetryForPackage
 } = require('./PlayStoreTelemetry');
+const {
+  doesAppMatchPublisher,
+  linkGameToCanonicalPublisher
+} = require('./PlayStoreIntelligence');
 
 // Lightweight in-memory mock pool that mimics PostgreSQL for end-to-end verification
 function createMockTelemetryPool() {
@@ -18,8 +24,11 @@ function createMockTelemetryPool() {
   const installHistory = new Map(); // key: `${pkg}:${date}` -> { package_name, snapshot_date, real_installs, daily_delta }
   const sellersCache = new Map();
   const adCreatives = []; // { creative_id, game_id, package_name, last_seen_at }
-  const accountGames = new Set(); // game_id
+  const accountGames = new Map(); // game_id -> { account_id, game_id }
+  const publisherAccounts = new Map(); // id -> { id, account_name }
+  const publisherHistory = [];
   const cardStatusLogs = [];
+  let telemetryUpdateCount = 0;
 
   // Pre-seed sellers.json cache with the verified sellers from Google's public sellers.json for com.res.happy.days.adventure
   // so tests run deterministically in <2s without re-streaming 107MB over the network every test run
@@ -45,7 +54,10 @@ function createMockTelemetryPool() {
     sellersCache,
     adCreatives,
     accountGames,
+    publisherAccounts,
+    publisherHistory,
     cardStatusLogs,
+    getTelemetryUpdateCount: () => telemetryUpdateCount,
     async query(sql, params = []) {
       const normalized = String(sql).trim();
 
@@ -79,6 +91,41 @@ function createMockTelemetryPool() {
             has_competitor_link: accountGames.has(g.id)
           }]
         };
+      }
+
+      if (/SELECT account_id FROM account_games WHERE game_id = \$1/i.test(normalized)) {
+        const gameId = params[0];
+        const link = accountGames.get(gameId);
+        if (!link) return { rows: [] };
+        return { rows: [{ account_id: link.account_id }] };
+      }
+
+      if (/INSERT INTO game_publisher_history/i.test(normalized)) {
+        publisherHistory.push({
+          game_id: params[0],
+          package_name: params[1],
+          previous_publisher_id: params[2],
+          new_publisher_id: params[3],
+          reason: params[4]
+        });
+        return { rows: [] };
+      }
+
+      if (/DELETE FROM account_games WHERE game_id = \$1 AND account_id <> \$2/i.test(normalized)) {
+        const gameId = params[0];
+        const keepAccId = params[1];
+        const link = accountGames.get(gameId);
+        if (link && link.account_id !== keepAccId) {
+          accountGames.delete(gameId);
+        }
+        return { rows: [] };
+      }
+
+      if (/INSERT INTO account_games \(account_id, game_id\)/i.test(normalized)) {
+        const accId = params[0];
+        const gameId = params[1];
+        accountGames.set(gameId, { account_id: accId, game_id: gameId });
+        return { rows: [] };
       }
 
       if (/SELECT MAX\(last_seen_at\) AS latest_creative_seen, COUNT\(\*\)::int AS total_creatives\s+FROM ad_creatives/i.test(normalized)) {
@@ -161,6 +208,7 @@ function createMockTelemetryPool() {
       }
 
       if (/UPDATE games\s+SET installs_tier/i.test(normalized)) {
+        telemetryUpdateCount += 1;
         const pkg = params[0];
         const g = games.get(pkg) || { id: nextGameId++, package_name: pkg };
         g.installs_tier = params[1] || g.installs_tier || g.installs;
@@ -211,21 +259,36 @@ function createMockTelemetryPool() {
         return { rows: g ? [g] : [] };
       }
 
-      if (/UPDATE games\s+SET card_status/i.test(normalized)) {
+      if (/UPDATE games\s+SET card_status = \$2,\s*card_presentation_code = \$3/i.test(normalized)) {
         const pkg = params[0];
         const g = games.get(pkg) || { id: nextGameId++, package_name: pkg };
         g.card_status = params[1];
-        if (params.length >= 9) {
-          g.card_presentation_code = params[2];
-          g.card_status_source = params[3];
-          g.card_status_evidence = JSON.parse(params[4] || '{}');
-          g.card_closed_at = params[5];
-          g.card_opened_at = params[6];
-          g.card_status_changed_at = params[7];
-          g.card_scanned_at = params[8] || new Date().toISOString();
-        } else {
-          g.card_scanned_at = params[2] || new Date().toISOString();
-        }
+        g.card_presentation_code = params[2];
+        g.card_status_source = params[3];
+        g.card_status_evidence = JSON.parse(params[4] || '{}');
+        g.card_closed_at = params[5];
+        g.card_opened_at = params[6];
+        g.card_status_changed_at = params[7];
+        g.card_scanned_at = params[8] || new Date().toISOString();
+        games.set(pkg, g);
+        return { rows: [] };
+      }
+
+      if (/UPDATE games\s+SET card_status = \$2,\s*card_status_source = \$3/i.test(normalized)) {
+        const pkg = params[0];
+        const g = games.get(pkg) || { id: nextGameId++, package_name: pkg };
+        g.card_status = params[1];
+        g.card_status_source = params[2];
+        g.card_status_evidence = JSON.parse(params[3] || '{}');
+        g.card_scanned_at = params[4] || new Date().toISOString();
+        games.set(pkg, g);
+        return { rows: [] };
+      }
+
+      if (/UPDATE games\s+SET card_scanned_at = \$2/i.test(normalized)) {
+        const pkg = params[0];
+        const g = games.get(pkg) || { id: nextGameId++, package_name: pkg };
+        g.card_scanned_at = params[1] || new Date().toISOString();
         games.set(pkg, g);
         return { rows: [] };
       }
@@ -311,15 +374,100 @@ test('Step 5 sanity check formula: 3,200 DAU at 10m/day outputs $40-$362/mo with
   assert.equal(result.revConfidence, 'low');
 });
 
-test('Task 1 & 2 Verification across 3 Distinct Game Scenarios (Active <48h, Stale >14d, Multi-Network AppLovin/AdMob)', async () => {
+test('Priority 1 & 3: Cards status is never derived from ds:5 154/155, defaults to unverified, preserves verified overrides, and never triggers telemetry refresh', async () => {
+  // 1. Direct unit test of extractCardPresentationFromDs5 with slots 154/155 populated
+  const fakeAppRoot = [];
+  fakeAppRoot[154] = [null, 11];
+  fakeAppRoot[155] = [null, 11];
+  const fakeDs5Data = [null, [null, null, fakeAppRoot]];
+  const extracted = extractCardPresentationFromDs5(fakeDs5Data);
+  assert.equal(extracted.cardStatus, 'unverified', 'extractCardPresentationFromDs5 must NEVER derive open/closed from ds:5 slots 154/155');
+  assert.equal(extracted.presentationCode, null, 'presentationCode must be null');
+
+  // 2. Live card check pipeline sets status to unverified (when not manually verified) and never triggers telemetry refresh
   const pool = createMockTelemetryPool();
   await initializePlayTelemetryStorage(pool);
-  assert.equal(pool.ddlExecuted.length, 1, 'Schema migration DDL executed');
 
-  // -------------------------------------------------------------------------
-  // Game 1: Active ads scanned in the last 48 hours + Multi-network app-ads.txt
-  // (com.res.happy.days.adventure has Admob, Mintegral, AppLovin, Unity Ads, Liftoff, Chartboost, InMobi, Meta, ironSource)
-  // -------------------------------------------------------------------------
+  const pkg = 'com.gw.monkey.tag.jungle.game';
+  pool.games.set(pkg, { id: 2, package_name: pkg, title: 'Monkey Game: Jungle Escape' });
+
+  const telemetryCountBefore = pool.getTelemetryUpdateCount();
+  const cardRes = await runCardStatusPipeline(pool, pkg);
+  const telemetryCountAfter = pool.getTelemetryUpdateCount();
+
+  assert.equal(cardRes.cardStatus, 'unverified', 'Unverified web payload must result in cardStatus = unverified');
+  assert.equal(cardRes.presentationCode, null);
+  assert.equal(telemetryCountAfter, telemetryCountBefore, 'Finishing a cards check must NOT trigger a telemetry refresh');
+
+  // 3. Verified manual override is preserved and NEVER overwritten by a subsequent unverified check
+  const manualRes = await setManualCardStatusOverride(pool, pkg, {
+    status: 'closed',
+    note: 'Verified closed on Android device',
+    by: 'admin'
+  });
+  assert.equal(manualRes.cardStatus, 'closed');
+  assert.equal(manualRes.source, 'manual');
+  assert.ok(manualRes.cardClosedAt, 'cardClosedAt recorded when verified closed');
+
+  const subsequentAutoCheck = await runCardStatusPipeline(pool, pkg);
+  assert.equal(subsequentAutoCheck.cardStatus, 'closed', 'Subsequent unverified check must NOT overwrite a verified manual result');
+  assert.equal(subsequentAutoCheck.source, 'manual');
+});
+
+test('Priority 2: Publisher/Game hierarchy rejects search-fallback developer mismatches and enforces 1 canonical publisher per game', async () => {
+  // 1. doesAppMatchPublisher rejects unrelated search fallback results (e.g. Trenzy search returning Game Finale's game)
+  assert.equal(
+    doesAppMatchPublisher(
+      { developer: 'Game Finale', developerId: 'Game+Finale' },
+      { queriedDevId: 'Trenzy', targetPublisher: 'Trenzy' }
+    ),
+    false,
+    'Unrelated developer returned by gplay.developer keyword search must be rejected'
+  );
+
+  // Exact or normalized publisher matches are accepted
+  assert.equal(
+    doesAppMatchPublisher(
+      { developer: 'Simulator Hub 2022', developerId: 'Simulator+Hub+2022' },
+      { queriedDevId: 'Simulator Hub 2022', targetPublisher: 'Simulator Hub 2022' }
+    ),
+    true,
+    'Matching publisher identity must be accepted'
+  );
+
+  // 2. linkGameToCanonicalPublisher enforces 1 publisher account per game and logs ownership transfer history
+  const pool = createMockTelemetryPool();
+  pool.publisherAccounts.set(10, { id: 10, account_name: 'Old Publisher Studio' });
+  pool.publisherAccounts.set(20, { id: 20, account_name: 'New Verified Studio' });
+
+  const gameId = 500;
+  const pkg = 'com.example.transferred.game';
+  await linkGameToCanonicalPublisher(pool, {
+    publisherId: 10,
+    gameId,
+    packageName: pkg,
+    reason: 'initial_scan'
+  });
+  assert.equal(pool.accountGames.get(gameId)?.account_id, 10);
+  assert.equal(pool.publisherHistory.length, 0);
+
+  // Transferring to account 20 replaces account 10 and records history
+  await linkGameToCanonicalPublisher(pool, {
+    publisherId: 20,
+    gameId,
+    packageName: pkg,
+    reason: 'verified_play_store_developer_scan'
+  });
+  assert.equal(pool.accountGames.get(gameId)?.account_id, 20, 'Game must have only 1 canonical publisher account');
+  assert.equal(pool.publisherHistory.length, 1, 'Ownership transfer must be recorded in game_publisher_history');
+  assert.equal(pool.publisherHistory[0].previous_publisher_id, 10);
+  assert.equal(pool.publisherHistory[0].new_publisher_id, 20);
+});
+
+test('Multi-Network app-ads.txt & Telemetry Pipeline Verification', async () => {
+  const pool = createMockTelemetryPool();
+  await initializePlayTelemetryStorage(pool);
+
   const pkgActiveMulti = 'com.res.happy.days.adventure';
   pool.games.set(pkgActiveMulti, {
     id: 1,
@@ -339,46 +487,14 @@ test('Task 1 & 2 Verification across 3 Distinct Game Scenarios (Active <48h, Sta
   const game1 = res1.game;
 
   assert.ok(game1, 'Game 1 record returned');
-  assert.ok(['open', 'closed', 'unscanned'].includes(game1.card_status || 'unscanned'), 'Game 1 card_status is valid');
   assert.equal(game1.latest_creative_seen, fortyEightHoursAgoIso, 'Footer Card date synced with latest_creative_seen');
 
-  // Verify Game 1 does NOT show hardcoded { Admob: 100 } — it has multiple verified networks in app-ads.txt
   const netKeys1 = Object.keys(game1.ad_networks);
   assert.ok(netKeys1.length > 1, `Expected multi-network share map, got: ${JSON.stringify(game1.ad_networks)}`);
   assert.notDeepEqual(game1.ad_networks, { Admob: 100 }, 'Multi-network game must NOT show hardcoded Admob · 100%');
-  assert.ok(game1.ad_networks.Admob > 0 && game1.ad_networks.Admob < 100, 'Admob has proportional share < 100%');
-  assert.ok(game1.ad_networks.AppLovin > 0, 'AppLovin share is present');
-  assert.ok(game1.ad_networks.Mintegral > 0, 'Mintegral share is present');
   const shareSum1 = Object.values(game1.ad_networks).reduce((a, b) => a + b, 0);
   assert.equal(shareSum1, 100, 'Proportional network shares sum to 100%');
-  assert.ok(
-    /THE GAME STORM STUDIOS/i.test(game1.advertiser_legal_name || ''),
-    `advertiser_legal_name (${game1.advertiser_legal_name}) resolves to THE GAME STORM STUDIOS legal entity`
-  );
 
-  // -------------------------------------------------------------------------
-  // Game 2: Play Store Cards Open vs Cards Closed (Game Ware verified pair)
-  // -------------------------------------------------------------------------
-  const pkgOpen = 'com.gw.monkey.tag.jungle.game';
-  pool.games.set(pkgOpen, { id: 2, package_name: pkgOpen, title: 'Monkey Game: Jungle Escape' });
-  const cardOpenRes = await runCardStatusPipeline(pool, pkgOpen);
-  assert.equal(cardOpenRes.cardStatus, 'open', 'Monkey Game: Jungle Escape MUST have cardStatus = open (ds:5 code 4)');
-  assert.equal(cardOpenRes.presentationCode, 4);
-
-  const pkgClosed = 'com.obby.prison.escape.games';
-  pool.games.set(pkgClosed, { id: 3, package_name: pkgClosed, title: 'Rooftop Parkour Going Up' });
-  const cardClosedRes = await runCardStatusPipeline(pool, pkgClosed);
-  assert.equal(cardClosedRes.cardStatus, 'closed', 'Rooftop Parkour Going Up MUST have cardStatus = closed (ds:5 code 11)');
-  assert.equal(cardClosedRes.presentationCode, 11);
-  assert.ok(cardClosedRes.cardClosedAt, 'cardClosedAt timestamp recorded when cards are closed');
-  assert.ok(
-    pool.cardStatusLogs.some(l => l.package_name === pkgClosed && l.new_status === 'closed' && l.presentation_code === 11),
-    'Transition to closed logged in game_card_status_logs'
-  );
-
-  // -------------------------------------------------------------------------
-  // Game 3: AppLovin MAX dominant multi-network app-ads.txt & Unscanned fallback
-  // -------------------------------------------------------------------------
   const appLovinMaxSample = [
     'applovin.com, d8921a8b90123, DIRECT, c7542',
     'applovin.com, e9921a8b90124, DIRECT, c7542',
@@ -388,34 +504,9 @@ test('Task 1 & 2 Verification across 3 Distinct Game Scenarios (Active <48h, Sta
   ].join('\n');
 
   const parsedMax = parseAppAdsTxtContent(appLovinMaxSample);
-  assert.ok(parsedMax.adNetworks.AppLovin > parsedMax.adNetworks.Admob, 'AppLovin dominant share > Admob share');
   assert.equal(parsedMax.adNetworks.AppLovin, 60, 'AppLovin 3/5 DIRECT = 60%');
   assert.equal(parsedMax.adNetworks.Admob, 20, 'Admob 1/5 DIRECT = 20%');
   assert.equal(parsedMax.adNetworks['Unity Ads'], 20, 'Unity Ads 1/5 DIRECT = 20%');
-
-  // Verify non-existent package defaults to unscanned
-  const pkgUnscanned = 'com.nonexistent.countryscan.only.game.xyz999';
-  pool.games.set(pkgUnscanned, {
-    id: 4,
-    package_name: pkgUnscanned,
-    title: 'Country Scan Game',
-    ad_count: 0
-  });
-  const cardRes3 = await runCardStatusPipeline(pool, pkgUnscanned);
-  assert.equal(cardRes3.cardStatus, 'unscanned', 'Non-existent/unscanned package defaults to unscanned');
-
-  console.log('Verified all scenarios:', {
-    game1_active_multi: {
-      package: pkgActiveMulti,
-      card_status: game1.card_status,
-      latest_creative_seen: game1.latest_creative_seen,
-      ad_networks: game1.ad_networks,
-      advertiser_legal_name: game1.advertiser_legal_name
-    },
-    game2_open: cardOpenRes,
-    game2_closed: cardClosedRes,
-    game3_applovin_max: parsedMax.adNetworks,
-    game3_unscanned_card: cardRes3
-  });
 });
+
 

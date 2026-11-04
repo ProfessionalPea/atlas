@@ -8,6 +8,7 @@ const {
   runInstallVelocityPipeline,
   runFullTelemetryForPackage,
   runCardStatusPipeline,
+  normalizeCardStatusValue,
   setManualCardStatusOverride,
   getCardStatusHistory
 } = require('./PlayStoreTelemetry');
@@ -114,11 +115,120 @@ let countryBatchQueue = {
   log: '> Ready for batch country availability scans.'
 };
 
+// Bulk Cards Status Refresh Queue State
+let cardBatchQueue = {
+  running: false,
+  cancelled: false,
+  state: 'idle', // 'idle' | 'running' | 'complete' | 'cancelled' | 'error'
+  scope: 'all',
+  scopeLabel: '',
+  totalPackages: 0,
+  completedPackages: 0,
+  openCount: 0,
+  closedCount: 0,
+  unverifiedCount: 0,
+  failedCount: 0,
+  currentPackage: null,
+  currentAppTitle: null,
+  startedAt: null,
+  finishedAt: null
+};
+
 function normalizePlayPublisherKey(name) {
   return String(name || '')
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ');
+}
+
+function normalizePublisherMatchCompact(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Verifies that an app returned by gplay.developer genuinely belongs to the queried publisher,
+ * rejecting Google Play keyword-search fallback results from unrelated developers.
+ */
+function doesAppMatchPublisher(appItem, { queriedDevId, targetPublisher, existingPub, resolvedDeveloperId }) {
+  const isNumericQuery = /^\d+$/.test(String(queriedDevId || '').trim());
+  if (isNumericQuery) {
+    return true;
+  }
+
+  const itemDevId = appItem?.developerId ? String(appItem.developerId).trim() : '';
+  if (resolvedDeveloperId && itemDevId && /^\d+$/.test(itemDevId) && itemDevId === String(resolvedDeveloperId).trim()) {
+    return true;
+  }
+  if (existingPub?.developer_id && itemDevId && itemDevId === String(existingPub.developer_id).trim()) {
+    return true;
+  }
+
+  const itemDevName = String(appItem?.developer || '').trim();
+  if (!itemDevName) {
+    return false;
+  }
+
+  const itemKey = normalizePlayPublisherKey(itemDevName);
+  const itemCompact = normalizePublisherMatchCompact(itemDevName);
+
+  const allowedNames = [
+    queriedDevId,
+    targetPublisher,
+    existingPub?.publisher_name,
+    existingPub?.display_name,
+    existingPub?.sample_dev_name
+  ].filter(Boolean);
+
+  for (const candidate of allowedNames) {
+    if (normalizePlayPublisherKey(candidate) === itemKey) return true;
+    const candCompact = normalizePublisherMatchCompact(candidate);
+    if (candCompact && candCompact.length >= 3 && candCompact === itemCompact) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Enforces `1 Game -> 1 Canonical Publisher Account` in `account_games`,
+ * logging any ownership transfer in `game_publisher_history`.
+ */
+async function linkGameToCanonicalPublisher(pool, { publisherId, gameId, packageName, reason = 'publisher_scan' }) {
+  if (!publisherId || !gameId) return;
+  const existingLinks = await pool.query(
+    `SELECT account_id FROM account_games WHERE game_id = $1`,
+    [gameId]
+  );
+
+  const otherPublisherIds = existingLinks.rows
+    .map((r) => Number(r.account_id))
+    .filter((id) => id !== Number(publisherId));
+
+  if (otherPublisherIds.length > 0) {
+    for (const prevPubId of otherPublisherIds) {
+      await pool
+        .query(
+          `INSERT INTO game_publisher_history (
+             game_id, package_name, previous_publisher_id, new_publisher_id, reason
+           ) VALUES ($1, $2, $3, $4, $5)`,
+          [gameId, packageName || null, prevPubId, publisherId, reason]
+        )
+        .catch(() => {});
+    }
+    await pool.query(
+      `DELETE FROM account_games WHERE game_id = $1 AND account_id <> $2`,
+      [gameId, publisherId]
+    );
+  }
+
+  await pool.query(
+    `INSERT INTO account_games (account_id, game_id)
+     VALUES ($1, $2)
+     ON CONFLICT (game_id) DO UPDATE SET account_id = EXCLUDED.account_id`,
+    [publisherId, gameId]
+  );
 }
 
 function fixUrl(url) {
@@ -404,10 +514,22 @@ async function fetchPlayDeveloperApps(pool, target) {
         `gplay.developer(${devId})`
       );
       if (Array.isArray(list) && list.length > 0) {
-        anySucceeded = true;
+        let matchedCount = 0;
         for (const item of list) {
           const pkg = String(item?.appId || '').trim();
           if (!pkg) continue;
+          // Reject keyword-search fallback results from unrelated developers
+          if (
+            !doesAppMatchPublisher(item, {
+              queriedDevId: devId,
+              targetPublisher: target.publisher,
+              existingPub,
+              resolvedDeveloperId
+            })
+          ) {
+            continue;
+          }
+          matchedCount += 1;
           if (!appsByPackage.has(pkg)) {
             appsByPackage.set(pkg, item);
           }
@@ -418,7 +540,10 @@ async function fetchPlayDeveloperApps(pool, target) {
             resolvedDeveloperId = String(item.developerId).trim();
           }
         }
-        return list.length;
+        if (matchedCount > 0) {
+          anySucceeded = true;
+        }
+        return matchedCount;
       }
       return 0;
     } catch (err) {
@@ -672,12 +797,12 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
     );
 
     const gameRow = upsertRes.rows[0];
-    await pool.query(
-      `INSERT INTO account_games (account_id, game_id)
-       VALUES ($1, $2)
-       ON CONFLICT DO NOTHING`,
-      [publisherId, gameRow.id]
-    );
+    await linkGameToCanonicalPublisher(pool, {
+      publisherId,
+      gameId: gameRow.id,
+      packageName: pkg,
+      reason: 'verified_publisher_catalogue_scan'
+    });
 
     try {
       await applyPriceClassification(
@@ -1025,10 +1150,12 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
   }
 
   if (pubId && gameId) {
-    await pool.query(
-      `INSERT INTO account_games (account_id, game_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-      [pubId, gameId]
-    );
+    await linkGameToCanonicalPublisher(pool, {
+      publisherId: pubId,
+      gameId,
+      packageName: pkg,
+      reason: 'single_game_import'
+    });
   }
 
   try {
@@ -1154,6 +1281,25 @@ async function initializePlayStoreStorage(pool) {
       added_packages JSONB DEFAULT '[]'::jsonb,
       scanned_at TIMESTAMPTZ DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS hierarchy_relationship_backup (
+      id SERIAL PRIMARY KEY,
+      backup_type TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      record_json JSONB NOT NULL,
+      reason TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS game_publisher_history (
+      id SERIAL PRIMARY KEY,
+      game_id INTEGER NOT NULL,
+      package_name TEXT,
+      previous_publisher_id INTEGER,
+      new_publisher_id INTEGER,
+      reason TEXT,
+      recorded_at TIMESTAMPTZ DEFAULT now()
+    );
   `);
 
   await syncLegacyAccountsAndCompetitors(pool);
@@ -1164,7 +1310,7 @@ async function initializePlayStoreStorage(pool) {
  * consolidating duplicate publisher rows and refreshing aggregate publisher stats.
  */
 async function syncLegacyAccountsAndCompetitors(pool) {
-  // Sync existing `competitors` into `play_lists`
+  // Sync existing `competitors` into `play_lists` (matching by competitor_id, ads_id, or name)
   await pool.query(`
     INSERT INTO play_lists (name, ads_id, description, competitor_id)
     SELECT c.name, c.ads_id,
@@ -1172,7 +1318,10 @@ async function syncLegacyAccountsAndCompetitors(pool) {
            c.id
     FROM competitors c
     WHERE NOT EXISTS (
-      SELECT 1 FROM play_lists pl WHERE pl.competitor_id = c.id OR LOWER(TRIM(pl.name)) = LOWER(TRIM(c.name))
+      SELECT 1 FROM play_lists pl
+      WHERE pl.competitor_id = c.id
+         OR (c.ads_id IS NOT NULL AND pl.ads_id = c.ads_id)
+         OR LOWER(TRIM(pl.name)) = LOWER(TRIM(c.name))
     );
   `);
 
@@ -1206,24 +1355,52 @@ async function syncLegacyAccountsAndCompetitors(pool) {
   `);
 
   // Copy any `account_games` links from secondary duplicate account rows onto their canonical `play_publishers.id`
+  // only when the game is not already linked to a canonical publisher
   await pool.query(`
     INSERT INTO account_games (account_id, game_id)
-    SELECT p.id, ag.game_id
+    SELECT DISTINCT ON (ag.game_id) p.id, ag.game_id
     FROM accounts a
     JOIN play_publishers p ON p.normalized_name = LOWER(TRIM(a.publisher_name))
     JOIN account_games ag ON ag.account_id = a.id
     WHERE a.id <> p.id
+      AND NOT EXISTS (
+        SELECT 1 FROM account_games ag2
+        JOIN play_publishers p2 ON p2.id = ag2.account_id
+        WHERE ag2.game_id = ag.game_id
+      )
+    ORDER BY ag.game_id, p.id ASC
     ON CONFLICT DO NOTHING;
   `);
 
-  // Link every publisher to every `play_lists` entry corresponding to its `accounts.competitor_id`
+  // Remove orphaned secondary duplicate account_games links whose account_id is not a canonical play_publishers row
+  await pool.query(`
+    DELETE FROM account_games ag
+    WHERE NOT EXISTS (SELECT 1 FROM play_publishers p WHERE p.id = ag.account_id)
+      AND EXISTS (
+        SELECT 1 FROM account_games ag2
+        JOIN play_publishers p2 ON p2.id = ag2.account_id
+        WHERE ag2.game_id = ag.game_id
+      );
+  `);
+
+  // Ensure 1-to-1 unique index on account_games(game_id) when clean
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_games_unique_game_id ON account_games(game_id);
+  `).catch(() => {});
+
+  // Link every publisher to its primary `play_lists` entry corresponding to `accounts.competitor_id`
+  // only if that publisher does not already have a competitor list assignment
   await pool.query(`
     INSERT INTO play_list_publishers (list_id, publisher_id)
-    SELECT DISTINCT pl.id, p.id
+    SELECT DISTINCT ON (p.id) pl.id, p.id
     FROM accounts a
     JOIN play_publishers p ON p.normalized_name = LOWER(TRIM(a.publisher_name))
     JOIN play_lists pl ON pl.competitor_id = a.competitor_id
     WHERE a.competitor_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM play_list_publishers plp WHERE plp.publisher_id = p.id
+      )
+    ORDER BY p.id, pl.id ASC
     ON CONFLICT DO NOTHING;
   `);
 
@@ -1305,9 +1482,12 @@ async function fetchSheetCompetitorAnalysis(pool) {
   const existingPubsRes = await pool.query(`SELECT id, publisher_name, normalized_name FROM play_publishers`);
   const existingPubByKey = new Map(existingPubsRes.rows.map((p) => [p.normalized_name, p]));
 
-  const existingListsRes = await pool.query(`SELECT id, name, ads_id FROM play_lists`);
+  const existingListsRes = await pool.query(`SELECT id, name, ads_id, competitor_id FROM play_lists`);
   const existingListByName = new Map(
     existingListsRes.rows.map((l) => [String(l.name || '').trim().toLowerCase(), l])
+  );
+  const existingListByAdsId = new Map(
+    existingListsRes.rows.filter((l) => l.ads_id).map((l) => [String(l.ads_id).trim().toUpperCase(), l])
   );
 
   const columns = [];
@@ -1324,7 +1504,10 @@ async function fetchSheetCompetitorAnalysis(pool) {
     const listName = (match ? match[1] : rawHeader).trim();
     const adsId = match ? match[2].toUpperCase() : null;
 
-    const existingList = existingListByName.get(listName.toLowerCase()) || null;
+    const existingList =
+      (adsId && existingListByAdsId.get(adsId)) ||
+      existingListByName.get(listName.toLowerCase()) ||
+      null;
     const colPublishers = [];
     const seenInCol = new Set();
 
@@ -1796,7 +1979,9 @@ function registerPlayStoreRoutes({ app, pool }) {
           effective_name: p.display_name && p.display_name.trim() ? p.display_name.trim() : p.publisher_name,
           list_ids: lIds,
           competitor_names: compNames,
-          competitor_name: compNames.join(', ') || null
+          competitor_name: compNames[0] || null,
+          has_competitor_conflict: compNames.length > 1,
+          conflict_competitor_names: compNames.length > 1 ? compNames : []
         };
       });
 
@@ -1823,8 +2008,11 @@ function registerPlayStoreRoutes({ app, pool }) {
         const compNames = pubEntry?.competitor_names || [];
         return {
           ...g,
+          card_status: normalizeCardStatusValue(g.card_status),
           competitor_names: compNames,
-          competitor_name: compNames.join(', ') || null,
+          competitor_name: compNames[0] || null,
+          has_competitor_conflict: compNames.length > 1,
+          conflict_competitor_names: compNames.length > 1 ? compNames : [],
           has_campaign: Boolean(g.campaign_active) || Number(g.ad_count) > 0,
           campaign_active: Boolean(g.campaign_active),
           campaign_source: g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null),
@@ -1988,17 +2176,33 @@ function registerPlayStoreRoutes({ app, pool }) {
       let publishersCreated = 0;
       let membershipsAdded = 0;
       const newPublisherUrls = [];
+      const ambiguousPublishers = [];
 
       for (const col of preview.columns) {
         if (selectedLists && !selectedLists.has(col.listName)) continue;
 
-        // 1. Ensure list exists in `competitors` and `play_lists`
+        // 1. Ensure list exists in `competitors` and `play_lists` (match by ads_id first, then name)
         let listRes = await pool.query(
-          `SELECT id, competitor_id FROM play_lists WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
-          [col.listName]
+          `SELECT id, name, ads_id, competitor_id
+           FROM play_lists
+           WHERE ($2::text IS NOT NULL AND ads_id = $2)
+              OR LOWER(TRIM(name)) = LOWER(TRIM($1))
+           ORDER BY CASE WHEN ($2::text IS NOT NULL AND ads_id = $2) THEN 0 ELSE 1 END, id ASC
+           LIMIT 1`,
+          [col.listName, col.adsId]
         );
         let listId = listRes.rows[0]?.id || null;
         let competitorId = listRes.rows[0]?.competitor_id || null;
+
+        if (listId && listRes.rows[0]?.name !== col.listName) {
+          await pool.query(
+            `UPDATE play_lists SET name = $2, ads_id = COALESCE($3, ads_id), updated_at = now() WHERE id = $1`,
+            [listId, col.listName, col.adsId]
+          );
+          if (competitorId) {
+            await pool.query(`UPDATE competitors SET name = $2 WHERE id = $1`, [competitorId, col.listName]);
+          }
+        }
 
         if (!listId) {
           let compRes = await pool.query(
@@ -2068,6 +2272,25 @@ function registerPlayStoreRoutes({ app, pool }) {
             newPublisherUrls.push(acc.normalizedUrl);
           }
 
+          // Enforce 1 Parent Competitor per Publisher Account unless explicitly overridden
+          const existingListLinks = await pool.query(
+            `SELECT plp.list_id, pl.name AS list_name
+             FROM play_list_publishers plp
+             JOIN play_lists pl ON pl.id = plp.list_id
+             WHERE plp.publisher_id = $1`,
+            [pubId]
+          );
+          const alreadyInOtherList = existingListLinks.rows.find((r) => Number(r.list_id) !== Number(listId));
+          if (alreadyInOtherList && req.body?.allowMultiCompetitor !== true) {
+            ambiguousPublishers.push({
+              publisherId: pubId,
+              publisher: acc.publisher,
+              existingCompetitor: alreadyInOtherList.list_name,
+              conflictingCompetitor: col.listName
+            });
+            continue;
+          }
+
           const linkRes = await pool.query(
             `INSERT INTO play_list_publishers (list_id, publisher_id)
              VALUES ($1, $2)
@@ -2085,6 +2308,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         publishersCreated,
         membershipsAdded,
         newPublisherUrls,
+        ambiguousPublishers,
         autoScanTriggered: Boolean(autoScanNew && newPublisherUrls.length > 0)
       });
     } catch (err) {
@@ -2730,9 +2954,28 @@ function registerPlayStoreRoutes({ app, pool }) {
       }
 
       if (Array.isArray(req.body?.listIds)) {
+        // Enforce 1 Parent Competitor per Publisher Account
         const cleanListIds = req.body.listIds
           .map((id) => Number(id))
-          .filter((id) => Number.isInteger(id) && id > 0);
+          .filter((id) => Number.isInteger(id) && id > 0)
+          .slice(0, 1);
+
+        const prevMemberships = await pool.query(
+          `SELECT list_id, publisher_id, added_at FROM play_list_publishers WHERE publisher_id = $1`,
+          [pubId]
+        );
+        for (const row of prevMemberships.rows) {
+          if (!cleanListIds.includes(Number(row.list_id))) {
+            await pool
+              .query(
+                `INSERT INTO hierarchy_relationship_backup (backup_type, table_name, record_json, reason)
+                 VALUES ('admin_competitor_update', 'play_list_publishers', $1::jsonb, 'Updated parent competitor via PATCH /api/play/publishers/:id')`,
+                [JSON.stringify(row)]
+              )
+              .catch(() => {});
+          }
+        }
+
         await pool.query(`DELETE FROM play_list_publishers WHERE publisher_id = $1`, [pubId]);
         if (cleanListIds.length > 0) {
           await pool.query(
@@ -2901,6 +3144,207 @@ function registerPlayStoreRoutes({ app, pool }) {
       res.status(500).json({ error: err.message || 'Failed to update card status.' });
     }
   });
+
+  // 10. Bulk Cards Refresh Queue Routes (Game / Publisher / Competitor / Catalog)
+  app.get('/api/play/cards/batch-status', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(cardBatchQueue);
+  });
+
+  app.post('/api/play/cards/batch-cancel', (_req, res) => {
+    if (!cardBatchQueue.running) {
+      return res.json({ status: 'idle', cardBatchQueue });
+    }
+    cardBatchQueue.cancelled = true;
+    cardBatchQueue.state = 'cancelled';
+    cardBatchQueue.running = false;
+    cardBatchQueue.finishedAt = new Date().toISOString();
+    invalidatePlayOverviewCache();
+    return res.json({ status: 'cancelled', cardBatchQueue });
+  });
+
+  app.post('/api/play/cards/batch-scan', async (req, res) => {
+    try {
+      if (cardBatchQueue.running) {
+        return res.status(409).json({ error: 'A cards refresh is already running.', cardBatchQueue });
+      }
+
+      const scope = String(req.body?.scope || 'all').trim().toLowerCase();
+      let candidateRows = [];
+      let scopeLabel = 'Active Catalog';
+
+      if (scope === 'single' && req.body?.packageName) {
+        const pkg = normalizePackageName(req.body.packageName);
+        const gRes = await pool.query(`SELECT package_name, title FROM games WHERE package_name = $1 LIMIT 1`, [pkg]);
+        candidateRows = gRes.rows.length > 0 ? gRes.rows : [{ package_name: pkg, title: pkg }];
+        scopeLabel = candidateRows[0]?.title || pkg;
+      } else if (scope === 'publisher' && (req.body?.publisherId || req.body?.publisherName)) {
+        const pubId = req.body.publisherId ? Number(req.body.publisherId) : null;
+        const pubName = req.body.publisherName ? String(req.body.publisherName).trim() : null;
+        const pubRes = pubId
+          ? await pool.query(`SELECT id, publisher_name, display_name FROM play_publishers WHERE id = $1 LIMIT 1`, [pubId])
+          : await pool.query(
+              `SELECT id, publisher_name, display_name FROM play_publishers
+               WHERE LOWER(TRIM(publisher_name)) = LOWER(TRIM($1)) OR LOWER(TRIM(COALESCE(display_name, ''))) = LOWER(TRIM($1))
+               LIMIT 1`,
+              [pubName]
+            );
+        const resolvedPub = pubRes.rows[0];
+        if (!resolvedPub) {
+          return res.status(404).json({ error: 'Publisher account not found.' });
+        }
+        scopeLabel = resolvedPub.display_name || resolvedPub.publisher_name;
+        const gRes = await pool.query(
+          `SELECT DISTINCT g.package_name, g.title, COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
+           FROM account_games ag
+           JOIN games g ON g.id = ag.game_id
+           WHERE ag.account_id = $1 AND COALESCE(g.is_suspended, false) = false
+           ORDER BY sort_installs DESC`,
+          [resolvedPub.id]
+        );
+        candidateRows = gRes.rows;
+      } else if (scope === 'list' && req.body?.listId) {
+        const listId = Number(req.body.listId);
+        const lRes = await pool.query(`SELECT name FROM play_lists WHERE id = $1 LIMIT 1`, [listId]);
+        scopeLabel = lRes.rows[0]?.name || `Competitor #${listId}`;
+        const gRes = await pool.query(
+          `SELECT DISTINCT g.package_name, g.title, COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
+           FROM play_list_publishers plp
+           JOIN account_games ag ON ag.account_id = plp.publisher_id
+           JOIN games g ON g.id = ag.game_id
+           WHERE plp.list_id = $1 AND COALESCE(g.is_suspended, false) = false
+           ORDER BY sort_installs DESC`,
+          [listId]
+        );
+        candidateRows = gRes.rows;
+      } else if (scope === 'group' && req.body?.groupId) {
+        const groupId = Number(req.body.groupId);
+        const grpRes = await pool.query(`SELECT name FROM competitor_groups WHERE id = $1 LIMIT 1`, [groupId]);
+        scopeLabel = grpRes.rows[0]?.name || `Group #${groupId}`;
+        const gRes = await pool.query(
+          `SELECT DISTINCT g.package_name, g.title, COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
+           FROM competitor_group_members gm
+           JOIN play_lists pl ON pl.competitor_id = gm.competitor_id
+           JOIN play_list_publishers plp ON plp.list_id = pl.id
+           JOIN account_games ag ON ag.account_id = plp.publisher_id
+           JOIN games g ON g.id = ag.game_id
+           WHERE gm.group_id = $1 AND COALESCE(g.is_suspended, false) = false
+           ORDER BY sort_installs DESC`,
+          [groupId]
+        );
+        candidateRows = gRes.rows;
+      } else if (Array.isArray(req.body?.packageNames) && req.body.packageNames.length > 0) {
+        const cleanPkgs = [...new Set(req.body.packageNames.map((p) => normalizePackageName(p)).filter(Boolean))];
+        scopeLabel = req.body.scopeLabel ? String(req.body.scopeLabel).trim() : `Catalog Selection (${cleanPkgs.length})`;
+        const gRes = await pool.query(
+          `SELECT package_name, title, COALESCE(real_installs, min_installs, 0) AS sort_installs
+           FROM games
+           WHERE package_name = ANY($1::text[])
+           ORDER BY sort_installs DESC`,
+          [cleanPkgs]
+        );
+        candidateRows = gRes.rows;
+      } else {
+        scopeLabel = 'All Catalog Games';
+        const gRes = await pool.query(
+          `SELECT DISTINCT g.package_name, g.title, COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
+           FROM account_games ag
+           JOIN play_publishers p ON p.id = ag.account_id
+           JOIN games g ON g.id = ag.game_id
+           WHERE COALESCE(g.is_suspended, false) = false
+           ORDER BY sort_installs DESC`
+        );
+        candidateRows = gRes.rows;
+      }
+
+      const seenPkgs = new Set();
+      const queueItems = [];
+      for (const r of candidateRows) {
+        const pkg = String(r.package_name || '').trim();
+        if (!pkg || seenPkgs.has(pkg)) continue;
+        seenPkgs.add(pkg);
+        queueItems.push({ packageName: pkg, title: r.title || pkg });
+      }
+
+      if (queueItems.length === 0) {
+        return res.json({ status: 'nothing_to_scan', totalPackages: 0, scopeLabel });
+      }
+
+      cardBatchQueue = {
+        running: true,
+        cancelled: false,
+        state: 'running',
+        scope,
+        scopeLabel,
+        totalPackages: queueItems.length,
+        completedPackages: 0,
+        openCount: 0,
+        closedCount: 0,
+        unverifiedCount: 0,
+        failedCount: 0,
+        currentPackage: queueItems[0].packageName,
+        currentAppTitle: queueItems[0].title,
+        startedAt: new Date().toISOString(),
+        finishedAt: null
+      };
+
+      res.json({
+        status: 'started',
+        scope,
+        scopeLabel,
+        totalPackages: queueItems.length,
+        cardBatchQueue
+      });
+
+      // Run bounded rate-limited background loop (concurrency 2, 200ms spacing)
+      (async () => {
+        try {
+          await mapWithConcurrency(
+            queueItems,
+            2,
+            async (item) => {
+              if (cardBatchQueue.cancelled) return;
+              cardBatchQueue.currentPackage = item.packageName;
+              cardBatchQueue.currentAppTitle = item.title;
+              try {
+                const checkRes = await runCardStatusPipeline(pool, item.packageName);
+                const st = normalizeCardStatusValue(checkRes?.cardStatus);
+                if (st === 'open') cardBatchQueue.openCount += 1;
+                else if (st === 'closed') cardBatchQueue.closedCount += 1;
+                else if (st === 'unverified') cardBatchQueue.unverifiedCount += 1;
+                else cardBatchQueue.failedCount += 1;
+              } catch {
+                cardBatchQueue.failedCount += 1;
+              } finally {
+                cardBatchQueue.completedPackages += 1;
+                if (cardBatchQueue.completedPackages % 10 === 0) {
+                  invalidatePlayOverviewCache();
+                }
+                await new Promise((r) => setTimeout(r, 200));
+              }
+            },
+            () => cardBatchQueue.cancelled
+          );
+
+          cardBatchQueue.running = false;
+          cardBatchQueue.currentPackage = null;
+          cardBatchQueue.currentAppTitle = null;
+          cardBatchQueue.state = cardBatchQueue.cancelled ? 'cancelled' : 'complete';
+          cardBatchQueue.finishedAt = new Date().toISOString();
+          invalidatePlayOverviewCache();
+        } catch (err) {
+          console.error('[Play Batch Card Scan Error]:', err);
+          cardBatchQueue.running = false;
+          cardBatchQueue.state = 'error';
+          cardBatchQueue.finishedAt = new Date().toISOString();
+          invalidatePlayOverviewCache();
+        }
+      })();
+    } catch (err) {
+      console.error('[Play Batch Card Scan Start Error]:', err);
+      res.status(500).json({ error: err.message || 'Failed to start bulk cards refresh.' });
+    }
+  });
 }
 
 module.exports = {
@@ -2909,6 +3353,8 @@ module.exports = {
   registerPlayStoreRoutes,
   validatePlayStoreUrl,
   validatePlayBatch,
+  doesAppMatchPublisher,
+  linkGameToCanonicalPublisher,
   scanAndSavePlayPublisher,
   scanAndSavePlayGame,
   fetchSheetCompetitorAnalysis
