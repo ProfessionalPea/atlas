@@ -34,12 +34,6 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* Content visibility helper for large list / table virtualization */
-.atlas-cv-row {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 54px;
-}
-
 @layer base {
   :root {
     /* PRISTINE LIGHT MODE */

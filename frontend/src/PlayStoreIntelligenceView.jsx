@@ -2068,7 +2068,7 @@ function PlayStoreIntelligenceView({
             )}
           </div>
         ) : (
-          <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1 custom-scrollbar">
+          <div className="flex flex-col gap-2">
             {(showAllPublishers ? comparisonPublishers : comparisonPublishers.slice(0, 35)).map((pub) => {
               const pSt = publisherStatsByName.get(pub.publisher_name) || {
                 total: Number(pub.total_games) || 0,
@@ -2093,7 +2093,7 @@ function PlayStoreIntelligenceView({
               return (
                 <div
                   key={pub.id}
-                  className={`p-3 rounded-xl border transition atlas-cv-row ${
+                  className={`p-3 rounded-xl border transition ${
                     isSelected
                       ? "border-electric-blue bg-electric-blue/5"
                       : "border-border-subtle bg-input-bg/40 hover:border-border-subtle/80"
@@ -2440,7 +2440,7 @@ function PlayStoreIntelligenceView({
           <div className="py-12 text-center text-xs text-text-muted">Loading Play Store intelligence dataset...</div>
         ) : (
           <>
-            <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[600px] overflow-y-auto custom-scrollbar">
+            <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[540px] overflow-y-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-input-bg text-text-muted uppercase text-[10px] sticky top-0 z-10">
                   <tr>
@@ -2462,7 +2462,7 @@ function PlayStoreIntelligenceView({
                       <tr
                         key={`${g.package_name}-${g.publisher_id || g.publisher_name}`}
                         onClick={() => setActiveGameDrawer(g)}
-                        className="hover:bg-input-bg/60 cursor-pointer transition atlas-cv-row"
+                        className="hover:bg-input-bg/60 cursor-pointer transition"
                       >
                         <td className="py-2.5 px-4">
                           <div className="flex items-center gap-3 min-w-0">
