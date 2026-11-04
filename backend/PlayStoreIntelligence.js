@@ -1784,6 +1784,7 @@ function registerPlayStoreRoutes({ app, pool }) {
 
       const publishers = pubsRes.rows.map((p) => {
         const lIds = listIdsByPub.get(p.id) || [];
+        const compNames = lIds.map((lid) => listsById.get(lid)?.name).filter(Boolean);
         return {
           ...p,
           total_games: Number(p.total_games) || 0,
@@ -1793,7 +1794,9 @@ function registerPlayStoreRoutes({ app, pool }) {
           total_installs: Number(p.total_installs) || 0,
           daily_installs_delta: Number(p.daily_installs_delta) || 0,
           effective_name: p.display_name && p.display_name.trim() ? p.display_name.trim() : p.publisher_name,
-          list_ids: lIds
+          list_ids: lIds,
+          competitor_names: compNames,
+          competitor_name: compNames.join(', ') || null
         };
       });
 
@@ -1816,8 +1819,12 @@ function registerPlayStoreRoutes({ app, pool }) {
         const sharedPubs = publishersByPkg.get(g.package_name) || [g.publisher_name];
         const parsedRel = g.release_date || parseReleaseDateIso(g.released);
         const relStatus = g.release_status || (countrySummary?.preRegisterCount > 0 && countrySummary?.liveCount === 0 ? 'PRE_REGISTERED' : 'LIVE');
+        const pubEntry = pubById.get(g.publisher_id);
+        const compNames = pubEntry?.competitor_names || [];
         return {
           ...g,
+          competitor_names: compNames,
+          competitor_name: compNames.join(', ') || null,
           has_campaign: Boolean(g.campaign_active) || Number(g.ad_count) > 0,
           campaign_active: Boolean(g.campaign_active),
           campaign_source: g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null),

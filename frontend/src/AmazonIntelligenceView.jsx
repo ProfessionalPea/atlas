@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, memo } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
 import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
@@ -224,7 +224,8 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           lists: data.lists || [],
           publishers: data.publishers || [],
           games: data.games || [],
-          snapshots: data.snapshots || []
+          snapshots: data.snapshots || [],
+          competitorGroups: data.competitorGroups || []
         };
 
         setOverview(normalized);

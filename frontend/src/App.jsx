@@ -7,7 +7,7 @@ import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 
 // Atlas Build Marker: forces new content hash for cache busting
-export const ATLAS_BUILD_REV = "2026.11.03-status-col";
+export const ATLAS_BUILD_REV = "2026.11.04-competitor-col-amazon-fix";
 
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {

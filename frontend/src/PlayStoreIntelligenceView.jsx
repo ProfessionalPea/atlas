@@ -494,6 +494,15 @@ function PlayStoreIntelligenceView({
     return map;
   }, [overview.publishers]);
 
+  // Map list_id -> list name (parent competitor name)
+  const listNameById = useMemo(() => {
+    const map = new Map();
+    for (const l of overview.lists || []) {
+      map.set(Number(l.id), l.name);
+    }
+    return map;
+  }, [overview.lists]);
+
   const getDisplayName = useCallback(
     (rawName) => {
       const pub = publisherByRawName.get(rawName);
@@ -501,6 +510,24 @@ function PlayStoreIntelligenceView({
       return pub.display_name && pub.display_name.trim() ? pub.display_name.trim() : pub.publisher_name;
     },
     [publisherByRawName]
+  );
+
+  const getCompetitorNamesForGame = useCallback(
+    (g) => {
+      if (!g) return [];
+      if (Array.isArray(g.competitor_names) && g.competitor_names.length > 0) {
+        return g.competitor_names;
+      }
+      if (g.competitor_name) {
+        return [g.competitor_name];
+      }
+      const pub = publisherByRawName.get(g.publisher_name);
+      if (pub && Array.isArray(pub.list_ids) && pub.list_ids.length > 0) {
+        return pub.list_ids.map((id) => listNameById.get(Number(id))).filter(Boolean);
+      }
+      return [];
+    },
+    [publisherByRawName, listNameById]
   );
 
   const getAppReleaseStatus = useCallback((g) => {
@@ -766,7 +793,8 @@ function PlayStoreIntelligenceView({
         if (!dEval.inRange) return false;
         if (q) {
           const disp = getDisplayName(g.publisher_name);
-          const hay = `${g.title || ""} ${g.package_name || ""} ${g.publisher_name || ""} ${disp}`.toLowerCase();
+          const compStr = getCompetitorNamesForGame(g).join(" ");
+          const hay = `${g.title || ""} ${g.package_name || ""} ${g.publisher_name || ""} ${disp} ${compStr}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
@@ -791,6 +819,7 @@ function PlayStoreIntelligenceView({
     searchQuery,
     sortBy,
     getDisplayName,
+    getCompetitorNamesForGame,
     getAppReleaseStatus,
     getAppCardStatus,
     evaluateGameDate,
@@ -2463,7 +2492,6 @@ function PlayStoreIntelligenceView({
                 className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer"
               >
                 <option value="installs">Sort: Highest Installs</option>
-                <option value="delta">Sort: Fastest Daily Velocity</option>
                 <option value="release">Sort: Newest Play Launch Date</option>
                 <option value="first_seen">Sort: Newly Discovered in Atlas</option>
                 <option value="reviews">Sort: Most Reviews</option>
@@ -2498,9 +2526,9 @@ function PlayStoreIntelligenceView({
                 <tr>
                   <th className="py-3 px-4">Game</th>
                   <th className="py-3 px-3">Account</th>
+                  <th className="py-3 px-3">Competitor</th>
                   <th className="py-3 px-3 text-center">Status</th>
                   <th className="py-3 px-3 text-right">Real Installs</th>
-                  <th className="py-3 px-3 text-right">Daily Velocity</th>
                   <th className="py-3 px-3 text-right">Rating &amp; Reviews</th>
                   <th className="py-3 px-3 text-center">Countries</th>
                   <th className="py-3 px-3 text-right">Launch Date</th>
@@ -2592,6 +2620,28 @@ function PlayStoreIntelligenceView({
 
                       <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
 
+                      <td className="py-2.5 px-3">
+                        {(() => {
+                          const compNames = getCompetitorNamesForGame(g);
+                          if (compNames.length === 0) {
+                            return <span className="text-text-muted text-[11px]">—</span>;
+                          }
+                          return (
+                            <div className="flex flex-wrap items-center gap-1">
+                              {compNames.map((cName) => (
+                                <span
+                                  key={cName}
+                                  className="inline-flex items-center px-2 py-0.5 rounded-md bg-electric-blue/10 text-electric-blue border border-electric-blue/25 text-[10px] font-semibold whitespace-nowrap"
+                                  title={`Parent Competitor: ${cName}`}
+                                >
+                                  {cName}
+                                </span>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </td>
+
                       <td className="py-2.5 px-3 text-center">
                         <div className="inline-flex flex-col items-center gap-1">
                           {(() => {
@@ -2669,16 +2719,6 @@ function PlayStoreIntelligenceView({
                         ) : g.real_installs != null
                           ? Number(g.real_installs).toLocaleString()
                           : g.installs || Number(g.min_installs || 0).toLocaleString()}
-                      </td>
-
-                      <td className="py-2.5 px-3 text-right font-mono">
-                        {Number(g.installs_delta_1d) > 0 ? (
-                          <span className="text-emerald-700 dark:text-emerald-400 font-semibold">
-                            +{Number(g.installs_delta_1d).toLocaleString()}/d
-                          </span>
-                        ) : (
-                          <span className="text-text-muted">—</span>
-                        )}
                       </td>
 
                       <td className="py-2.5 px-3 text-right font-mono">
