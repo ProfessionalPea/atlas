@@ -1,13 +1,14 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
 import { cn } from "./lib/utils";
-import AmazonIntelligenceView from "./AmazonIntelligenceView.jsx";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 
+const AmazonIntelligenceView = lazy(() => import("./AmazonIntelligenceView.jsx"));
+
 // Atlas Build Marker: forces new content hash for cache busting
-export const ATLAS_BUILD_REV = "2026.11.04-competitor-col-amazon-fix";
+export const ATLAS_BUILD_REV = "2026.11.04-selfhosted-icons-ui-polish";
 
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {
@@ -3396,9 +3397,18 @@ function App() {
 
           {/* AMAZON APPSTORE INTELLIGENCE TAB */}
           {activeTab === "amazon" && (
-            <AmazonIntelligenceView
-              isAdmin={isAdmin}
-            />
+            <Suspense
+              fallback={
+                <div className="py-16 text-center text-xs text-text-muted flex items-center justify-center gap-2">
+                  <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+                  <span>Loading Amazon Appstore Intelligence...</span>
+                </div>
+              }
+            >
+              <AmazonIntelligenceView
+                isAdmin={isAdmin}
+              />
+            </Suspense>
           )}
 
         </main>

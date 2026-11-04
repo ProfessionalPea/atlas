@@ -2,6 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: block;
+  src: url('/fonts/material-symbols-outlined.woff2') format('woff2');
+}
+
+/* Strict icon containment so ligature names never spill out or shift layout */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  overflow: hidden;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  user-select: none;
+  flex-shrink: 0;
+  -webkit-font-feature-settings: 'liga';
+  font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Content visibility helper for large list / table virtualization */
+.atlas-cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 54px;
+}
+
 @layer base {
   :root {
     /* PRISTINE LIGHT MODE */

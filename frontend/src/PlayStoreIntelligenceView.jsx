@@ -220,27 +220,12 @@ function PlayStoreIntelligenceView({
   const [countryBatchScope, setCountryBatchScope] = useState("all"); // 'all' | 'list' | 'publisher'
   const [countryBatchSkipDays, setCountryBatchSkipDays] = useState(7);
 
-  // Batch Cards Status Scanner state
-  const [cardsBatchStatus, setCardsBatchStatus] = useState({
-    running: false,
-    state: "idle",
-    scopeLabel: "",
-    totalPackages: 0,
-    completedPackages: 0,
-    openCount: 0,
-    closedCount: 0,
-    unverifiedCount: 0,
-    failedCount: 0,
-    currentPackage: null,
-    log: ""
-  });
-  const [checkingCardPkg, setCheckingCardPkg] = useState(null);
+  // Progressive table & publisher rendering state for instant UI responsiveness
+  const [visibleRowCount, setVisibleRowCount] = useState(100);
+  const [showAllPublishers, setShowAllPublishers] = useState(false);
 
-  // Single-game refresh state + Drawer video assets & Keyword Intelligence
+  // Single-game refresh state + Keyword Intelligence
   const [refreshingPkg, setRefreshingPkg] = useState(null);
-  const [drawerVideos, setDrawerVideos] = useState([]);
-  const [drawerVideosLoading, setDrawerVideosLoading] = useState(false);
-  const drawerVideosCacheRef = useRef(new Map());
   const [keywordTarget, setKeywordTarget] = useState(null);
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
@@ -347,17 +332,16 @@ function PlayStoreIntelligenceView({
 
     const checkStatuses = async () => {
       if (disposed) return;
-      if (document.hidden && !scanStatus.running && !countryQueueStatus.running && !cardsBatchStatus.running) {
+      if (document.hidden && !scanStatus.running && !countryQueueStatus.running) {
         // Paused in background tab
         return;
       }
 
       let isActive = false;
       try {
-        const [scanRes, cqRes, cardsRes] = await Promise.all([
+        const [scanRes, cqRes] = await Promise.all([
           fetcher(`${API_BASE}/api/play/scan-status`),
-          fetcher(`${API_BASE}/api/play/country-queue/status`),
-          fetcher(`${API_BASE}/api/play/cards/batch-status`)
+          fetcher(`${API_BASE}/api/play/country-queue/status`)
         ]);
         if (scanRes.ok) {
           const st = await scanRes.json();
@@ -377,16 +361,6 @@ function PlayStoreIntelligenceView({
               loadOverview({ fresh: true });
             }
             return cq;
-          });
-        }
-        if (cardsRes.ok) {
-          const cs = await cardsRes.json();
-          if (cs.running) isActive = true;
-          setCardsBatchStatus((prev) => {
-            if (prev.running && !cs.running) {
-              loadOverview({ fresh: true });
-            }
-            return cs;
           });
         }
       } catch {}
@@ -413,7 +387,7 @@ function PlayStoreIntelligenceView({
       clearTimeout(timerId);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [fetcher, loadOverview, scanStatus.running, countryQueueStatus.running, cardsBatchStatus.running]);
+  }, [fetcher, loadOverview, scanStatus.running, countryQueueStatus.running]);
 
   // Live elapsed timer during active publisher scan
   useEffect(() => {
@@ -433,47 +407,10 @@ function PlayStoreIntelligenceView({
     return () => clearInterval(iv);
   }, [scanStatus.running, scanStatus.startedAt, scanStatus.finishedAt]);
 
-  // Fetch Video Creatives when a game is opened in the Drawer
+  // Reset visible row count when filters change
   useEffect(() => {
-    const pkg = activeGameDrawer?.package_name;
-    if (!pkg) {
-      setDrawerVideos([]);
-      setDrawerVideosLoading(false);
-      return;
-    }
-
-    const cached = drawerVideosCacheRef.current.get(pkg);
-    if (cached && cached.expiresAt > Date.now()) {
-      setDrawerVideos(cached.data);
-      setDrawerVideosLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setDrawerVideos([]);
-    setDrawerVideosLoading(true);
-
-    fetcher(`${API_BASE}/api/video-assets?packageName=${encodeURIComponent(pkg)}`)
-      .then((res) => (res.ok ? res.json() : []))
-      .then((payload) => {
-        const list = Array.isArray(payload) ? payload : [];
-        drawerVideosCacheRef.current.set(pkg, {
-          expiresAt: Date.now() + 20000,
-          data: list
-        });
-        if (!cancelled) setDrawerVideos(list);
-      })
-      .catch(() => {
-        if (!cancelled) setDrawerVideos([]);
-      })
-      .finally(() => {
-        if (!cancelled) setDrawerVideosLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeGameDrawer?.package_name, fetcher]);
+    setVisibleRowCount(100);
+  }, [appTypeFilter, selectedListId, selectedPublisher, selectedPricing, selectedStatus, searchQuery, sortBy, durationPreset, dateBasis]);
 
   // Keyboard Escape dismissal & body scroll lock when modals/drawer are open
   useEffect(() => {
@@ -579,14 +516,6 @@ function PlayStoreIntelligenceView({
     if (isPreReg) return "PRE_REGISTERED";
     if (isEarlyAccess) return "EARLY_ACCESS";
     return "LIVE";
-  }, []);
-
-  const getAppCardStatus = useCallback((g) => {
-    const raw = String(g?.card_status || "").trim().toLowerCase();
-    if (raw === "open" || raw === "active") return "OPEN";
-    if (raw === "closed") return "CLOSED";
-    if (raw === "unverified") return "UNVERIFIED";
-    return "UNSCANNED";
   }, []);
 
   // Active Competitor Group (Batch) if selected (e.g. "group_1")
@@ -820,10 +749,6 @@ function PlayStoreIntelligenceView({
         if (selectedStatus === "prereg" && getAppReleaseStatus(g) !== "PRE_REGISTERED") return false;
         if (selectedStatus === "live" && getAppReleaseStatus(g) !== "LIVE") return false;
         if (selectedStatus === "early_access" && getAppReleaseStatus(g) !== "EARLY_ACCESS") return false;
-        if (selectedStatus === "cards_open" && getAppCardStatus(g) !== "OPEN") return false;
-        if (selectedStatus === "cards_closed" && getAppCardStatus(g) !== "CLOSED") return false;
-        if (selectedStatus === "cards_unverified" && getAppCardStatus(g) !== "UNVERIFIED") return false;
-        if (selectedStatus === "cards_unscanned" && getAppCardStatus(g) !== "UNSCANNED") return false;
         const dEval = evaluateGameDate(g);
         if (!dEval.inRange) return false;
         if (q) {
@@ -856,7 +781,6 @@ function PlayStoreIntelligenceView({
     getDisplayName,
     getCompetitorNamesForGame,
     getAppReleaseStatus,
-    getAppCardStatus,
     evaluateGameDate,
     appTypeFilter
   ]);
@@ -1144,9 +1068,10 @@ function PlayStoreIntelligenceView({
     }
   };
 
-  // Single Game 1-Click Refresh (Telemetry only — independent from Cards check)
-  const handleRefreshSingleGame = async (pkg, e) => {
+  // Single Game 1-Click Refresh
+  const handleRefreshSingleGame = async (pkgOrGame, e) => {
     if (e) e.stopPropagation();
+    const pkg = typeof pkgOrGame === "string" ? pkgOrGame : pkgOrGame?.package_name;
     if (!pkg || refreshingPkg) return;
     setRefreshingPkg(pkg);
     try {
@@ -1166,60 +1091,6 @@ function PlayStoreIntelligenceView({
       console.error("Game refresh failed:", err);
     } finally {
       setRefreshingPkg(null);
-    }
-  };
-
-  // Single Game Cards Check (Independent from Telemetry refresh)
-  const handleRefreshSingleCardStatus = async (pkg, e) => {
-    if (e) e.stopPropagation();
-    if (!pkg || checkingCardPkg) return;
-    setCheckingCardPkg(pkg);
-    try {
-      const res = await fetcher(`${API_BASE}/api/play/games/${encodeURIComponent(pkg)}/card-status`, {
-        method: "POST",
-        body: JSON.stringify({ action: "scan" })
-      });
-      if (res.ok) {
-        await loadOverview({ fresh: true });
-      }
-    } catch (err) {
-      console.error("Card status check failed:", err);
-    } finally {
-      setCheckingCardPkg(null);
-    }
-  };
-
-  // Bulk Cards Status Scan Controls
-  const handleStartCardsBatchScan = async (payload) => {
-    if (cardsBatchStatus.running) return;
-    try {
-      const res = await fetcher(`${API_BASE}/api/play/cards/batch-scan`, {
-        method: "POST",
-        body: JSON.stringify(payload || {})
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status) setCardsBatchStatus(data.status);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        if (err.error) alert(err.error);
-      }
-    } catch (err) {
-      console.error("Failed to start batch cards scan:", err);
-    }
-  };
-
-  const handleCancelCardsBatchScan = async () => {
-    try {
-      const res = await fetcher(`${API_BASE}/api/play/cards/batch-cancel`, {
-        method: "POST"
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.status) setCardsBatchStatus(data.status);
-      }
-    } catch (err) {
-      console.error("Failed to cancel batch cards scan:", err);
     }
   };
 
@@ -1498,14 +1369,6 @@ function PlayStoreIntelligenceView({
     return Math.min(99, Math.round(((completed + subFraction) / total) * 100));
   }, [countryQueueStatus]);
 
-  const cardsBatchPct = useMemo(() => {
-    const total = Number(cardsBatchStatus.totalPackages) || 0;
-    if (!total) return 0;
-    if (cardsBatchStatus.state === "complete") return 100;
-    const completed = Number(cardsBatchStatus.completedPackages) || 0;
-    return Math.min(99, Math.round((completed / total) * 100));
-  }, [cardsBatchStatus]);
-
   return (
     <div className="flex flex-col w-full gap-5">
       {/* GOOGLE PLAY STYLE ALL / GAMES / APPS SEGMENT SWITCHER */}
@@ -1548,14 +1411,10 @@ function PlayStoreIntelligenceView({
       </div>
 
       {/* HEADER */}
-      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 px-1">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-1">
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-[11px] font-semibold mb-1.5">
-            <span className="material-symbols-outlined text-[15px]">insights</span>
-            Market Intelligence · Primary Discovery Engine
-          </div>
-          <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
-            Publisher Catalogues &amp; Early Launch Radar
+          <h1 className="text-xl md:text-2xl text-text-main tracking-tight font-semibold">
+            Play Store Intelligence
           </h1>
         </div>
 
@@ -1575,44 +1434,21 @@ function PlayStoreIntelligenceView({
                     ? `Scan ${unscannedPublisherCount} unscanned publisher accounts first`
                     : `Refresh all ${overview.publishers.length} Play Store publisher catalogues`
                 }
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/35 text-emerald-700 dark:text-emerald-400 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-500/25 transition disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition disabled:opacity-50"
               >
-                <span className="material-symbols-outlined text-[16px]">sync</span>
+                <span className="material-symbols-outlined text-[16px] text-emerald-500">sync</span>
                 {unscannedPublisherCount > 0
                   ? `Scan Unscanned (${unscannedPublisherCount})`
                   : `Update All (${overview.publishers.length})`}
               </button>
 
-              {unscannedPublisherCount > 0 && (
-                <button
-                  type="button"
-                  disabled={scanStatus.running}
-                  onClick={() => handleStartScan({ mode: "update_all" })}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-emerald-400 transition disabled:opacity-50"
-                >
-                  <span className="material-symbols-outlined text-[16px]">autorenew</span>
-                  Update All ({overview.publishers.length})
-                </button>
-              )}
-
               <button
                 type="button"
                 onClick={openSheetImporter}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition"
               >
-                <span className="material-symbols-outlined text-[16px]">table_view</span>
-                Sync Google Sheet
-              </button>
-
-              <button
-                type="button"
-                disabled={isSyncingCampaigns}
-                onClick={handleSyncSheetCampaigns}
-                title="Sync active ad campaign labels from Google Sheet (Sheet1)"
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-semibold hover:bg-sky-500/20 transition disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[16px]">campaign</span>
-                {isSyncingCampaigns ? "Syncing Campaigns..." : "Sync Sheet Campaigns"}
+                <span className="material-symbols-outlined text-[16px] text-sky-400">table_view</span>
+                Google Sheets
               </button>
 
               <button
@@ -1623,19 +1459,19 @@ function PlayStoreIntelligenceView({
                   else setCountryBatchScope("all");
                   setShowCountryBatchModal(true);
                 }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition"
               >
-                <span className="material-symbols-outlined text-[16px]">public</span>
-                Batch Country Scan
+                <span className="material-symbols-outlined text-[16px] text-amber-400">public</span>
+                Country Scan
               </button>
 
               <button
                 type="button"
                 onClick={() => openListManager(activeListObj || null)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition"
               >
-                <span className="material-symbols-outlined text-[16px]">folder_managed</span>
-                Manage Lists ({overview.lists.length})
+                <span className="material-symbols-outlined text-[16px] text-text-muted">folder_managed</span>
+                Lists ({overview.lists.length})
               </button>
 
               <button
@@ -1651,11 +1487,11 @@ function PlayStoreIntelligenceView({
                   setScanModalTab("links");
                   setShowScannerModal(true);
                 }}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-blue-500/25 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-electric-blue hover:opacity-95 text-white text-xs font-semibold shadow-sm transition"
                 title="Import and scan individual games, publisher catalogues, or competitor accounts"
               >
-                <span className="material-symbols-outlined text-[18px]">travel_explore</span>
-                <span>Import &amp; Scan Play Store</span>
+                <span className="material-symbols-outlined text-[16px]">travel_explore</span>
+                <span>Import &amp; Scan</span>
               </button>
             </>
           )}
@@ -1663,10 +1499,10 @@ function PlayStoreIntelligenceView({
           <button
             type="button"
             onClick={exportCsv}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:bg-input-bg transition"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:bg-input-bg transition"
           >
-            <span className="material-symbols-outlined text-[16px]">download</span>
-            Export CSV ({filteredGames.length})
+            <span className="material-symbols-outlined text-[16px] text-text-muted">download</span>
+            Export CSV
           </button>
         </div>
       </div>
@@ -1855,67 +1691,6 @@ function PlayStoreIntelligenceView({
           </div>
         )}
 
-      {/* LIVE PROGRESS BAR 3: PLAY STORE CARDS BATCH SCANNER */}
-      {(cardsBatchStatus.running ||
-        cardsBatchStatus.state === "complete" ||
-        cardsBatchStatus.state === "cancelled" ||
-        cardsBatchStatus.state === "error") &&
-        cardsBatchStatus.totalPackages > 0 && (
-          <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3 shadow-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <span
-                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                    cardsBatchStatus.running
-                      ? "bg-electric-blue animate-pulse"
-                      : cardsBatchStatus.state === "error"
-                      ? "bg-urgent-red"
-                      : "bg-emerald-400"
-                  }`}
-                />
-                <div className="min-w-0">
-                  <div className="text-xs font-semibold text-text-main flex flex-wrap items-center gap-2">
-                    <span>
-                      Cards Scan ({cardsBatchStatus.scopeLabel || "Catalog"}):{" "}
-                      {cardsBatchStatus.completedPackages}/{cardsBatchStatus.totalPackages} games
-                    </span>
-                    <span className="text-[11px] font-mono text-text-muted">
-                      · Open: {cardsBatchStatus.openCount || 0} · Closed: {cardsBatchStatus.closedCount || 0} · Unverified: {cardsBatchStatus.unverifiedCount || 0}
-                      {cardsBatchStatus.failedCount > 0 ? ` · Failed: ${cardsBatchStatus.failedCount}` : ""}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-text-muted font-mono truncate mt-0.5">{cardsBatchStatus.log}</div>
-                </div>
-              </div>
-
-              {isAdmin && cardsBatchStatus.running && (
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={handleCancelCardsBatchScan}
-                    className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition"
-                  >
-                    Cancel Cards Scan
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div className="w-full h-2 rounded-full bg-input-bg overflow-hidden">
-              <div
-                style={{ width: `${cardsBatchPct}%` }}
-                className={`h-full transition-all duration-300 ${
-                  cardsBatchStatus.state === "error"
-                    ? "bg-urgent-red"
-                    : cardsBatchStatus.running
-                    ? "bg-electric-blue"
-                    : "bg-emerald-500"
-                }`}
-              />
-            </div>
-          </div>
-        )}
-
       {/* COMPETITOR LISTS & LAUNCH DATE FILTER BAR */}
       <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3.5 shadow-sm">
         {/* Row 1: Competitor List & Publisher Account Dropdowns */}
@@ -2064,7 +1839,7 @@ function PlayStoreIntelligenceView({
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-electric-blue/15 text-electric-blue text-[11px] font-semibold hover:bg-electric-blue/25"
               >
                 <span className="material-symbols-outlined text-[14px]">add_link</span>
-                Add Accounts to "{activeListObj.name}"
+                Add Accounts
               </button>
               <button
                 type="button"
@@ -2073,21 +1848,7 @@ function PlayStoreIntelligenceView({
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 text-[11px] font-semibold hover:bg-emerald-500/25 disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[14px]">refresh</span>
-                Re-scan List ({activeListObj.account_count})
-              </button>
-              <button
-                type="button"
-                disabled={cardsBatchStatus.running || !activeListObj.unique_games}
-                onClick={() =>
-                  handleStartCardsBatchScan({
-                    scope: "competitor",
-                    listId: activeListObj.id
-                  })
-                }
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-400 text-[11px] font-semibold hover:bg-indigo-500/25 disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[14px]">view_agenda</span>
-                Update Cards ({activeListObj.unique_games})
+                Re-scan ({activeListObj.account_count})
               </button>
               <button
                 type="button"
@@ -2102,7 +1863,7 @@ function PlayStoreIntelligenceView({
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25 disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[14px]">public</span>
-                Scan List Countries ({activeListObj.unique_games})
+                Scan Countries ({activeListObj.unique_games})
               </button>
             </div>
           )}
@@ -2307,8 +2068,8 @@ function PlayStoreIntelligenceView({
             )}
           </div>
         ) : (
-          <div className="flex flex-col gap-2 max-h-[520px] overflow-y-auto pr-1">
-            {comparisonPublishers.map((pub) => {
+          <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto pr-1 custom-scrollbar">
+            {(showAllPublishers ? comparisonPublishers : comparisonPublishers.slice(0, 35)).map((pub) => {
               const pSt = publisherStatsByName.get(pub.publisher_name) || {
                 total: Number(pub.total_games) || 0,
                 free: Number(pub.free_games) || 0,
@@ -2332,7 +2093,7 @@ function PlayStoreIntelligenceView({
               return (
                 <div
                   key={pub.id}
-                  className={`p-3 rounded-xl border transition ${
+                  className={`p-3 rounded-xl border transition atlas-cv-row ${
                     isSelected
                       ? "border-electric-blue bg-electric-blue/5"
                       : "border-border-subtle bg-input-bg/40 hover:border-border-subtle/80"
@@ -2380,20 +2141,6 @@ function PlayStoreIntelligenceView({
                             className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-emerald-400 transition disabled:opacity-40"
                           >
                             <span className="material-symbols-outlined text-[15px]">refresh</span>
-                          </button>
-                          <button
-                            type="button"
-                            disabled={cardsBatchStatus.running || pSt.allTimeTotal === 0}
-                            onClick={() =>
-                              handleStartCardsBatchScan({
-                                scope: "publisher",
-                                publisherId: pub.id
-                              })
-                            }
-                            title={`Update Cards status for all games of ${dispName}`}
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-indigo-400 transition disabled:opacity-40"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">view_agenda</span>
                           </button>
                           <button
                             type="button"
@@ -2501,6 +2248,17 @@ function PlayStoreIntelligenceView({
                 </div>
               );
             })}
+            {comparisonPublishers.length > 35 && (
+              <button
+                type="button"
+                onClick={() => setShowAllPublishers((prev) => !prev)}
+                className="mt-1 py-2 rounded-xl bg-input-bg hover:bg-surface-glass border border-border-subtle text-xs font-semibold text-text-muted hover:text-text-main transition"
+              >
+                {showAllPublishers
+                  ? "Show fewer accounts"
+                  : `Show all ${comparisonPublishers.length} accounts (+${comparisonPublishers.length - 35} more)`}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -2526,19 +2284,6 @@ function PlayStoreIntelligenceView({
                   </button>
                   <button
                     type="button"
-                    disabled={cardsBatchStatus.running}
-                    onClick={() =>
-                      handleStartCardsBatchScan({
-                        scope: "publisher",
-                        publisherId: selectedPublisherObj.id
-                      })
-                    }
-                    className="text-xs text-indigo-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
-                  >
-                    <span className="material-symbols-outlined text-[14px]">view_agenda</span> Update Cards
-                  </button>
-                  <button
-                    type="button"
                     disabled={countryQueueStatus.running}
                     onClick={() =>
                       handleStartCountryQueue({
@@ -2549,7 +2294,7 @@ function PlayStoreIntelligenceView({
                     }
                     className="text-xs text-amber-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
                   >
-                    <span className="material-symbols-outlined text-[14px]">public</span> Scan Publisher Countries
+                    <span className="material-symbols-outlined text-[14px]">public</span> Scan Countries
                   </button>
                   <button
                     type="button"
@@ -2626,61 +2371,7 @@ function PlayStoreIntelligenceView({
             </h2>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            {isAdmin && filteredGames.length > 0 && (
-              <button
-                type="button"
-                disabled={cardsBatchStatus.running}
-                onClick={() => {
-                  if (selectedPublisherObj) {
-                    handleStartCardsBatchScan({
-                      scope: "publisher",
-                      publisherId: selectedPublisherObj.id
-                    });
-                  } else if (activeListObj) {
-                    handleStartCardsBatchScan({
-                      scope: "competitor",
-                      listId: activeListObj.id
-                    });
-                  } else {
-                    handleStartCardsBatchScan({
-                      scope: "packages",
-                      packageNames: filteredGames.map((g) => g.package_name)
-                    });
-                  }
-                }}
-                title="Update Cards status for games in current view"
-                className="h-9 px-3 rounded-xl bg-electric-blue/10 hover:bg-electric-blue/20 border border-electric-blue/30 text-electric-blue text-xs font-semibold inline-flex items-center gap-1.5 transition disabled:opacity-50"
-              >
-                <span className={`material-symbols-outlined text-[15px] ${cardsBatchStatus.running ? "animate-spin" : ""}`}>
-                  {cardsBatchStatus.running ? "progress_activity" : "view_agenda"}
-                </span>
-                <span>
-                  {cardsBatchStatus.running
-                    ? `Updating Cards (${cardsBatchStatus.completedPackages}/${cardsBatchStatus.totalPackages})`
-                    : `Update Cards (${filteredGames.length})`}
-                </span>
-              </button>
-            )}
-
-            <div className="relative">
-              <select
-                value={selectedPublisher}
-                onChange={(e) => setSelectedPublisher(e.target.value)}
-                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/40 focus:border-electric-blue focus:outline-none transition appearance-none cursor-pointer max-w-[210px] truncate"
-              >
-                <option value="all">All Accounts in View ({visiblePublishers.length})</option>
-                {visiblePublishers.map((p) => (
-                  <option key={p.id} value={p.publisher_name}>
-                    {getDisplayName(p.publisher_name)} ({p.total_games})
-                  </option>
-                ))}
-              </select>
-              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                unfold_more
-              </span>
-            </div>
-
+          <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
               <select
                 value={selectedPricing}
@@ -2707,10 +2398,6 @@ function PlayStoreIntelligenceView({
                 <option value="live">Live Only</option>
                 <option value="prereg">Pre-Register Only</option>
                 <option value="early_access">Early Access Only</option>
-                <option value="cards_open">Cards Open Only</option>
-                <option value="cards_closed">Cards Closed Only</option>
-                <option value="cards_unverified">Cards Unverified</option>
-                <option value="cards_unscanned">Cards Unscanned</option>
               </select>
               <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
                 unfold_more
@@ -2743,7 +2430,7 @@ function PlayStoreIntelligenceView({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search title, package, publisher..."
-                className="h-9 pl-8 pr-3 rounded-xl bg-input-bg border border-border-subtle text-xs font-medium text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none transition w-48 sm:w-56"
+                className="h-9 pl-8 pr-3 rounded-xl bg-input-bg border border-border-subtle text-xs font-medium text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none transition w-52 sm:w-64"
               />
             </div>
           </div>
@@ -2752,132 +2439,133 @@ function PlayStoreIntelligenceView({
         {loading ? (
           <div className="py-12 text-center text-xs text-text-muted">Loading Play Store intelligence dataset...</div>
         ) : (
-          <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[560px] overflow-y-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-input-bg text-text-muted uppercase text-[10px] sticky top-0 z-10">
-                <tr>
-                  <th className="py-3 px-4">Game</th>
-                  <th className="py-3 px-3">Account</th>
-                  <th className="py-3 px-3">Competitor</th>
-                  <th className="py-3 px-3 text-center">Status</th>
-                  <th className="py-3 px-3 text-right">Real Installs</th>
-                  <th className="py-3 px-3 text-right">Rating &amp; Reviews</th>
-                  <th className="py-3 px-3 text-center">Countries</th>
-                  <th className="py-3 px-3 text-right">Launch Date</th>
-                  {isAdmin && <th className="py-3 px-3 text-right">Actions</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border-subtle">
-                {filteredGames.slice(0, 350).map((g) => {
-                  const isRefreshing = refreshingPkg === g.package_name;
-                  return (
-                    <tr
-                      key={`${g.package_name}-${g.publisher_id || g.publisher_name}`}
-                      onClick={() => setActiveGameDrawer(g)}
-                      className="hover:bg-input-bg/60 cursor-pointer transition"
-                    >
-                      <td className="py-2.5 px-4">
-                        <div className="flex items-center gap-3 min-w-0">
-                          {g.icon && (
-                            <img
-                              src={g.icon}
-                              alt=""
-                              className="w-9 h-9 rounded-lg object-cover shrink-0 border border-border-subtle"
-                              loading="lazy"
-                            />
-                          )}
-                          <div className="min-w-0">
-                            <div className="font-semibold text-text-main truncate max-w-xs flex items-center gap-1.5">
-                              <span className="truncate">{g.title}</span>
-                              {getAppReleaseStatus(g) === "PRE_REGISTERED" && (
-                                <span
-                                  className="px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-purple-500/30 select-none"
-                                  title="Google Play Pre-Registration title"
-                                >
-                                  Pre-Register
-                                </span>
-                              )}
-                              {g.pricing === "paid" && (
-                                <span
-                                  className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-500 text-[9px] font-mono shrink-0 border border-amber-500/30"
-                                  title={g.is_manual_price ? `Paid (Manual override by ${g.manual_price_by || 'admin'})` : (Number(g.price || 0) > 0 ? `Paid app · $${Number(g.price).toFixed(2)}` : `Paid app · ${g.price_text || 'On Offer ($0.00)'}`)}
-                                >
-                                  {g.price != null && Number(g.price) > 0 ? `${Number(g.price).toFixed(2)}` : (g.price_text && g.price_text.includes('Offer') ? 'Offer' : 'Paid')}
-                                  {g.is_manual_price && <span className="ml-1 text-[8px] uppercase">Manual</span>}
-                                </span>
-                              )}
-                              {g.pricing === "tba" && (
-                                <span
-                                  className="px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 text-[9px] font-semibold shrink-0 border border-purple-500/30 select-none"
-                                  title="Pre-registration title · Launch price TBA"
-                                >
-                                  Price TBA
-                                </span>
-                              )}
-                              {g.monetization_hint === "LIKELY_PAID" && (
-                                <span
-                                  className="px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-400 text-[9px] font-semibold shrink-0 border border-indigo-500/30 select-none cursor-help"
-                                  title={g.monetization_hint_evidence ? `Likely Paid: "${g.monetization_hint_evidence}"` : "Likely Paid based on developer metadata"}
-                                >
-                                  Likely Paid
-                                </span>
-                              )}
-                              {(g.has_campaign || g.campaign_active) && (
-                                <span
-                                  className="px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-sky-500/30 select-none cursor-help"
-                                  title={
-                                    g.campaign_source === "transparency_center"
-                                      ? "Advertising campaign detected via Google Ads Transparency Center."
-                                      : "Advertising campaign record imported via Google Ads Transparency Center sheets."
-                                  }
-                                >
-                                  Campaign
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
-                              <span className="truncate max-w-[200px]">{g.package_name}</span>
+          <>
+            <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[600px] overflow-y-auto custom-scrollbar">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-input-bg text-text-muted uppercase text-[10px] sticky top-0 z-10">
+                  <tr>
+                    <th className="py-3 px-4">Game</th>
+                    <th className="py-3 px-3">Account</th>
+                    <th className="py-3 px-3">Competitor</th>
+                    <th className="py-3 px-3 text-center">Status</th>
+                    <th className="py-3 px-3 text-right">Real Installs</th>
+                    <th className="py-3 px-3 text-right">Rating &amp; Reviews</th>
+                    <th className="py-3 px-3 text-center">Countries</th>
+                    <th className="py-3 px-3 text-right">Launch Date</th>
+                    {isAdmin && <th className="py-3 px-3 text-right">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-subtle">
+                  {filteredGames.slice(0, visibleRowCount).map((g) => {
+                    const isRefreshing = refreshingPkg === g.package_name;
+                    return (
+                      <tr
+                        key={`${g.package_name}-${g.publisher_id || g.publisher_name}`}
+                        onClick={() => setActiveGameDrawer(g)}
+                        className="hover:bg-input-bg/60 cursor-pointer transition atlas-cv-row"
+                      >
+                        <td className="py-2.5 px-4">
+                          <div className="flex items-center gap-3 min-w-0">
+                            {g.icon && (
+                              <img
+                                src={g.icon}
+                                alt=""
+                                className="w-9 h-9 rounded-lg object-cover shrink-0 border border-border-subtle"
+                                loading="lazy"
+                                decoding="async"
+                              />
+                            )}
+                            <div className="min-w-0">
+                              <div className="font-semibold text-text-main truncate max-w-xs flex items-center gap-1.5">
+                                <span className="truncate">{g.title}</span>
+                                {getAppReleaseStatus(g) === "PRE_REGISTERED" && (
+                                  <span
+                                    className="px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-600 dark:text-purple-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-purple-500/30 select-none"
+                                    title="Google Play Pre-Registration title"
+                                  >
+                                    Pre-Register
+                                  </span>
+                                )}
+                                {g.pricing === "paid" && (
+                                  <span
+                                    className="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-500 text-[9px] font-mono shrink-0 border border-amber-500/30"
+                                    title={g.is_manual_price ? `Paid (Manual override by ${g.manual_price_by || 'admin'})` : (Number(g.price || 0) > 0 ? `Paid app · $${Number(g.price).toFixed(2)}` : `Paid app · ${g.price_text || 'On Offer ($0.00)'}`)}
+                                  >
+                                    {g.price != null && Number(g.price) > 0 ? `${Number(g.price).toFixed(2)}` : (g.price_text && g.price_text.includes('Offer') ? 'Offer' : 'Paid')}
+                                    {g.is_manual_price && <span className="ml-1 text-[8px] uppercase">Manual</span>}
+                                  </span>
+                                )}
+                                {g.pricing === "tba" && (
+                                  <span
+                                    className="px-1.5 py-0.2 rounded bg-purple-500/15 text-purple-400 text-[9px] font-semibold shrink-0 border border-purple-500/30 select-none"
+                                    title="Pre-registration title · Launch price TBA"
+                                  >
+                                    Price TBA
+                                  </span>
+                                )}
+                                {g.monetization_hint === "LIKELY_PAID" && (
+                                  <span
+                                    className="px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-400 text-[9px] font-semibold shrink-0 border border-indigo-500/30 select-none cursor-help"
+                                    title={g.monetization_hint_evidence ? `Likely Paid: "${g.monetization_hint_evidence}"` : "Likely Paid based on developer metadata"}
+                                  >
+                                    Likely Paid
+                                  </span>
+                                )}
+                                {(g.has_campaign || g.campaign_active) && (
+                                  <span
+                                    className="px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-sky-500/30 select-none cursor-help"
+                                    title={
+                                      g.campaign_source === "transparency_center"
+                                        ? "Advertising campaign detected via Google Ads Transparency Center."
+                                        : "Advertising campaign record imported via Google Ads Transparency Center sheets."
+                                    }
+                                  >
+                                    Campaign
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
+                                <span className="truncate max-w-[200px]">{g.package_name}</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
+                        <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
 
-                      <td className="py-2.5 px-3">
-                        {(() => {
-                          const compNames = getCompetitorNamesForGame(g);
-                          const primaryComp = g.competitor_name || compNames[0];
-                          if (!primaryComp) {
-                            return <span className="text-text-muted text-[11px]">—</span>;
-                          }
-                          return (
-                            <div className="inline-flex items-center gap-1">
-                              <span
-                                className="inline-flex items-center px-2 py-0.5 rounded-md bg-electric-blue/10 text-electric-blue border border-electric-blue/25 text-[10px] font-semibold whitespace-nowrap"
-                                title={
-                                  compNames.length > 1
-                                    ? `Parent Competitor: ${primaryComp} (Also listed in Google Sheet under: ${compNames.slice(1).join(", ")})`
-                                    : `Parent Competitor: ${primaryComp}`
-                                }
-                              >
-                                {primaryComp}
-                              </span>
-                              {compNames.length > 1 && (
+                        <td className="py-2.5 px-3">
+                          {(() => {
+                            const compNames = getCompetitorNamesForGame(g);
+                            const primaryComp = g.competitor_name || compNames[0];
+                            if (!primaryComp) {
+                              return <span className="text-text-muted text-[11px]">—</span>;
+                            }
+                            return (
+                              <div className="inline-flex items-center gap-1">
                                 <span
-                                  className="material-symbols-outlined text-[13px] text-amber-500 cursor-help"
-                                  title={`Account "${g.publisher_name}" is listed in multiple Google Sheet competitor columns (${compNames.join(" & ")}). Edit account to confirm single parent competitor.`}
+                                  className="inline-flex items-center px-2 py-0.5 rounded-md bg-electric-blue/10 text-electric-blue border border-electric-blue/25 text-[10px] font-semibold whitespace-nowrap"
+                                  title={
+                                    compNames.length > 1
+                                      ? `Parent Competitor: ${primaryComp} (Also listed in Google Sheet under: ${compNames.slice(1).join(", ")})`
+                                      : `Parent Competitor: ${primaryComp}`
+                                  }
                                 >
-                                  warning
+                                  {primaryComp}
                                 </span>
-                              )}
-                            </div>
-                          );
-                        })()}
-                      </td>
+                                {compNames.length > 1 && (
+                                  <span
+                                    className="material-symbols-outlined text-[13px] text-amber-500 cursor-help"
+                                    title={`Account "${g.publisher_name}" is listed in multiple Google Sheet competitor columns (${compNames.join(" & ")}). Edit account to confirm single parent competitor.`}
+                                  >
+                                    warning
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </td>
 
-                      <td className="py-2.5 px-3 text-center">
-                        <div className="inline-flex flex-col items-center gap-1">
+                        <td className="py-2.5 px-3 text-center">
                           {(() => {
                             const status = getAppReleaseStatus(g);
                             if (status === "PRE_REGISTERED") {
@@ -2912,127 +2600,63 @@ function PlayStoreIntelligenceView({
                               </span>
                             );
                           })()}
+                        </td>
 
-                          {(() => {
-                            const cStatus = getAppCardStatus(g);
-                            if (cStatus === "CLOSED") {
-                              const closedDateStr = g.card_closed_at ? String(g.card_closed_at).slice(0, 10) : null;
-                              return (
-                                <span
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 select-none whitespace-nowrap"
-                                  title={
-                                    closedDateStr
-                                      ? `Cards Closed since ${closedDateStr}`
-                                      : "Cards Closed"
-                                  }
-                                >
-                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                                  Cards Closed
-                                </span>
-                              );
-                            }
-                            if (cStatus === "OPEN") {
-                              return (
-                                <span
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30 select-none whitespace-nowrap"
-                                  title="Cards Open"
-                                >
-                                  <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
-                                  Cards Open
-                                </span>
-                              );
-                            }
-                            if (cStatus === "UNVERIFIED") {
-                              return (
-                                <span
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 select-none whitespace-nowrap"
-                                  title="Cards Unverified"
-                                >
-                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                  Unverified
-                                </span>
-                              );
-                            }
-                            return (
-                              <span
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-input-bg text-text-muted border border-border-subtle select-none whitespace-nowrap"
-                                title="Cards Unscanned"
-                              >
-                                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                                Unscanned
-                              </span>
-                            );
-                          })()}
-                        </div>
-                      </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">
+                          {getAppReleaseStatus(g) === "PRE_REGISTERED" && !g.real_installs ? (
+                            <span className="text-text-muted text-[11px] font-sans font-normal italic">Pre-Reg</span>
+                          ) : g.real_installs != null
+                            ? Number(g.real_installs).toLocaleString()
+                            : g.installs || Number(g.min_installs || 0).toLocaleString()}
+                        </td>
 
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">
-                        {getAppReleaseStatus(g) === "PRE_REGISTERED" && !g.real_installs ? (
-                          <span className="text-text-muted text-[11px] font-sans font-normal italic">Pre-Reg</span>
-                        ) : g.real_installs != null
-                          ? Number(g.real_installs).toLocaleString()
-                          : g.installs || Number(g.min_installs || 0).toLocaleString()}
-                      </td>
+                        <td className="py-2.5 px-3 text-right font-mono">
+                          {g.rating ? `⭐ ${Number(g.rating).toFixed(1)}` : "—"}{" "}
+                          <span className="text-text-muted text-[10px]">
+                            ({Number(g.review_count || 0).toLocaleString()})
+                          </span>
+                        </td>
 
-                      <td className="py-2.5 px-3 text-right font-mono">
-                        {g.rating ? `⭐ ${Number(g.rating).toFixed(1)}` : "—"}{" "}
-                        <span className="text-text-muted text-[10px]">
-                          ({Number(g.review_count || 0).toLocaleString()})
-                        </span>
-                      </td>
-
-                      <td className="py-2.5 px-3 text-center">
-                        {g.country_scan ? (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onOpenCountryScan) onOpenCountryScan(g.package_name);
-                            }}
-                            title="Click to open Country Availability breakdown"
-                            className="px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-[10px] font-mono font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-500/25"
-                          >
-                            🌍 {g.country_scan.liveCount}/176
-                          </button>
-                        ) : isAdmin ? (
-                          <button
-                            type="button"
-                            disabled={countryQueueStatus.running}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleStartCountryQueue({
-                                scope: "single",
-                                packageName: g.package_name,
-                                skipDays: 0
-                              });
-                            }}
-                            className="px-2 py-0.5 rounded-full bg-input-bg border border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue text-[10px] font-semibold disabled:opacity-40"
-                          >
-                            Scan Countries
-                          </button>
-                        ) : (
-                          <span className="text-text-muted text-[11px]">—</span>
-                        )}
-                      </td>
-
-                      <td className="py-2.5 px-3 text-right font-mono text-text-muted">
-                        {g.release_date ? String(g.release_date).slice(0, 10) : "Unknown"}
-                      </td>
-
-                      {isAdmin && (
-                        <td className="py-2.5 px-3 text-right">
-                          <div className="inline-flex items-center justify-end gap-0.5">
+                        <td className="py-2.5 px-3 text-center">
+                          {g.country_scan ? (
                             <button
                               type="button"
-                              disabled={checkingCardPkg === g.package_name}
-                              onClick={(e) => handleRefreshSingleCardStatus(g.package_name, e)}
-                              title="Update Cards status"
-                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-indigo-400 transition disabled:opacity-40"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onOpenCountryScan) onOpenCountryScan(g.package_name);
+                              }}
+                              title="Click to open Country Availability breakdown"
+                              className="px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 text-[10px] font-mono font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-500/25"
                             >
-                              <span className={`material-symbols-outlined text-[15px] ${checkingCardPkg === g.package_name ? "animate-spin text-indigo-400" : ""}`}>
-                                {checkingCardPkg === g.package_name ? "progress_activity" : "view_agenda"}
-                              </span>
+                              🌍 {g.country_scan.liveCount}/176
                             </button>
+                          ) : isAdmin ? (
+                            <button
+                              type="button"
+                              disabled={countryQueueStatus.running}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleStartCountryQueue({
+                                  scope: "single",
+                                  packageName: g.package_name,
+                                  skipDays: 0
+                                });
+                              }}
+                              className="px-2 py-0.5 rounded-full bg-input-bg border border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue text-[10px] font-semibold disabled:opacity-40"
+                            >
+                              Scan Countries
+                            </button>
+                          ) : (
+                            <span className="text-text-muted text-[11px]">—</span>
+                          )}
+                        </td>
+
+                        <td className="py-2.5 px-3 text-right font-mono text-text-muted">
+                          {g.release_date ? String(g.release_date).slice(0, 10) : "Unknown"}
+                        </td>
+
+                        {isAdmin && (
+                          <td className="py-2.5 px-3 text-right">
                             <button
                               type="button"
                               disabled={isRefreshing}
@@ -3044,15 +2668,39 @@ function PlayStoreIntelligenceView({
                                 refresh
                               </span>
                             </button>
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {filteredGames.length > visibleRowCount && (
+              <div className="flex items-center justify-between gap-2 pt-1 text-xs text-text-muted">
+                <span>
+                  Showing <strong className="text-text-main">{visibleRowCount}</strong> of{" "}
+                  <strong className="text-text-main">{filteredGames.length.toLocaleString()}</strong> titles
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleRowCount((c) => c + 150)}
+                    className="px-3.5 py-1.5 rounded-xl bg-input-bg hover:bg-surface-glass border border-border-subtle text-text-main font-semibold transition"
+                  >
+                    Show +150 More
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleRowCount(filteredGames.length)}
+                    className="px-3.5 py-1.5 rounded-xl bg-input-bg hover:bg-surface-glass border border-border-subtle text-text-muted hover:text-text-main font-semibold transition"
+                  >
+                    Show All ({filteredGames.length.toLocaleString()})
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -4397,7 +4045,6 @@ function PlayStoreIntelligenceView({
             onClose={() => setActiveGameDrawer(null)}
             onSelectGame={(sibling) => setActiveGameDrawer(sibling)}
             onRefreshTelemetry={handleRefreshSingleGame}
-            onCardStatusUpdated={() => loadOverview({ fresh: true })}
             isRefreshing={refreshingPkg === activeGameDrawer.package_name}
             onOpenCountryScan={onOpenCountryScan}
             allGames={overview?.games || []}

@@ -90,7 +90,6 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
   const delta1d = Number(game.installs_delta_1d ?? 0);
 
   const subcategories = normalizeSubcategories(game);
-  const cardState = resolveCardState(game);
   const formattedReleaseDate = formatReleaseDate(game.release_date || game.released);
 
   const developerDisplay =
@@ -222,36 +221,6 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
             </span>
           )}
 
-          {cardState === "open" || cardState === "active" ? (
-            <span
-              className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
-              title="Cards Open"
-            >
-              🟢 Cards Open
-            </span>
-          ) : cardState === "closed" ? (
-            <span
-              className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
-              title={
-                game.card_closed_at
-                  ? `Cards Closed since ${formatReleaseDate(game.card_closed_at) || String(game.card_closed_at).slice(0, 10)}`
-                  : "Cards Closed"
-              }
-            >
-              🔴 Cards Closed {game.card_closed_at ? `· ${formatShortScanDate(game.card_closed_at)}` : ""}
-            </span>
-          ) : cardState === "unverified" ? (
-            <span
-              className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
-              title="Cards Unverified"
-            >
-              🟡 Unverified
-            </span>
-          ) : (
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-input-bg text-text-muted border border-border-subtle">
-              ⚪ Unscanned
-            </span>
-          )}
           {adCount > 0 && (
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30">
               📣 {adCount} Ads
