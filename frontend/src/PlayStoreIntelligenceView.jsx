@@ -521,6 +521,13 @@ function PlayStoreIntelligenceView({
     return "LIVE";
   }, []);
 
+  const getAppCardStatus = useCallback((g) => {
+    const raw = String(g?.card_status || "").trim().toLowerCase();
+    if (raw === "open" || raw === "active") return "OPEN";
+    if (raw === "closed") return "CLOSED";
+    return "UNSCANNED";
+  }, []);
+
   // Active Competitor Group (Batch) if selected (e.g. "group_1")
   const activeGroupObj = useMemo(() => {
     if (typeof selectedListId === "string" && selectedListId.startsWith("group_")) {
@@ -752,6 +759,9 @@ function PlayStoreIntelligenceView({
         if (selectedStatus === "prereg" && getAppReleaseStatus(g) !== "PRE_REGISTERED") return false;
         if (selectedStatus === "live" && getAppReleaseStatus(g) !== "LIVE") return false;
         if (selectedStatus === "early_access" && getAppReleaseStatus(g) !== "EARLY_ACCESS") return false;
+        if (selectedStatus === "cards_open" && getAppCardStatus(g) !== "OPEN") return false;
+        if (selectedStatus === "cards_closed" && getAppCardStatus(g) !== "CLOSED") return false;
+        if (selectedStatus === "cards_unscanned" && getAppCardStatus(g) !== "UNSCANNED") return false;
         const dEval = evaluateGameDate(g);
         if (!dEval.inRange) return false;
         if (q) {
@@ -782,6 +792,7 @@ function PlayStoreIntelligenceView({
     sortBy,
     getDisplayName,
     getAppReleaseStatus,
+    getAppCardStatus,
     evaluateGameDate,
     appTypeFilter
   ]);
@@ -2436,6 +2447,9 @@ function PlayStoreIntelligenceView({
                 <option value="live">Live Only</option>
                 <option value="prereg">Pre-Register Only</option>
                 <option value="early_access">Early Access Only</option>
+                <option value="cards_open">Cards Open Only</option>
+                <option value="cards_closed">Cards Closed Only</option>
+                <option value="cards_unscanned">Cards Unscanned</option>
               </select>
               <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
                 unfold_more
@@ -2579,40 +2593,74 @@ function PlayStoreIntelligenceView({
                       <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
 
                       <td className="py-2.5 px-3 text-center">
-                        {(() => {
-                          const status = getAppReleaseStatus(g);
-                          if (status === "PRE_REGISTERED") {
+                        <div className="inline-flex flex-col items-center gap-1">
+                          {(() => {
+                            const status = getAppReleaseStatus(g);
+                            if (status === "PRE_REGISTERED") {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 select-none whitespace-nowrap"
+                                  title="App is currently in Pre-Registration on Google Play"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                                  Pre-Register
+                                </span>
+                              );
+                            }
+                            if (status === "EARLY_ACCESS") {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30 select-none whitespace-nowrap"
+                                  title="App is in Early Access on Google Play"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                  Early Access
+                                </span>
+                              );
+                            }
                             return (
                               <span
-                                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-purple-500/15 text-purple-600 dark:text-purple-300 border border-purple-500/30 select-none whitespace-nowrap"
-                                title="App is currently in Pre-Registration on Google Play"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 select-none whitespace-nowrap"
+                                title="App is Live on Google Play"
                               >
-                                <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
-                                Pre-Register
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                Live
                               </span>
                             );
-                          }
-                          if (status === "EARLY_ACCESS") {
-                            return (
-                              <span
-                                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/30 select-none whitespace-nowrap"
-                                title="App is in Early Access on Google Play"
-                              >
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                Early Access
-                              </span>
-                            );
-                          }
-                          return (
-                            <span
-                              className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 select-none whitespace-nowrap"
-                              title="App is Live on Google Play"
-                            >
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                              Live
-                            </span>
-                          );
-                        })()}
+                          })()}
+
+                          {(() => {
+                            const cStatus = getAppCardStatus(g);
+                            if (cStatus === "CLOSED") {
+                              const closedDateStr = g.card_closed_at ? String(g.card_closed_at).slice(0, 10) : null;
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30 select-none whitespace-nowrap"
+                                  title={
+                                    closedDateStr
+                                      ? `Play Store Cards Closed ("See details" collapsed view) since ${closedDateStr}${g.card_presentation_code != null ? ` · ds:5 code ${g.card_presentation_code}` : ""}`
+                                      : `Play Store Cards Closed ("See details" collapsed view)${g.card_presentation_code != null ? ` · ds:5 code ${g.card_presentation_code}` : ""}`
+                                  }
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                  Cards Closed
+                                </span>
+                              );
+                            }
+                            if (cStatus === "OPEN") {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-semibold uppercase tracking-wider bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30 select-none whitespace-nowrap"
+                                  title={`Play Store Cards Open (Full store listing)${g.card_presentation_code != null ? ` · ds:5 code ${g.card_presentation_code}` : ""}`}
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                                  Cards Open
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </div>
                       </td>
 
                       <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">

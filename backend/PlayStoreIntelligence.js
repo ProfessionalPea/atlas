@@ -6,7 +6,10 @@ const gplay = gplayRaw.default || gplayRaw;
 const {
   fetchPlayStoreDs5,
   runInstallVelocityPipeline,
-  runFullTelemetryForPackage
+  runFullTelemetryForPackage,
+  runCardStatusPipeline,
+  setManualCardStatusOverride,
+  getCardStatusHistory
 } = require('./PlayStoreTelemetry');
 const {
   PRICE_STATUS,
@@ -644,7 +647,7 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
          currency = COALESCE(EXCLUDED.currency, games.currency),
          price_text = COALESCE(EXCLUDED.price_text, games.price_text),
          last_seen_at = now()
-       RETURNING id, release_date, real_installs, store_scanned_at`,
+       RETURNING id, release_date, real_installs, store_scanned_at, card_status`,
       [
         pkg,
         appItem.title || pkg,
@@ -692,7 +695,9 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       options.forceTelemetry === true ||
       !gameRow.release_date ||
       gameRow.real_installs == null ||
-      !gameRow.store_scanned_at;
+      !gameRow.store_scanned_at ||
+      !gameRow.card_status ||
+      gameRow.card_status === 'unscanned';
 
     if (needsDs5) {
       packagesNeedingTelemetry.push(pkg);
@@ -1694,6 +1699,13 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.price_text,
             g.ad_count,
             g.card_status,
+            g.card_presentation_code,
+            g.card_status_source,
+            g.card_status_evidence,
+            g.card_closed_at,
+            g.card_opened_at,
+            g.card_status_changed_at,
+            g.card_scanned_at,
             g.ad_networks,
             g.developer_id,
             g.developer_url,
@@ -2843,6 +2855,43 @@ function registerPlayStoreRoutes({ app, pool }) {
     } catch (err) {
       console.error('[Play List Membership Error]:', err);
       res.status(500).json({ error: 'Failed to update list publishers.' });
+    }
+  });
+
+  // 9. Play Store Cards Open / Closed History & Manual / Live Verification Routes
+  app.get('/api/play/games/:packageName/card-history', async (req, res) => {
+    try {
+      const pkg = normalizePackageName(req.params.packageName);
+      if (!pkg) return res.status(400).json({ error: 'Invalid package name.' });
+      const history = await getCardStatusHistory(pool, pkg, Number(req.query.limit) || 30);
+      res.json(history);
+    } catch (err) {
+      console.error('[Play Card History Error]:', err);
+      res.status(500).json({ error: err.message || 'Failed to fetch card status history.' });
+    }
+  });
+
+  app.post('/api/play/games/:packageName/card-status', async (req, res) => {
+    try {
+      const pkg = normalizePackageName(req.params.packageName);
+      if (!pkg) return res.status(400).json({ error: 'Invalid package name.' });
+
+      const action = String(req.body?.action || '').trim().toLowerCase();
+      let result;
+      if (action === 'scan') {
+        result = await runCardStatusPipeline(pool, pkg);
+      } else {
+        const status = req.body?.status || 'AUTO';
+        const note = req.body?.note || null;
+        const by = req.user?.username || req.user?.email || 'admin';
+        result = await setManualCardStatusOverride(pool, pkg, { status, note, by });
+      }
+      playOverviewCache.expiresAt = 0;
+      const history = await getCardStatusHistory(pool, pkg, 30);
+      res.json({ status: 'updated', result, history });
+    } catch (err) {
+      console.error('[Play Card Status Update Error]:', err);
+      res.status(500).json({ error: err.message || 'Failed to update card status.' });
     }
   });
 }

@@ -146,6 +146,112 @@ function extractSubcategoriesFromDs5(ds5Data, title = '', description = '') {
   return tags;
 }
 
+/**
+ * Extracts Google Play's native store listing presentation mode ("Cards Open" vs "Cards Closed" / HSDP "See details")
+ * from the ds:5 app details payload and optional ds:8 clusters payload.
+ *
+ * Verified against Play Store Android app behavior:
+ * - Code 0 (`[[null, []]]` at root[154]/root[155]) -> Unrestricted Full Details Page ("open")
+ * - Code 4 (`[null, [[], null, 4]]`) or Code 5 (`[null, [null, null, 5]]`) -> Full Details Page ("open", e.g. com.gw.monkey.tag.jungle.game)
+ * - Code 11 (`[null, [[], null, 11]]`) -> Collapsed Half-Sheet Details Page / "See details" ("closed", e.g. com.obby.prison.escape.games)
+ */
+function extractCardPresentationFromDs5(ds5Data, ds8Data = null) {
+  const root = getAtPath(ds5Data, [1, 2]);
+  if (!Array.isArray(root)) {
+    return {
+      cardStatus: 'unscanned',
+      presentationCode: null,
+      reason: 'missing_ds5_root',
+      fieldPath: null,
+      evidence: {}
+    };
+  }
+
+  let presentationCode = null;
+  let fieldPath = null;
+  let rawSlot = null;
+
+  const inspectCandidate = (val, pathLabel) => {
+    if (!Array.isArray(val)) return false;
+    if (Array.isArray(val[1]) && typeof val[1][2] === 'number') {
+      presentationCode = val[1][2];
+      fieldPath = pathLabel;
+      rawSlot = val;
+      return true;
+    }
+    if (Array.isArray(val[0]) && val[1] == null) {
+      presentationCode = 0;
+      fieldPath = pathLabel;
+      rawSlot = val;
+      return true;
+    }
+    return false;
+  };
+
+  for (const idx of [154, 155]) {
+    if (inspectCandidate(root[idx], `root[${idx}]`)) break;
+  }
+
+  if (presentationCode === null) {
+    for (let i = 95; i < root.length; i++) {
+      const entry = root[i];
+      if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        for (const key of ['155', '154']) {
+          if (inspectCandidate(entry[key], `root[${i}]["${key}"]`)) break;
+        }
+        if (presentationCode !== null) break;
+      }
+    }
+  }
+
+  let hasSimilarCluster = null;
+  let similarAppsCount = null;
+  let hasDeveloperCluster = null;
+  let devClusterHasToken = null;
+
+  const rawClusters = getAtPath(ds8Data, [1, 1]);
+  if (Array.isArray(rawClusters)) {
+    const parsedClusters = rawClusters.map((c) => ({
+      title: String(getAtPath(c, [21, 1, 0]) || getAtPath(c, [22, 1, 0]) || ''),
+      count: (getAtPath(c, [21, 0]) || getAtPath(c, [22, 0]) || []).length,
+      hasToken: Boolean(getAtPath(c, [21, 1, 3]) || getAtPath(c, [22, 1, 3]))
+    }));
+    const similar = parsedClusters.find((c) => /similar/i.test(c.title));
+    const devCluster = parsedClusters.find((c) => /more by/i.test(c.title));
+    hasSimilarCluster = Boolean(similar);
+    similarAppsCount = similar ? similar.count : 0;
+    hasDeveloperCluster = Boolean(devCluster);
+    devClusterHasToken = devCluster ? devCluster.hasToken : false;
+  }
+
+  let cardStatus = 'unscanned';
+  let reason = 'unknown_presentation_slot';
+
+  if (presentationCode === 11 || (typeof presentationCode === 'number' && presentationCode >= 10)) {
+    cardStatus = 'closed';
+    reason = `ds5_hsdp_collapsed_code_${presentationCode}`;
+  } else if (presentationCode === 0 || presentationCode === 4 || presentationCode === 5 || (typeof presentationCode === 'number' && presentationCode > 0 && presentationCode < 10)) {
+    cardStatus = 'open';
+    reason = `ds5_full_details_code_${presentationCode}`;
+  }
+
+  const evidence = {
+    presentationCode,
+    fieldPath,
+    rawSlot,
+    ...(hasSimilarCluster !== null ? { hasSimilarCluster, similarAppsCount } : {}),
+    ...(hasDeveloperCluster !== null ? { hasDeveloperCluster, devClusterHasToken } : {})
+  };
+
+  return {
+    cardStatus,
+    presentationCode,
+    reason,
+    fieldPath,
+    evidence
+  };
+}
+
 function parsePlayStoreDs5Html(html, packageName = '') {
   if (!html || typeof html !== 'string') return null;
 
@@ -159,6 +265,16 @@ function parsePlayStoreDs5Html(html, packageName = '') {
     return null;
   }
 
+  let ds8Data = null;
+  const matchDs8 = html.match(/AF_initDataCallback\(\{key:\s*'ds:8',[\s\S]*?data:\s*([\s\S]*?),\s*sideChannel:\s*\{\}\}\);/);
+  if (matchDs8) {
+    try {
+      ds8Data = JSON.parse(matchDs8[1]);
+    } catch {
+      ds8Data = null;
+    }
+  }
+
   const root = getAtPath(data, [1, 2]);
   if (!Array.isArray(root)) return null;
 
@@ -170,10 +286,11 @@ function parsePlayStoreDs5Html(html, packageName = '') {
     ? Math.max(0, Math.trunc(Number(realInstallsRaw)))
     : (Number.isFinite(Number(minInstallsRaw)) ? Math.max(0, Math.trunc(Number(minInstallsRaw))) : null);
 
-  // Release date: standard path data[1][2][10][0], or fallback to compacted metadata container data[1][2][103]['146'][0][0] / data[1][2][145][0][0]
+  // Release date: standard path data[1][2][10][0], or fallback to compacted metadata container data[1][2][103]['146'][0][0] / data[1][2][112]['146'][0][0] / data[1][2][145][0][0]
   const rawReleaseDate =
     getAtPath(data, [1, 2, 10, 0]) ||
     getAtPath(data, [1, 2, 103, '146', 0, 0]) ||
+    getAtPath(data, [1, 2, 112, '146', 0, 0]) ||
     getAtPath(data, [1, 2, 145, 0, 0]) ||
     null;
   const releaseDate = parseDateSafe(rawReleaseDate);
@@ -209,6 +326,8 @@ function parsePlayStoreDs5Html(html, packageName = '') {
   const offerCurrencyRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 1]);
   const offerTextRaw = getAtPath(data, [1, 2, 57, 0, 0, 0, 0, 1, 0, 2]);
 
+  const cardPresentation = extractCardPresentationFromDs5(data, ds8Data);
+
   return {
     packageName,
     title,
@@ -232,6 +351,10 @@ function parsePlayStoreDs5Html(html, packageName = '') {
     discountEndDate,
     offerCurrency: typeof offerCurrencyRaw === 'string' && offerCurrencyRaw ? offerCurrencyRaw : null,
     offerText: typeof offerTextRaw === 'string' && offerTextRaw ? offerTextRaw : null,
+    cardStatus: cardPresentation.cardStatus,
+    cardPresentationCode: cardPresentation.presentationCode,
+    cardStatusReason: cardPresentation.reason,
+    cardStatusEvidence: cardPresentation.evidence,
     rawDs5: data
   };
 }
@@ -283,6 +406,12 @@ async function initializePlayTelemetryStorage(pool) {
       ADD COLUMN IF NOT EXISTS subcategories JSONB DEFAULT '[]'::jsonb,
       ADD COLUMN IF NOT EXISTS release_date DATE,
       ADD COLUMN IF NOT EXISTS card_status TEXT DEFAULT 'unscanned',
+      ADD COLUMN IF NOT EXISTS card_presentation_code INTEGER,
+      ADD COLUMN IF NOT EXISTS card_status_source TEXT DEFAULT 'play_store_ds5',
+      ADD COLUMN IF NOT EXISTS card_status_evidence JSONB DEFAULT '{}'::jsonb,
+      ADD COLUMN IF NOT EXISTS card_closed_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS card_opened_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS card_status_changed_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS ad_networks JSONB DEFAULT '{}'::jsonb,
       ADD COLUMN IF NOT EXISTS ad_networks_all JSONB DEFAULT '{}'::jsonb,
       ADD COLUMN IF NOT EXISTS network_data JSONB DEFAULT '{}'::jsonb,
@@ -307,6 +436,21 @@ async function initializePlayTelemetryStorage(pool) {
     CREATE INDEX IF NOT EXISTS idx_app_install_history_pkg_date
       ON app_install_history(package_name, snapshot_date DESC);
 
+    CREATE TABLE IF NOT EXISTS game_card_status_logs (
+      id BIGSERIAL PRIMARY KEY,
+      package_name TEXT NOT NULL,
+      previous_status TEXT,
+      new_status TEXT NOT NULL,
+      presentation_code INTEGER,
+      source TEXT NOT NULL DEFAULT 'play_store_ds5',
+      evidence JSONB DEFAULT '{}'::jsonb,
+      note TEXT,
+      changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_game_card_status_logs_pkg_date
+      ON game_card_status_logs(package_name, changed_at DESC);
+
     CREATE TABLE IF NOT EXISTS google_sellers_cache (
       seller_id TEXT PRIMARY KEY,
       name TEXT,
@@ -315,6 +459,14 @@ async function initializePlayTelemetryStorage(pool) {
       is_confidential BOOLEAN NOT NULL DEFAULT FALSE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- Reset legacy ad-creative-derived card_status values so only verified Play Store card presentation states are shown
+    UPDATE games
+    SET card_status = 'unscanned',
+        card_scanned_at = NULL
+    WHERE card_presentation_code IS NULL
+      AND COALESCE(card_status_source, '') NOT IN ('play_store_ds5', 'manual')
+      AND card_status IN ('active', 'closed');
   `);
 }
 
@@ -506,6 +658,13 @@ async function runInstallVelocityPipeline(pool, packageName, prefetchedDs5 = nul
     );
   } catch (err) {
     console.warn(`[PriceClassification] ${packageName}: ${err.message}`);
+  }
+
+  // Card Open vs Closed presentation status from the same ds:5 + ds:8 payload
+  try {
+    await applyCardStatusFromDs5(pool, packageName, ds5, { source: 'play_store_ds5' });
+  } catch (err) {
+    console.warn(`[CardStatus] ${packageName}: ${err.message}`);
   }
 
   const { rows: updatedHistory } = await pool.query(
@@ -1032,8 +1191,15 @@ async function runNetworkAdvertiserPipeline(pool, packageName, options = {}) {
 }
 
 // ============================================================================
-// Step 4: Pipeline 3 — Live Ad-Signal Card Status ('active' | 'closed' | 'unscanned')
+// Step 4: Pipeline 3 — Play Store Card Presentation Status ('open' | 'closed' | 'unscanned')
 // ============================================================================
+function normalizeCardStatusValue(val) {
+  const s = String(val || '').trim().toLowerCase();
+  if (s === 'open' || s === 'active') return 'open';
+  if (s === 'closed') return 'closed';
+  return 'unscanned';
+}
+
 function evaluateCardStatusFromAdSignals({
   latestCreativeSeen = null,
   totalCreatives = 0,
@@ -1085,47 +1251,257 @@ function evaluateCardStatusFromAdSignals({
   };
 }
 
-async function runCardStatusPipeline(pool, packageName) {
+async function applyCardStatusFromDs5(pool, packageName, ds5, options = {}) {
+  if (!ds5 || !packageName) {
+    return { cardStatus: 'unscanned', presentationCode: null, cardScannedAt: null };
+  }
+
+  const presentation = ds5.cardStatus && ds5.cardStatus !== 'unscanned'
+    ? {
+        cardStatus: normalizeCardStatusValue(ds5.cardStatus),
+        presentationCode: ds5.cardPresentationCode ?? null,
+        reason: ds5.cardStatusReason || 'ds5_scan',
+        evidence: ds5.cardStatusEvidence || {}
+      }
+    : extractCardPresentationFromDs5(ds5.rawDs5 || null, null);
+
+  const detectedStatus = normalizeCardStatusValue(presentation.cardStatus);
+  if (detectedStatus === 'unscanned') {
+    return { cardStatus: 'unscanned', presentationCode: null, cardScannedAt: null };
+  }
+
+  const nowIso = new Date().toISOString();
+  const source = options.source || 'play_store_ds5';
+
+  const { rows: existingRows } = await pool.query(
+    `SELECT card_status, card_presentation_code, card_status_source, card_closed_at, card_opened_at, card_status_changed_at
+     FROM games
+     WHERE package_name = $1
+     LIMIT 1`,
+    [packageName]
+  );
+  const existing = existingRows[0] || {};
+  const prevStatus = normalizeCardStatusValue(existing.card_status);
+  const isManual = existing.card_status_source === 'manual' && !options.forceAuto;
+
+  const effectiveStatus = isManual && prevStatus !== 'unscanned' ? prevStatus : detectedStatus;
+  const statusChanged = prevStatus !== effectiveStatus;
+
+  const nextClosedAt =
+    effectiveStatus === 'closed'
+      ? (prevStatus === 'closed' && existing.card_closed_at ? existing.card_closed_at : nowIso)
+      : existing.card_closed_at || null;
+
+  const nextOpenedAt =
+    effectiveStatus === 'open'
+      ? (prevStatus === 'open' && existing.card_opened_at ? existing.card_opened_at : nowIso)
+      : existing.card_opened_at || null;
+
+  const nextChangedAt = statusChanged
+    ? nowIso
+    : (existing.card_status_changed_at || nowIso);
+
+  await pool.query(
+    `UPDATE games
+     SET card_status = $2,
+         card_presentation_code = $3,
+         card_status_source = $4,
+         card_status_evidence = $5::jsonb,
+         card_closed_at = $6::timestamptz,
+         card_opened_at = $7::timestamptz,
+         card_status_changed_at = $8::timestamptz,
+         card_scanned_at = $9::timestamptz
+     WHERE package_name = $1`,
+    [
+      packageName,
+      effectiveStatus,
+      presentation.presentationCode,
+      isManual ? 'manual' : source,
+      JSON.stringify(presentation.evidence || {}),
+      nextClosedAt,
+      nextOpenedAt,
+      nextChangedAt,
+      nowIso
+    ]
+  );
+
+  if (statusChanged) {
+    await pool.query(
+      `INSERT INTO game_card_status_logs (
+         package_name, previous_status, new_status, presentation_code, source, evidence, note, changed_at
+       ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::timestamptz)`,
+      [
+        packageName,
+        prevStatus === 'unscanned' ? null : prevStatus,
+        effectiveStatus,
+        presentation.presentationCode,
+        isManual ? 'manual' : source,
+        JSON.stringify(presentation.evidence || {}),
+        options.note || presentation.reason || null,
+        nowIso
+      ]
+    );
+  }
+
+  return {
+    cardStatus: effectiveStatus,
+    previousStatus: prevStatus,
+    statusChanged,
+    presentationCode: presentation.presentationCode,
+    cardClosedAt: nextClosedAt,
+    cardOpenedAt: nextOpenedAt,
+    cardStatusChangedAt: nextChangedAt,
+    cardScannedAt: nowIso,
+    reason: presentation.reason,
+    evidence: presentation.evidence
+  };
+}
+
+async function setManualCardStatusOverride(pool, packageName, { status, note = null, by = 'admin' } = {}) {
+  const pkg = String(packageName || '').trim();
+  if (!pkg) throw new Error('packageName is required');
+
+  const upper = String(status || '').trim().toUpperCase();
+  if (upper === 'CLEAR' || upper === 'AUTO') {
+    const ds5 = await fetchPlayStoreDs5(pkg);
+    return applyCardStatusFromDs5(pool, pkg, ds5, {
+      source: 'play_store_ds5',
+      forceAuto: true,
+      note: note || `Reverted to Play Store automatic detection by ${by}`
+    });
+  }
+
+  const normalized = normalizeCardStatusValue(status);
+  if (normalized !== 'open' && normalized !== 'closed') {
+    throw new Error('Invalid card status override (must be open, closed, or AUTO)');
+  }
+
+  const nowIso = new Date().toISOString();
+  const { rows: existingRows } = await pool.query(
+    `SELECT card_status, card_presentation_code, card_closed_at, card_opened_at
+     FROM games WHERE package_name = $1 LIMIT 1`,
+    [pkg]
+  );
+  const existing = existingRows[0] || {};
+  const prevStatus = normalizeCardStatusValue(existing.card_status);
+
+  const nextClosedAt =
+    normalized === 'closed'
+      ? (prevStatus === 'closed' && existing.card_closed_at ? existing.card_closed_at : nowIso)
+      : existing.card_closed_at || null;
+  const nextOpenedAt =
+    normalized === 'open'
+      ? (prevStatus === 'open' && existing.card_opened_at ? existing.card_opened_at : nowIso)
+      : existing.card_opened_at || null;
+
+  const evidence = {
+    manualOverrideBy: by,
+    manualNote: note || null,
+    overriddenAt: nowIso
+  };
+
+  await pool.query(
+    `UPDATE games
+     SET card_status = $2,
+         card_status_source = 'manual',
+         card_status_evidence = COALESCE(card_status_evidence, '{}'::jsonb) || $3::jsonb,
+         card_closed_at = $4::timestamptz,
+         card_opened_at = $5::timestamptz,
+         card_status_changed_at = $6::timestamptz,
+         card_scanned_at = $6::timestamptz
+     WHERE package_name = $1`,
+    [pkg, normalized, JSON.stringify(evidence), nextClosedAt, nextOpenedAt, nowIso]
+  );
+
+  await pool.query(
+    `INSERT INTO game_card_status_logs (
+       package_name, previous_status, new_status, presentation_code, source, evidence, note, changed_at
+     ) VALUES ($1, $2, $3, $4, 'manual', $5::jsonb, $6, $7::timestamptz)`,
+    [
+      pkg,
+      prevStatus === 'unscanned' ? null : prevStatus,
+      normalized,
+      existing.card_presentation_code ?? null,
+      JSON.stringify(evidence),
+      note || `Manual override by ${by}`,
+      nowIso
+    ]
+  );
+
+  return {
+    cardStatus: normalized,
+    previousStatus: prevStatus,
+    statusChanged: prevStatus !== normalized,
+    cardClosedAt: nextClosedAt,
+    cardOpenedAt: nextOpenedAt,
+    cardScannedAt: nowIso,
+    source: 'manual'
+  };
+}
+
+async function getCardStatusHistory(pool, packageName, limit = 30) {
+  const pkg = String(packageName || '').trim();
+  const [{ rows: gameRows }, { rows: logRows }] = await Promise.all([
+    pool.query(
+      `SELECT package_name, title, card_status, card_presentation_code, card_status_source,
+              card_status_evidence, card_closed_at, card_opened_at, card_status_changed_at, card_scanned_at
+       FROM games
+       WHERE package_name = $1
+       LIMIT 1`,
+      [pkg]
+    ),
+    pool.query(
+      `SELECT id, package_name, previous_status, new_status, presentation_code, source, evidence, note, changed_at
+       FROM game_card_status_logs
+       WHERE package_name = $1
+       ORDER BY changed_at DESC, id DESC
+       LIMIT $2`,
+      [pkg, Math.min(100, Math.max(1, Number(limit) || 30))]
+    )
+  ]);
+
+  const g = gameRows[0] || null;
+  return {
+    packageName: pkg,
+    title: g?.title || pkg,
+    cardStatus: normalizeCardStatusValue(g?.card_status),
+    presentationCode: g?.card_presentation_code ?? null,
+    source: g?.card_status_source || 'play_store_ds5',
+    evidence: g?.card_status_evidence || {},
+    cardClosedAt: g?.card_closed_at || null,
+    cardOpenedAt: g?.card_opened_at || null,
+    cardStatusChangedAt: g?.card_status_changed_at || null,
+    cardScannedAt: g?.card_scanned_at || null,
+    logs: logRows
+  };
+}
+
+async function runCardStatusPipeline(pool, packageName, prefetchedDs5 = null) {
+  let ds5 = prefetchedDs5;
+  if (!ds5) {
+    try {
+      ds5 = await fetchPlayStoreDs5(packageName);
+    } catch {
+      ds5 = null;
+    }
+  }
+
+  if (ds5 && ds5.cardStatus && ds5.cardStatus !== 'unscanned') {
+    return applyCardStatusFromDs5(pool, packageName, ds5, { source: 'play_store_ds5' });
+  }
+
   const { rows: gameRows } = await pool.query(
-    `SELECT g.id, g.ad_count,
-            EXISTS(SELECT 1 FROM account_games ag WHERE ag.game_id = g.id) AS has_competitor_link
+    `SELECT g.id, g.card_status, g.card_scanned_at
      FROM games g
      WHERE g.package_name = $1
      LIMIT 1`,
     [packageName]
   );
   const game = gameRows[0] || null;
-  const gameId = game?.id || null;
-
-  const { rows: creativeRows } = await pool.query(
-    `SELECT MAX(last_seen_at) AS latest_creative_seen, COUNT(*)::int AS total_creatives
-     FROM ad_creatives
-     WHERE package_name = $1 OR ($2::int IS NOT NULL AND game_id = $2::int)`,
-    [packageName, gameId]
-  );
-
-  const latestCreativeSeen = creativeRows[0]?.latest_creative_seen || null;
-  const totalCreatives = Number(creativeRows[0]?.total_creatives || 0);
-
-  const evaluated = evaluateCardStatusFromAdSignals({
-    latestCreativeSeen,
-    totalCreatives,
-    adCount: game?.ad_count ?? null,
-    hasCompetitorLink: Boolean(game?.has_competitor_link)
-  });
-
-  await pool.query(
-    `UPDATE games
-     SET card_status = $2,
-         card_scanned_at = COALESCE($3::timestamptz, card_scanned_at)
-     WHERE package_name = $1`,
-    [packageName, evaluated.cardStatus, evaluated.cardScannedAt]
-  );
-
   return {
-    ...evaluated,
-    latestCreativeSeen: latestCreativeSeen ? new Date(latestCreativeSeen).toISOString() : null,
-    totalCreatives
+    cardStatus: normalizeCardStatusValue(game?.card_status),
+    cardScannedAt: game?.card_scanned_at ? new Date(game.card_scanned_at).toISOString() : null,
+    reason: 'unscanned'
   };
 }
 
@@ -1395,7 +1771,7 @@ async function runFullTelemetryForPackage(pool, packageName, options = {}) {
         }),
     options.skipCard
       ? Promise.resolve(null)
-      : runCardStatusPipeline(pool, pkg)
+      : runCardStatusPipeline(pool, pkg, ds5)
   ]);
 
   const p4 = await runEngagementRevenuePipeline(pool, pkg, {
@@ -1597,7 +1973,12 @@ module.exports = {
   queryAdsTransparencySuggestions,
   resolveAdvertiserLegalName,
   runNetworkAdvertiserPipeline,
+  extractCardPresentationFromDs5,
+  normalizeCardStatusValue,
   evaluateCardStatusFromAdSignals,
+  applyCardStatusFromDs5,
+  setManualCardStatusOverride,
+  getCardStatusHistory,
   runCardStatusPipeline,
   EngagementDataProvider,
   computeEngagementAndRevenue,

@@ -46,43 +46,9 @@ export function formatShortScanDate(value) {
 }
 
 export function resolveCardState(game) {
-  const latestCreativeSeen = game?.latest_creative_seen || null;
-  const adCount = Number(game?.ad_count);
-  const nowMs = Date.now();
-
-  // 1. If we have observed ad creatives in the ad library:
-  if (latestCreativeSeen) {
-    const parsed = new Date(latestCreativeSeen);
-    if (!Number.isNaN(parsed.getTime())) {
-      const ageMs = nowMs - parsed.getTime();
-      if (ageMs <= 14 * 86400000) return "active";
-      return "closed";
-    }
-  }
-
-  // 2. If an ad count is recorded:
-  if (Number.isFinite(adCount)) {
-    const lastSeen = game?.last_seen_at || game?.card_scanned_at || game?.store_scanned_at;
-    if (lastSeen) {
-      const parsed = new Date(lastSeen);
-      if (!Number.isNaN(parsed.getTime())) {
-        const ageMs = nowMs - parsed.getTime();
-        if (adCount > 0 && ageMs <= 14 * 86400000) return "active";
-        if (adCount > 0 && ageMs > 14 * 86400000) return "closed";
-      }
-    } else if (adCount > 0) {
-      return "active";
-    }
-
-    if (adCount === 0 && (game?.account_id || game?.competitor_id || game?.card_scanned_at)) {
-      return "closed";
-    }
-  }
-
   const rawStatus = String(game?.card_status || "").trim().toLowerCase();
-  if (rawStatus === "active" || rawStatus === "open") return "active";
+  if (rawStatus === "open" || rawStatus === "active") return "open";
   if (rawStatus === "closed") return "closed";
-
   return "unscanned";
 }
 
@@ -255,17 +221,32 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
             </span>
           )}
 
-          {cardState === "active" ? (
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-              🟢 Card Active {adCount > 0 ? `(${adCount} ads)` : ""}
+          {cardState === "open" || cardState === "active" ? (
+            <span
+              className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+              title="Play Store cards are Open (Full store listing with screenshots & description expanded)"
+            >
+              🟢 Cards Open
             </span>
           ) : cardState === "closed" ? (
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
-              ⏹ Card Closed
+            <span
+              className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30"
+              title={
+                game.card_closed_at
+                  ? `Play Store cards are Closed ("See details" collapsed view) since ${formatReleaseDate(game.card_closed_at) || String(game.card_closed_at).slice(0, 10)}`
+                  : 'Play Store cards are Closed ("See details" collapsed view)'
+              }
+            >
+              🔴 Cards Closed {game.card_closed_at ? `· ${formatShortScanDate(game.card_closed_at)}` : ""}
             </span>
           ) : (
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-input-bg text-text-muted border border-border-subtle">
-              ⚪ No Active Ads
+              ⚪ Cards Unscanned
+            </span>
+          )}
+          {adCount > 0 && (
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30">
+              📣 {adCount} Ads
             </span>
           )}
         </div>

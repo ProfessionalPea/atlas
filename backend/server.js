@@ -1471,15 +1471,8 @@ app.get("/api/trending", async (_req, res) => {
              creative_meta.latest_creative_seen,
              creative_meta.total_creatives,
              CASE
-               WHEN creative_meta.latest_creative_seen IS NOT NULL
-                AND creative_meta.latest_creative_seen >= (NOW() - INTERVAL '14 days') THEN 'active'
-               WHEN COALESCE(g.ad_count, 0) > 0
-                AND creative_meta.latest_creative_seen IS NULL THEN 'active'
-               WHEN creative_meta.latest_creative_seen IS NOT NULL
-                AND creative_meta.latest_creative_seen < (NOW() - INTERVAL '14 days') THEN 'closed'
-               WHEN g.card_status IN ('active', 'open') THEN 'active'
-               WHEN g.card_status = 'closed' AND COALESCE(g.ad_count, 0) = 0 AND ag.account_id IS NOT NULL THEN 'closed'
-               WHEN ag.account_id IS NOT NULL AND COALESCE(g.ad_count, 0) = 0 THEN 'closed'
+               WHEN g.card_status IN ('open', 'active') THEN 'open'
+               WHEN g.card_status = 'closed' THEN 'closed'
                ELSE 'unscanned'
              END AS card_status,
              COALESCE(
@@ -2311,15 +2304,8 @@ app.get("/api/competitors", async (_req, res) => {
                creative_meta.latest_creative_seen,
                creative_meta.total_creatives,
                CASE
-                 WHEN creative_meta.latest_creative_seen IS NOT NULL
-                  AND creative_meta.latest_creative_seen >= (NOW() - INTERVAL '14 days') THEN 'active'
-                 WHEN COALESCE(g.ad_count, 0) > 0
-                  AND creative_meta.latest_creative_seen IS NULL THEN 'active'
-                 WHEN creative_meta.latest_creative_seen IS NOT NULL
-                  AND creative_meta.latest_creative_seen < (NOW() - INTERVAL '14 days') THEN 'closed'
-                 WHEN g.card_status IN ('active', 'open') THEN 'active'
-                 WHEN g.card_status = 'closed' AND COALESCE(g.ad_count, 0) = 0 AND ag.account_id IS NOT NULL THEN 'closed'
-                 WHEN ag.account_id IS NOT NULL AND COALESCE(g.ad_count, 0) = 0 THEN 'closed'
+                 WHEN g.card_status IN ('open', 'active') THEN 'open'
+                 WHEN g.card_status = 'closed' THEN 'closed'
                  ELSE 'unscanned'
                END AS card_status,
                COALESCE(
