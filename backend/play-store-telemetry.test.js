@@ -254,7 +254,7 @@ function createMockTelemetryPool() {
         return { rows: g ? [g] : [] };
       }
 
-      if (/SELECT g\.id, g\.card_status, g\.card_scanned_at\s+FROM games/i.test(normalized)) {
+      if (/SELECT g\.id, g\.card_status, (g\.card_status_source, )?g\.card_scanned_at\s+FROM games/i.test(normalized)) {
         const g = games.get(params[0]);
         return { rows: g ? [g] : [] };
       }
@@ -395,8 +395,9 @@ test('Priority 1 & 3: Cards status is never derived from ds:5 154/155, defaults 
   const cardRes = await runCardStatusPipeline(pool, pkg);
   const telemetryCountAfter = pool.getTelemetryUpdateCount();
 
-  assert.equal(cardRes.cardStatus, 'unverified', 'Unverified web payload must result in cardStatus = unverified');
-  assert.equal(cardRes.presentationCode, null);
+  // Live checks are retired: the pipeline performs no fetch/write and only reads back stored state
+  assert.equal(cardRes.cardStatus, 'unscanned', 'Retired live check must not write a new status');
+  assert.equal(pool.cardStatusLogs.length, 0, 'Retired live check must not log transitions');
   assert.equal(telemetryCountAfter, telemetryCountBefore, 'Finishing a cards check must NOT trigger a telemetry refresh');
 
   // 3. Verified manual override is preserved and NEVER overwritten by a subsequent unverified check

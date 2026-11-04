@@ -1442,6 +1442,10 @@ async function getCardStatusHistory(pool, packageName, limit = 30) {
   };
 }
 
+// Cards Open/Closed detection is retired: the web payload has no validated signal.
+// Live checks are disabled (no Play Store fetch, no DB writes); stored values are only read back.
+const CARD_LIVE_CHECKS_ENABLED = false;
+
 async function runCardStatusPipeline(pool, packageName, prefetchedDs5 = null) {
   const pkg = String(packageName || '').trim();
   if (!pkg) {
@@ -1454,8 +1458,8 @@ async function runCardStatusPipeline(pool, packageName, prefetchedDs5 = null) {
   }
 
   const executeCheck = async () => {
-    let ds5 = prefetchedDs5;
-    if (!ds5) {
+    let ds5 = CARD_LIVE_CHECKS_ENABLED ? prefetchedDs5 : null;
+    if (!ds5 && CARD_LIVE_CHECKS_ENABLED) {
       try {
         ds5 = await fetchPlayStoreDs5(pkg);
       } catch {

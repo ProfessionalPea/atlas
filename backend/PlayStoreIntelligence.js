@@ -820,9 +820,7 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       options.forceTelemetry === true ||
       !gameRow.release_date ||
       gameRow.real_installs == null ||
-      !gameRow.store_scanned_at ||
-      !gameRow.card_status ||
-      gameRow.card_status === 'unscanned';
+      !gameRow.store_scanned_at;
 
     if (needsDs5) {
       packagesNeedingTelemetry.push(pkg);
@@ -3129,7 +3127,7 @@ function registerPlayStoreRoutes({ app, pool }) {
       const action = String(req.body?.action || '').trim().toLowerCase();
       let result;
       if (action === 'scan') {
-        result = await runCardStatusPipeline(pool, pkg);
+        return res.status(410).json({ error: 'Cards live checks are retired.' });
       } else {
         const status = req.body?.status || 'AUTO';
         const note = req.body?.note || null;
@@ -3164,6 +3162,7 @@ function registerPlayStoreRoutes({ app, pool }) {
   });
 
   app.post('/api/play/cards/batch-scan', async (req, res) => {
+    return res.status(410).json({ error: 'Cards bulk checks are retired.' });
     try {
       if (cardBatchQueue.running) {
         return res.status(409).json({ error: 'A cards refresh is already running.', cardBatchQueue });
