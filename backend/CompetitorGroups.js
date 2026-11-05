@@ -42,12 +42,14 @@ async function resolveCompetitorIds(client, rawIds) {
   );
   playListRows.forEach((r) => validCompetitorIds.add(r.competitor_id));
 
-  // 3. Amazon Lists that have competitor_id pointing to competitors.id
-  const { rows: amazonListRows } = await client.query(
-    `SELECT competitor_id FROM amazon_lists WHERE id = ANY($1::int[]) AND competitor_id IS NOT NULL`,
-    [cleanInputIds]
-  );
-  amazonListRows.forEach((r) => validCompetitorIds.add(r.competitor_id));
+  // 3. Amazon Lists matched to competitors by name
+  try {
+    const { rows: amazonRows } = await client.query(
+      `SELECT c.id FROM amazon_lists al JOIN competitors c ON LOWER(TRIM(c.name)) = LOWER(TRIM(al.name)) WHERE al.id = ANY($1::int[])`,
+      [cleanInputIds]
+    );
+    amazonRows.forEach((r) => validCompetitorIds.add(r.id));
+  } catch (_) {}
 
   return Array.from(validCompetitorIds);
 }

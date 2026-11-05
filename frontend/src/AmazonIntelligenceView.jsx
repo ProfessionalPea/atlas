@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
+import AtlasSelect from "./AtlasSelect";
 import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
 
 const SAMPLE_LINKS = [
@@ -638,6 +639,90 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     [overview.publishers, selectedPublisher]
   );
 
+  const competitorSelectOptions = useMemo(() => {
+    const list = [
+      {
+        value: "all",
+        label: `All Competitors (${overview.publishers.length} accounts)`,
+        icon: "public"
+      }
+    ];
+
+    if ((overview.competitorGroups || []).length > 0) {
+      overview.competitorGroups.forEach((grp) => {
+        list.push({
+          value: `group_${grp.id}`,
+          label: grp.name,
+          group: "Competitor Batches (Groups)",
+          badge: `${grp.account_count || 0} accounts`,
+          icon: "folder_special"
+        });
+      });
+    }
+
+    (overview.lists || []).forEach((item) => {
+      list.push({
+        value: item.id,
+        label: item.name,
+        group: "Individual Competitors",
+        badge: `${item.account_count || 0} accounts`,
+        icon: "folder"
+      });
+    });
+
+    if (ungroupedCount > 0) {
+      list.push({
+        value: "ungrouped",
+        label: `Ungrouped Accounts (${ungroupedCount})`,
+        icon: "folder_open"
+      });
+    }
+
+    return list;
+  }, [overview.publishers.length, overview.competitorGroups, overview.lists, ungroupedCount]);
+
+  const publisherSelectOptions = useMemo(() => {
+    const list = [
+      {
+        value: "all",
+        label: `All Accounts (${visiblePublishers.length})`,
+        icon: "storefront"
+      }
+    ];
+
+    visiblePublishers.forEach((pub) => {
+      const gCount = gamesByPublisher.get(pub.publisher_name)?.length ?? pub.total_games ?? pub.game_count ?? 0;
+      list.push({
+        value: pub.publisher_name,
+        label: getDisplayName(pub.publisher_name),
+        badge: `${gCount} ${gCount === 1 ? "game" : "games"}`,
+        icon: "storefront"
+      });
+    });
+
+    return list;
+  }, [visiblePublishers, gamesByPublisher, getDisplayName]);
+
+  const pricingSelectOptions = useMemo(
+    () => [
+      { value: "all", label: "All Pricing", icon: "payments" },
+      { value: "free", label: "Free Games Only", icon: "check_circle" },
+      { value: "paid", label: "Paid Games Only", icon: "monetization_on" }
+    ],
+    []
+  );
+
+  const sortSelectOptions = useMemo(
+    () => [
+      { value: "reviews", label: "Sort: Most Reviews", icon: "rate_review" },
+      { value: "rating", label: "Sort: Highest Rating", icon: "star" },
+      { value: "price_desc", label: "Sort: Price (High to Low)", icon: "arrow_downward" },
+      { value: "price_asc", label: "Sort: Price (Low to High)", icon: "arrow_upward" },
+      { value: "release", label: "Sort: Launch Date", icon: "calendar_today" }
+    ],
+    []
+  );
+
   // Open Competitor Batch modal (e.g. "Bahria" grouping Trenzy + Gaminator)
   const openBatchManager = useCallback((targetGroup = null) => {
     if (targetGroup) {
@@ -1231,41 +1316,18 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 <span className="material-symbols-outlined text-[15px]">folder</span>
                 Competitor:
               </span>
-              <div className="relative">
-                <select
-                  value={selectedListId}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setSelectedListId(val === "all" || val === "ungrouped" || String(val).startsWith("group_") ? val : Number(val));
-                    setSelectedPublisher("all");
-                  }}
-                  className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer"
-                >
-                  <option value="all">All Competitors ({overview.publishers.length} accounts)</option>
-                  {(overview.competitorGroups || []).length > 0 && (
-                    <optgroup label="Competitor Batches (Groups)">
-                      {overview.competitorGroups.map((grp) => (
-                        <option key={`group_${grp.id}`} value={`group_${grp.id}`}>
-                          📁 {grp.name} ({grp.competitor_names?.join(", ") || `${grp.competitor_ids?.length} competitors`} · {grp.account_count || 0} accounts)
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <optgroup label="Individual Competitors">
-                    {(overview.lists || []).map((list) => (
-                      <option key={list.id} value={list.id}>
-                        {list.name} ({list.account_count} accounts)
-                      </option>
-                    ))}
-                  </optgroup>
-                  {ungroupedCount > 0 && (
-                    <option value="ungrouped">Ungrouped Accounts ({ungroupedCount})</option>
-                  )}
-                </select>
-                <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                  unfold_more
-                </span>
-              </div>
+              <AtlasSelect
+                value={selectedListId}
+                onChange={(val) => {
+                  setSelectedListId(val === "all" || val === "ungrouped" || String(val).startsWith("group_") ? val : Number(val));
+                  setSelectedPublisher("all");
+                }}
+                options={competitorSelectOptions}
+                ariaLabel="Select competitor"
+                placeholder="All Competitors"
+                searchPlaceholder="Search competitors & batches..."
+                buttonClassName="max-w-[280px]"
+              />
             </div>
 
             {/* Publisher Account Dropdown */}
@@ -1274,23 +1336,15 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 <span className="material-symbols-outlined text-[15px]">storefront</span>
                 Publisher:
               </span>
-              <div className="relative">
-                <select
-                  value={selectedPublisher}
-                  onChange={(e) => setSelectedPublisher(e.target.value)}
-                  className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer max-w-[260px] truncate"
-                >
-                  <option value="all">All Accounts ({visiblePublishers.length})</option>
-                  {visiblePublishers.map((pub) => (
-                    <option key={pub.id} value={pub.publisher_name}>
-                      {getDisplayName(pub.publisher_name)} ({pub.game_count || 0} games)
-                    </option>
-                  ))}
-                </select>
-                <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                  unfold_more
-                </span>
-              </div>
+              <AtlasSelect
+                value={selectedPublisher}
+                onChange={(val) => setSelectedPublisher(val)}
+                options={publisherSelectOptions}
+                ariaLabel="Select publisher"
+                placeholder="All Accounts"
+                searchPlaceholder="Search publisher accounts..."
+                buttonClassName="max-w-[280px]"
+              />
             </div>
 
             {/* Date Range Popover Filter */}
@@ -1916,55 +1970,33 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative">
-              <select
-                value={selectedPublisher}
-                onChange={(e) => setSelectedPublisher(e.target.value)}
-                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer max-w-[210px] truncate"
-              >
-                <option value="all">All Accounts in View ({visiblePublishers.length})</option>
-                {visiblePublishers.map((p) => (
-                  <option key={p.id} value={p.publisher_name}>
-                    {getDisplayName(p.publisher_name)} ({p.total_games})
-                  </option>
-                ))}
-              </select>
-              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                unfold_more
-              </span>
-            </div>
+            <AtlasSelect
+              value={selectedPublisher}
+              onChange={(val) => setSelectedPublisher(val)}
+              options={publisherSelectOptions}
+              ariaLabel="Filter accounts in view"
+              placeholder="All Accounts in View"
+              searchPlaceholder="Search accounts..."
+              buttonClassName="max-w-[220px]"
+            />
 
-            <div className="relative">
-              <select
-                value={selectedPricing}
-                onChange={(e) => setSelectedPricing(e.target.value)}
-                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer"
-              >
-                <option value="all">All Pricing</option>
-                <option value="free">Free Only</option>
-                <option value="paid">Paid Only</option>
-              </select>
-              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                unfold_more
-              </span>
-            </div>
+            <AtlasSelect
+              value={selectedPricing}
+              onChange={(val) => setSelectedPricing(val)}
+              options={pricingSelectOptions}
+              ariaLabel="Filter pricing"
+              placeholder="All Pricing"
+              searchable={false}
+            />
 
-            <div className="relative">
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="h-9 pl-3 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-amber-400/50 focus:border-amber-400 focus:outline-none transition appearance-none cursor-pointer"
-              >
-                <option value="reviews">Sort: Most Reviews</option>
-                <option value="price_desc">Sort: Highest Price</option>
-                <option value="price_asc">Sort: Lowest Price</option>
-                <option value="rating">Sort: Highest Rating</option>
-                <option value="release">Sort: Newest Release</option>
-              </select>
-              <span className="material-symbols-outlined text-[16px] text-text-muted absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                unfold_more
-              </span>
-            </div>
+            <AtlasSelect
+              value={sortBy}
+              onChange={(val) => setSortBy(val)}
+              options={sortSelectOptions}
+              ariaLabel="Sort catalog"
+              placeholder="Sort by"
+              searchable={false}
+            />
 
             <div className="relative">
               <span className="material-symbols-outlined text-[16px] text-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none">

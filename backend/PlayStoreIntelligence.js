@@ -1981,6 +1981,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         return {
           ...p,
           total_games: Number(p.total_games) || 0,
+          game_count: Number(p.total_games) || 0,
           free_games: Number(p.free_games) || 0,
           paid_games: Number(p.paid_games) || 0,
           total_reviews: Number(p.total_reviews) || 0,

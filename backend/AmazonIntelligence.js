@@ -524,6 +524,7 @@ function registerAmazonRoutes({ app, pool }) {
         const lIds = listIdsByPub.get(p.id) || [];
         return {
           ...p,
+          game_count: Number(p.total_games) || 0,
           effective_name: (p.display_name && p.display_name.trim()) ? p.display_name.trim() : p.publisher_name,
           list_ids: lIds
         };
