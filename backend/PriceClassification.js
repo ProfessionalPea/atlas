@@ -278,16 +278,23 @@ function resolveEffectivePricing(row = {}) {
   } else if (manual) {
     effective = manual;
     source = PRICE_SOURCE.MANUAL;
+  } else if (auto === PRICE_STATUS.PRICE_TBA) {
+    effective = PRICE_STATUS.PRICE_TBA;
+    source = row.price_source || PRICE_SOURCE.UNKNOWN;
+  } else if (row.is_paid === true || (row.price != null && Number(row.price) > 0)) {
+    effective = PRICE_STATUS.PAID;
+    source = PRICE_SOURCE.PLAY_STORE_PRICE;
   } else {
-    effective = auto || PRICE_STATUS.UNKNOWN;
-    source = auto ? row.price_source || PRICE_SOURCE.UNKNOWN : PRICE_SOURCE.UNKNOWN;
+    // Default fallback: free title on Google Play
+    effective = PRICE_STATUS.FREE;
+    source = row.price_source || PRICE_SOURCE.PLAY_STORE_PRICE;
   }
 
   const pricing =
     effective === PRICE_STATUS.PAID ? 'paid'
     : effective === PRICE_STATUS.FREE ? 'free'
     : effective === PRICE_STATUS.PRICE_TBA ? 'tba'
-    : 'unknown';
+    : 'free';
 
   return {
     effective_price_status: effective,
@@ -303,7 +310,8 @@ function effectiveStatusSql(a = 'g') {
   return `(CASE
     WHEN ${a}.price_status IN ('PAID','FREE') THEN ${a}.price_status
     WHEN ${a}.manual_price_status IS NOT NULL THEN ${a}.manual_price_status
-    ELSE COALESCE(${a}.price_status, 'UNKNOWN')
+    WHEN COALESCE(${a}.is_paid, false) = true OR COALESCE(${a}.price, 0) > 0 THEN 'PAID'
+    ELSE 'FREE'
   END)`;
 }
 

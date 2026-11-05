@@ -166,6 +166,8 @@ function PlayStoreIntelligenceView({
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
   const [includeUnknownDates, setIncludeUnknownDates] = useState(false);
+  const [showDateFilterPopover, setShowDateFilterPopover] = useState(false);
+  const dateFilterPopoverRef = useRef(null);
 
   // Drawers & Modals (Layered z-index: Drawer z-[90], Modals z-[100], Confirmations z-[110])
   const [activeGameDrawer, setActiveGameDrawer] = useState(null);
@@ -412,6 +414,18 @@ function PlayStoreIntelligenceView({
     setVisibleRowCount(100);
   }, [appTypeFilter, selectedListId, selectedPublisher, selectedPricing, selectedStatus, searchQuery, sortBy, durationPreset, dateBasis]);
 
+  // Close date filter popover when clicking outside
+  useEffect(() => {
+    if (!showDateFilterPopover) return;
+    const handleClickOutside = (e) => {
+      if (dateFilterPopoverRef.current && !dateFilterPopoverRef.current.contains(e.target)) {
+        setShowDateFilterPopover(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showDateFilterPopover]);
+
   // Keyboard Escape dismissal & body scroll lock when modals/drawer are open
   useEffect(() => {
     const anyOpen = Boolean(
@@ -421,6 +435,7 @@ function PlayStoreIntelligenceView({
         showSheetModal ||
         showCountryBatchModal ||
         listModal ||
+        groupModal ||
         editingPublisher ||
         confirmDeletePub
     );
@@ -429,9 +444,11 @@ function PlayStoreIntelligenceView({
     document.body.style.overflow = "hidden";
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
-        if (keywordTarget) setKeywordTarget(null);
+        if (showDateFilterPopover) setShowDateFilterPopover(false);
+        else if (keywordTarget) setKeywordTarget(null);
         else if (confirmDeletePub) setConfirmDeletePub(null);
         else if (editingPublisher) setEditingPublisher(null);
+        else if (groupModal) setGroupModal(null);
         else if (listModal) setListModal(null);
         else if (showCountryBatchModal) setShowCountryBatchModal(false);
         else if (showSheetModal) setShowSheetModal(false);
@@ -451,8 +468,10 @@ function PlayStoreIntelligenceView({
     showSheetModal,
     showCountryBatchModal,
     listModal,
+    groupModal,
     editingPublisher,
-    confirmDeletePub
+    confirmDeletePub,
+    showDateFilterPopover
   ]);
 
   // Map publisher_name -> publisher record
@@ -708,8 +727,11 @@ function PlayStoreIntelligenceView({
       if (!dEval.known) entry.unknownDate += 1;
       if (dEval.inRange) {
         entry.total += 1;
-        if (g.pricing === "free") entry.free += 1;
-        else if (g.pricing === "paid") entry.paid += 1;
+        if (g.pricing === "paid" || Number(g.price) > 0 || g.is_paid === true) {
+          entry.paid += 1;
+        } else {
+          entry.free += 1;
+        }
         entry.installs += Number(g.real_installs ?? g.min_installs) || 0;
         entry.dailyDelta += Number(g.installs_delta_1d) || 0;
       }
@@ -802,12 +824,17 @@ function PlayStoreIntelligenceView({
   // Open Competitor Batch modal (e.g. "Bahria" grouping Trenzy + Gaminator)
   const openBatchManager = useCallback((targetGroup = null) => {
     if (targetGroup) {
+      const compIds = Array.isArray(targetGroup.competitor_ids) && targetGroup.competitor_ids.length > 0
+        ? [...targetGroup.competitor_ids]
+        : Array.isArray(targetGroup.list_ids)
+        ? [...targetGroup.list_ids]
+        : [];
       setGroupModal({
         mode: "edit",
         groupId: targetGroup.id,
         name: targetGroup.name,
         description: targetGroup.description || "",
-        competitorIds: Array.isArray(targetGroup.competitor_ids) ? [...targetGroup.competitor_ids] : []
+        competitorIds: compIds
       });
     } else {
       setGroupModal({
@@ -833,16 +860,18 @@ function PlayStoreIntelligenceView({
         method,
         body: JSON.stringify({
           name: groupModal.name.trim(),
-          description: groupModal.description.trim(),
-          competitor_ids: groupModal.competitorIds
+          description: groupModal.description?.trim() || "",
+          competitor_ids: groupModal.competitorIds,
+          competitorIds: groupModal.competitorIds
         })
       });
       if (res.ok) {
         const saved = await res.json();
         setGroupModal(null);
-        await loadOverview();
-        if (saved?.id) {
-          setSelectedListId(`group_${saved.id}`);
+        await loadOverview({ fresh: true });
+        const targetId = saved?.id || saved?.group?.id;
+        if (targetId) {
+          setSelectedListId(`group_${targetId}`);
         }
       } else {
         const err = await res.json();
@@ -1764,6 +1793,142 @@ function PlayStoreIntelligenceView({
               </div>
             </div>
 
+            {/* Date Range Popover Filter */}
+            <div className="relative" ref={dateFilterPopoverRef}>
+              <button
+                type="button"
+                onClick={() => setShowDateFilterPopover((prev) => !prev)}
+                className={`h-9 px-3 rounded-xl border text-xs font-semibold transition flex items-center gap-1.5 ${
+                  durationPreset !== "all"
+                    ? "bg-electric-blue/15 text-electric-blue border-electric-blue"
+                    : "bg-input-bg text-text-muted hover:text-text-main border-border-subtle hover:border-electric-blue/40"
+                }`}
+                title="Filter games by launch date or discovery date"
+              >
+                <span className="material-symbols-outlined text-[15px]">calendar_today</span>
+                <span>{durationPreset === "all" ? "Date: All Time" : `Date: ${dateWindow.label}`}</span>
+                <span className="material-symbols-outlined text-[14px]">
+                  {showDateFilterPopover ? "expand_less" : "expand_more"}
+                </span>
+              </button>
+
+              {showDateFilterPopover && (
+                <div
+                  className="absolute left-0 top-full mt-1.5 z-50 w-80 sm:w-96 bg-surface-solid border border-border-subtle rounded-2xl p-4 shadow-2xl flex flex-col gap-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between border-b border-border-subtle pb-2">
+                    <span className="text-xs font-bold text-text-main flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-[16px] text-electric-blue">calendar_today</span>
+                      Date Range Filter
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowDateFilterPopover(false)}
+                      className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Date Basis</label>
+                    <select
+                      value={dateBasis}
+                      onChange={(e) => setDateBasis(e.target.value)}
+                      className="rounded-xl bg-input-bg border border-border-subtle px-3 py-1.5 text-xs font-semibold text-text-main focus:outline-none focus:border-electric-blue cursor-pointer"
+                    >
+                      <option value="release_date">Play Store Launch Date</option>
+                      <option value="first_seen_at">First Discovered in Atlas</option>
+                    </select>
+                  </div>
+
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Presets</label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[
+                        { id: "all", label: "All Time" },
+                        { id: "today", label: "Today" },
+                        { id: "7d", label: "7 Days" },
+                        { id: "14d", label: "14 Days" },
+                        { id: "30d", label: "30 Days" },
+                        { id: "90d", label: "90 Days" },
+                        { id: "6m", label: "6 Months" },
+                        { id: "1y", label: "1 Year" },
+                        { id: "custom", label: "Custom Range" }
+                      ].map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => {
+                            setDurationPreset(p.id);
+                            if (p.id !== "custom") setShowDateFilterPopover(false);
+                          }}
+                          className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition ${
+                            durationPreset === p.id
+                              ? "bg-electric-blue text-white shadow-sm"
+                              : "bg-input-bg text-text-muted hover:text-text-main border border-border-subtle/50 hover:bg-surface-glass"
+                          }`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {durationPreset === "custom" && (
+                    <div className="flex flex-col gap-1.5 pt-1 border-t border-border-subtle">
+                      <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Custom Date Range</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="date"
+                          value={customStartDate}
+                          onChange={(e) => setCustomStartDate(e.target.value)}
+                          className="rounded-xl bg-input-bg border border-border-subtle px-2.5 py-1.5 text-xs text-text-main flex-1 focus:outline-none focus:border-electric-blue"
+                        />
+                        <span className="text-xs text-text-muted">to</span>
+                        <input
+                          type="date"
+                          value={customEndDate}
+                          onChange={(e) => setCustomEndDate(e.target.value)}
+                          className="rounded-xl bg-input-bg border border-border-subtle px-2.5 py-1.5 text-xs text-text-main flex-1 focus:outline-none focus:border-electric-blue"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {dateWindow.active && scopedStats.unknownDateCount > 0 && (
+                    <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-text-muted pt-1">
+                      <input
+                        type="checkbox"
+                        checked={includeUnknownDates}
+                        onChange={(e) => setIncludeUnknownDates(e.target.checked)}
+                        className="rounded border-border-subtle text-electric-blue"
+                      />
+                      <span>Include {scopedStats.unknownDateCount} games with unknown dates</span>
+                    </label>
+                  )}
+
+                  <div className="flex items-center justify-between pt-2 border-t border-border-subtle text-[11px] text-text-muted">
+                    <span>
+                      Known: <strong className="text-text-main">{scopedStats.knownDateCount.toLocaleString()}</strong>
+                      {scopedStats.unknownDateCount > 0 && ` · Unknown: ${scopedStats.unknownDateCount.toLocaleString()}`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDurationPreset("all");
+                        setShowDateFilterPopover(false);
+                      }}
+                      className="text-electric-blue hover:underline font-semibold"
+                    >
+                      Reset to All Time
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Reset Filters button if any filter active */}
             {(selectedListId !== "all" || selectedPublisher !== "all" || durationPreset !== "all") && (
               <button
@@ -1773,7 +1938,7 @@ function PlayStoreIntelligenceView({
                   setSelectedPublisher("all");
                   setDurationPreset("all");
                 }}
-                className="h-8 px-2.5 rounded-lg bg-surface-glass border border-border-subtle hover:border-urgent-red/40 text-text-muted hover:text-urgent-red text-xs font-medium transition flex items-center gap-1"
+                className="h-9 px-2.5 rounded-xl bg-surface-glass border border-border-subtle hover:border-urgent-red/40 text-text-muted hover:text-urgent-red text-xs font-medium transition flex items-center gap-1"
                 title="Reset all filters to show everything"
               >
                 <span className="material-symbols-outlined text-[14px]">filter_alt_off</span>
@@ -1867,85 +2032,6 @@ function PlayStoreIntelligenceView({
               </button>
             </div>
           )}
-        </div>
-
-        {/* Row 2: Launch Date / Early Discovery Filter */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-border-subtle">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <select
-              value={dateBasis}
-              onChange={(e) => setDateBasis(e.target.value)}
-              className="rounded-lg bg-input-bg border border-border-subtle px-2.5 py-1 text-[11px] font-semibold text-text-main"
-            >
-              <option value="release_date">Filter by: Play Store Launch Date</option>
-              <option value="first_seen_at">Filter by: First Discovered in Atlas</option>
-            </select>
-
-            {[
-              { id: "all", label: "All Time" },
-              { id: "today", label: "Today" },
-              { id: "7d", label: "7 Days" },
-              { id: "14d", label: "14 Days" },
-              { id: "30d", label: "30 Days" },
-              { id: "90d", label: "90 Days" },
-              { id: "6m", label: "6 Months" },
-              { id: "1y", label: "1 Year" },
-              { id: "custom", label: "Custom Range" }
-            ].map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => setDurationPreset(p.id)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
-                  durationPreset === p.id
-                    ? "bg-electric-blue text-white"
-                    : "bg-input-bg text-text-muted hover:text-text-main"
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
-
-            {durationPreset === "custom" && (
-              <div className="flex items-center gap-1.5 ml-1">
-                <input
-                  type="date"
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                  className="rounded-lg bg-input-bg border border-border-subtle px-2 py-1 text-xs text-text-main"
-                />
-                <span className="text-xs text-text-muted">to</span>
-                <input
-                  type="date"
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                  className="rounded-lg bg-input-bg border border-border-subtle px-2 py-1 text-xs text-text-main"
-                />
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 text-[11px] text-text-muted">
-            <span>
-              Known dates: <strong className="text-text-main">{scopedStats.knownDateCount.toLocaleString()}</strong>
-              {scopedStats.unknownDateCount > 0 && (
-                <>
-                  {" "}
-                  · Unknown dates: <strong className="text-amber-800 dark:text-amber-400 font-semibold">{scopedStats.unknownDateCount.toLocaleString()}</strong>
-                </>
-              )}
-            </span>
-            {dateWindow.active && scopedStats.unknownDateCount > 0 && (
-              <label className="inline-flex items-center gap-1.5 cursor-pointer text-text-main">
-                <input
-                  type="checkbox"
-                  checked={includeUnknownDates}
-                  onChange={(e) => setIncludeUnknownDates(e.target.checked)}
-                />
-                <span>Include unknown dates</span>
-              </label>
-            )}
-          </div>
         </div>
       </div>
 
@@ -2081,7 +2167,7 @@ function PlayStoreIntelligenceView({
               };
               const effectiveAllTime = appTypeFilter !== "all" ? (pSt.allTimeMatching ?? 0) : (Number(pub.total_games) || 0);
               const total = pSt.total;
-              const free = pSt.free;
+              const free = pSt.free === 0 && pSt.paid === 0 && total > 0 ? total : pSt.free;
               const paid = pSt.paid;
               const freeWidthPct = (free / maxPublisherGames) * 100;
               const paidWidthPct = (paid / maxPublisherGames) * 100;
@@ -3938,7 +4024,8 @@ function PlayStoreIntelligenceView({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1.5 bg-input-bg rounded-xl border border-border-subtle">
                     {(overview.lists || []).map((comp) => {
-                      const isChecked = groupModal.competitorIds.includes(comp.id);
+                      const targetId = comp.competitor_id || comp.id;
+                      const isChecked = groupModal.competitorIds.includes(targetId) || groupModal.competitorIds.includes(comp.id);
                       return (
                         <label
                           key={comp.id}
@@ -3953,8 +4040,8 @@ function PlayStoreIntelligenceView({
                             checked={isChecked}
                             onChange={(e) => {
                               const next = e.target.checked
-                                ? [...groupModal.competitorIds, comp.id]
-                                : groupModal.competitorIds.filter((id) => id !== comp.id);
+                                ? [...groupModal.competitorIds.filter((id) => id !== targetId && id !== comp.id), targetId]
+                                : groupModal.competitorIds.filter((id) => id !== targetId && id !== comp.id);
                               setGroupModal({ ...groupModal, competitorIds: next });
                             }}
                             className="accent-electric-blue rounded w-4 h-4 cursor-pointer"

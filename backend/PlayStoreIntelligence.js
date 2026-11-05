@@ -2096,6 +2096,7 @@ function registerPlayStoreRoutes({ app, pool }) {
           SELECT 
             g.id,
             g.name,
+            g.description,
             COALESCE(array_agg(c.id) FILTER (WHERE c.id IS NOT NULL), '{}') AS competitor_ids,
             COALESCE(array_agg(c.name) FILTER (WHERE c.name IS NOT NULL), '{}') AS competitor_names
           FROM competitor_groups g
@@ -2105,12 +2106,15 @@ function registerPlayStoreRoutes({ app, pool }) {
           ORDER BY g.name ASC
         `);
         competitorGroups = (groupsRes.rows || []).map((row) => {
-          const matchedLists = lists.filter((l) => (row.competitor_ids || []).includes(l.competitor_id));
+          const matchedLists = lists.filter(
+            (l) => (row.competitor_ids || []).includes(l.competitor_id) || (row.competitor_ids || []).includes(l.id)
+          );
           const pubIdSet = new Set();
           matchedLists.forEach((l) => (l.publisher_ids || []).forEach((pId) => pubIdSet.add(pId)));
           return {
             id: row.id,
             name: row.name,
+            description: row.description || '',
             competitor_ids: row.competitor_ids || [],
             competitor_names: row.competitor_names || [],
             list_ids: matchedLists.map((l) => l.id),
@@ -3350,6 +3354,7 @@ module.exports = {
   initializePlayStoreStorage,
   syncLegacyAccountsAndCompetitors,
   registerPlayStoreRoutes,
+  invalidatePlayOverviewCache,
   validatePlayStoreUrl,
   validatePlayBatch,
   doesAppMatchPublisher,
