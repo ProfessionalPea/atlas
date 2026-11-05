@@ -834,7 +834,9 @@ function PlayStoreIntelligenceView({
         groupId: targetGroup.id,
         name: targetGroup.name,
         description: targetGroup.description || "",
-        competitorIds: compIds
+        competitorIds: compIds,
+        saving: false,
+        error: null
       });
     } else {
       setGroupModal({
@@ -842,14 +844,17 @@ function PlayStoreIntelligenceView({
         groupId: "new",
         name: "",
         description: "",
-        competitorIds: []
+        competitorIds: [],
+        saving: false,
+        error: null
       });
     }
   }, []);
 
   const handleSaveBatch = async (e) => {
     e?.preventDefault();
-    if (!groupModal || !groupModal.name.trim()) return;
+    if (!groupModal || !groupModal.name.trim() || groupModal.saving) return;
+    setGroupModal((prev) => ({ ...prev, saving: true, error: null }));
     try {
       const isCreate = groupModal.mode === "create";
       const url = isCreate
@@ -874,12 +879,20 @@ function PlayStoreIntelligenceView({
           setSelectedListId(`group_${targetId}`);
         }
       } else {
-        const err = await res.json();
-        alert(err.error || "Failed to save competitor batch.");
+        const err = await res.json().catch(() => ({}));
+        setGroupModal((prev) => ({
+          ...prev,
+          saving: false,
+          error: err.error || "Failed to save competitor batch."
+        }));
       }
     } catch (err) {
       console.error("Save batch error:", err);
-      alert("Failed to save competitor batch: " + (err.message || err));
+      setGroupModal((prev) => ({
+        ...prev,
+        saving: false,
+        error: err.message || "Failed to save competitor batch."
+      }));
     }
   };
 
@@ -3986,6 +3999,13 @@ function PlayStoreIntelligenceView({
               </div>
 
               <form onSubmit={handleSaveBatch} className="p-5 overflow-y-auto flex-1 flex flex-col gap-4">
+                {groupModal.error && (
+                  <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[16px]">error</span>
+                    <span className="flex-1 font-medium">{groupModal.error}</span>
+                  </div>
+                )}
+
                 <div>
                   <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
                     Batch Name
@@ -4067,16 +4087,21 @@ function PlayStoreIntelligenceView({
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
+                      disabled={groupModal.saving}
                       onClick={() => setGroupModal(null)}
-                      className="px-4 py-2 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:bg-surface-glass"
+                      className="px-4 py-2 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:bg-surface-glass disabled:opacity-50"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="px-5 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shadow-sm"
+                      disabled={groupModal.saving}
+                      className="px-5 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shadow-sm disabled:opacity-50 flex items-center gap-1.5 transition"
                     >
-                      Save Batch
+                      {groupModal.saving && (
+                        <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                      )}
+                      <span>{groupModal.saving ? "Saving..." : "Save Batch"}</span>
                     </button>
                   </div>
                 </div>

@@ -745,19 +745,22 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       ? `https://play.google.com/store/apps/dev?id=${encodeURIComponent(devId)}`
       : sourceUrl;
 
+    const isPaidStatus = isPaid ? 'PAID' : 'FREE';
     const upsertRes = await pool.query(
       `INSERT INTO games (
          package_name, title, category, rating, ratings_count, icon,
          description, short_description, installs, min_installs, released,
          updated, ad_count, developer_id, developer_url, developer_name,
          is_paid, price, currency, price_text,
-         first_seen_at, last_seen_at, discovery_source
+         first_seen_at, last_seen_at, discovery_source,
+         price_status, price_source
        ) VALUES (
          $1, $2, $3, $4, $5, $6,
          $7, $8, $9, $10, $11,
          $12, 0, $13, $14, $15,
          $16, $17, $18, $19,
-         now(), now(), 'play_publisher'
+         now(), now(), 'play_publisher',
+         $20, 'play_store_price'
        )
        ON CONFLICT (package_name) DO UPDATE SET
          title = COALESCE(NULLIF(EXCLUDED.title, ''), games.title),
@@ -771,6 +774,8 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
          price = COALESCE(EXCLUDED.price, games.price),
          currency = COALESCE(EXCLUDED.currency, games.currency),
          price_text = COALESCE(EXCLUDED.price_text, games.price_text),
+         price_status = COALESCE(games.price_status, EXCLUDED.price_status),
+         price_source = COALESCE(games.price_source, EXCLUDED.price_source),
          last_seen_at = now()
        RETURNING id, release_date, real_installs, store_scanned_at, card_status`,
       [
@@ -792,7 +797,8 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
         isPaid,
         priceNum,
         currency,
-        priceText
+        priceText,
+        isPaidStatus
       ]
     );
 
@@ -1073,17 +1079,20 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
   }
 
   // 2. UPSERT into games table (preserving campaign evidence!)
+  const isPaidStatus = isPaid ? 'PAID' : 'FREE';
   const upsertGame = await pool.query(
     `INSERT INTO games (
        package_name, title, category, rating, ratings_count, icon, header_image,
        description, short_description, installs, min_installs, released, release_date,
        updated, is_paid, price, currency, price_text, developer_name, developer_id, developer_url,
-       first_seen_at, last_seen_at, store_scanned_at, discovery_source
+       first_seen_at, last_seen_at, store_scanned_at, discovery_source,
+       price_status, price_source
      ) VALUES (
        $1, $2, $3, $4, $5, $6, $7,
        $8, $9, $10, $11, $12, $13::date,
        $14, $15, $16, $17, $18, $19, $20, $21,
-       now(), now(), now(), 'single_game_import'
+       now(), now(), now(), 'single_game_import',
+       $22, 'play_store_price'
      )
      ON CONFLICT (package_name) DO UPDATE SET
        title = COALESCE(NULLIF(EXCLUDED.title, ''), games.title),
@@ -1102,6 +1111,8 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
        price = COALESCE(EXCLUDED.price, games.price),
        currency = COALESCE(EXCLUDED.currency, games.currency),
        price_text = COALESCE(EXCLUDED.price_text, games.price_text),
+       price_status = COALESCE(games.price_status, EXCLUDED.price_status),
+       price_source = COALESCE(games.price_source, EXCLUDED.price_source),
        developer_name = COALESCE(EXCLUDED.developer_name, games.developer_name),
        developer_id = COALESCE(EXCLUDED.developer_id, games.developer_id),
        developer_url = COALESCE(EXCLUDED.developer_url, games.developer_url),
@@ -1129,7 +1140,8 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
       priceText,
       pubName,
       devId,
-      developerUrl
+      developerUrl,
+      isPaidStatus
     ]
   );
 

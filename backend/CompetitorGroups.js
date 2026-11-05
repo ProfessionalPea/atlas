@@ -113,7 +113,7 @@ function registerCompetitorGroupRoutes({ app, pool }) {
         await client.query('BEGIN');
         const insertRes = await client.query(
           `INSERT INTO competitor_groups (name, description) VALUES ($1, $2)
-           ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description
+           ON CONFLICT (name) DO UPDATE SET description = COALESCE(EXCLUDED.description, competitor_groups.description)
            RETURNING *`,
           [trimmedName, trimmedDesc]
         );
@@ -135,6 +135,9 @@ function registerCompetitorGroupRoutes({ app, pool }) {
         return res.json({ status: 'created', group, id: group.id });
       } catch (e) {
         await client.query('ROLLBACK');
+        if (e.code === '23505') {
+          return res.status(409).json({ error: `A competitor batch named "${trimmedName}" already exists.` });
+        }
         throw e;
       } finally {
         client.release();
@@ -159,6 +162,12 @@ function registerCompetitorGroupRoutes({ app, pool }) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        const existsRes = await client.query('SELECT id, name FROM competitor_groups WHERE id = $1', [groupId]);
+        if (existsRes.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Competitor batch not found.' });
+        }
+
         if (trimmedName || trimmedDesc !== undefined) {
           await client.query(
             `UPDATE competitor_groups
@@ -186,6 +195,9 @@ function registerCompetitorGroupRoutes({ app, pool }) {
         return res.json({ status: 'updated', id: groupId });
       } catch (e) {
         await client.query('ROLLBACK');
+        if (e.code === '23505') {
+          return res.status(409).json({ error: `A competitor batch named "${trimmedName}" already exists.` });
+        }
         throw e;
       } finally {
         client.release();
