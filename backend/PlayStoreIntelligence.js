@@ -776,6 +776,9 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
          price_text = COALESCE(EXCLUDED.price_text, games.price_text),
          price_status = COALESCE(games.price_status, EXCLUDED.price_status),
          price_source = COALESCE(games.price_source, EXCLUDED.price_source),
+         is_suspended = false,
+         suspended_at = NULL,
+         release_status = CASE WHEN games.release_status = 'SUSPENDED' THEN 'LIVE' ELSE games.release_status END,
          last_seen_at = now()
        RETURNING id, release_date, real_installs, store_scanned_at, card_status`,
       [
@@ -899,6 +902,52 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       },
       isCancelled
     );
+  }
+
+  // Check previously linked games missing from the current live catalogue to see if they were unpublished/suspended
+  if (devResult.anySucceeded && rawApps.length > 0 && prevLinkedSet.size > 0 && !isCancelled()) {
+    const liveSet = new Set(pkgList);
+    const missingPkgs = [...prevLinkedSet].filter((p) => !liveSet.has(p));
+    if (missingPkgs.length > 0) {
+      await mapWithConcurrency(
+        missingPkgs,
+        3,
+        async (missingPkg) => {
+          if (isCancelled()) return;
+          try {
+            await fetchPlayStoreDs5(missingPkg, { timeoutMs: 8000 });
+          } catch (dsErr) {
+            const msg = String(dsErr?.message || '');
+            let isNotFound = /HTTP 404|not found/i.test(msg);
+            if (!isNotFound) {
+              try {
+                await runWithTimeout(
+                  () => gplay.app({ appId: missingPkg, country: 'us', lang: 'en' }),
+                  7000,
+                  `gplay.app(${missingPkg})`
+                );
+              } catch (gpErr) {
+                if (/404|not found/i.test(String(gpErr?.message || ''))) {
+                  isNotFound = true;
+                }
+              }
+            }
+            if (isNotFound) {
+              await pool.query(
+                `UPDATE games
+                 SET is_suspended = true,
+                     suspended_at = COALESCE(suspended_at, now()),
+                     release_status = 'SUSPENDED',
+                     campaign_active = false
+                 WHERE package_name = $1`,
+                [missingPkg]
+              );
+            }
+          }
+        },
+        isCancelled
+      );
+    }
   }
 
   // Recompute aggregate publisher metrics from all linked games
@@ -1237,6 +1286,11 @@ async function initializePlayStoreStorage(pool) {
     UPDATE games
     SET first_seen_at = COALESCE(store_scanned_at, installs_scanned_at, now())
     WHERE first_seen_at IS NULL;
+
+    UPDATE games
+    SET campaign_active = false,
+        release_status = 'SUSPENDED'
+    WHERE COALESCE(is_suspended, false) = true OR release_status = 'SUSPENDED';
 
     CREATE TABLE IF NOT EXISTS play_publishers (
       id SERIAL PRIMARY KEY,
@@ -1920,12 +1974,13 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.manual_price_status,
             g.manual_price_note,
             g.manual_price_by,
-            g.manual_price_at
+            g.manual_price_at,
+            COALESCE(g.is_suspended, false) AS is_suspended,
+            g.suspended_at
           FROM account_games ag
           JOIN play_publishers p ON p.id = ag.account_id
           JOIN games g ON g.id = ag.game_id
-          WHERE COALESCE(g.is_suspended, false) = false
-          ORDER BY COALESCE(g.real_installs, g.min_installs, 0) DESC, COALESCE(g.ratings_count, 0) DESC, g.title ASC
+          ORDER BY COALESCE(g.is_suspended, false) ASC, COALESCE(g.real_installs, g.min_installs, 0) DESC, COALESCE(g.ratings_count, 0) DESC, g.title ASC
         `),
         pool.query(`
           SELECT *
@@ -2014,19 +2069,23 @@ function registerPlayStoreRoutes({ app, pool }) {
         const countrySummary = countryByPkg.get(g.package_name) || null;
         const sharedPubs = publishersByPkg.get(g.package_name) || [g.publisher_name];
         const parsedRel = g.release_date || parseReleaseDateIso(g.released);
-        const relStatus = g.release_status || (countrySummary?.preRegisterCount > 0 && countrySummary?.liveCount === 0 ? 'PRE_REGISTERED' : 'LIVE');
+        const isSuspended = Boolean(g.is_suspended) || g.release_status === 'SUSPENDED';
+        const relStatus = isSuspended
+          ? 'SUSPENDED'
+          : (g.release_status || (countrySummary?.preRegisterCount > 0 && countrySummary?.liveCount === 0 ? 'PRE_REGISTERED' : 'LIVE'));
         const pubEntry = pubById.get(g.publisher_id);
         const compNames = pubEntry?.competitor_names || [];
         return {
           ...g,
+          is_suspended: isSuspended,
           card_status: normalizeCardStatusValue(g.card_status),
           competitor_names: compNames,
           competitor_name: compNames[0] || null,
           has_competitor_conflict: compNames.length > 1,
           conflict_competitor_names: compNames.length > 1 ? compNames : [],
-          has_campaign: Boolean(g.campaign_active) || Number(g.ad_count) > 0,
-          campaign_active: Boolean(g.campaign_active),
-          campaign_source: g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null),
+          has_campaign: isSuspended ? false : (Boolean(g.campaign_active) || Number(g.ad_count) > 0),
+          campaign_active: isSuspended ? false : Boolean(g.campaign_active),
+          campaign_source: isSuspended ? null : (g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null)),
           first_campaign_seen_at: g.first_campaign_seen_at || null,
           last_campaign_seen_at: g.last_campaign_seen_at || null,
           pricing: effective.pricing, // 'paid' | 'free' | 'tba' | 'unknown'
@@ -2368,6 +2427,8 @@ function registerPlayStoreRoutes({ app, pool }) {
           first_campaign_seen_at = COALESCE(first_campaign_seen_at, last_campaign_seen_at, now()),
           last_campaign_seen_at = COALESCE(last_campaign_seen_at, now())
         WHERE LOWER(package_name) = ANY($1::text[])
+          AND COALESCE(is_suspended, false) = false
+          AND COALESCE(release_status, '') <> 'SUSPENDED'
         RETURNING id
       `, [uniquePkgs]);
 
@@ -2706,6 +2767,7 @@ function registerPlayStoreRoutes({ app, pool }) {
     try {
       const pkg = normalizePackageName(req.params.packageName);
       // Run gplay.app + full telemetry pipeline
+      let gplayNotFound = false;
       try {
         const appData = await runWithTimeout(
           () => gplay.app({ appId: pkg, country: 'us', lang: 'en' }),
@@ -2733,6 +2795,9 @@ function registerPlayStoreRoutes({ app, pool }) {
                  price = $14,
                  currency = $15,
                  price_text = $16,
+                 is_suspended = false,
+                 suspended_at = NULL,
+                 release_status = CASE WHEN release_status = 'SUSPENDED' THEN 'LIVE' ELSE release_status END,
                  last_seen_at = now(),
                  store_scanned_at = now()
              WHERE package_name = $1`,
@@ -2756,9 +2821,30 @@ function registerPlayStoreRoutes({ app, pool }) {
             ]
           );
         }
-      } catch {}
+      } catch (gpErr) {
+        if (/404|not found/i.test(String(gpErr?.message || ''))) {
+          gplayNotFound = true;
+        }
+      }
 
       const result = await runFullTelemetryForPackage(pool, pkg, { forceRefresh: true });
+      if (gplayNotFound && !result?.pipelines?.installs) {
+        await pool.query(
+          `UPDATE games
+           SET is_suspended = true,
+               suspended_at = COALESCE(suspended_at, now()),
+               release_status = 'SUSPENDED',
+               campaign_active = false
+           WHERE package_name = $1`,
+          [pkg]
+        );
+        if (result?.game) {
+          result.game.is_suspended = true;
+          result.game.release_status = 'SUSPENDED';
+          result.game.campaign_active = false;
+        }
+      }
+      invalidatePlayOverviewCache();
       res.json({ status: 'refreshed', packageName: pkg, game: result.game });
     } catch (err) {
       console.error('[Play Refresh Game Error]:', err);

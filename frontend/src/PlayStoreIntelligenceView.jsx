@@ -522,6 +522,9 @@ function PlayStoreIntelligenceView({
 
   const getAppReleaseStatus = useCallback((g) => {
     if (!g) return "LIVE";
+    if (g.is_suspended === true || g.release_status === "SUSPENDED") {
+      return "SUSPENDED";
+    }
     const isPreReg =
       g.release_status === "PRE_REGISTERED" ||
       g.pricing === "tba" ||
@@ -772,6 +775,7 @@ function PlayStoreIntelligenceView({
         if (selectedStatus === "prereg" && getAppReleaseStatus(g) !== "PRE_REGISTERED") return false;
         if (selectedStatus === "live" && getAppReleaseStatus(g) !== "LIVE") return false;
         if (selectedStatus === "early_access" && getAppReleaseStatus(g) !== "EARLY_ACCESS") return false;
+        if (selectedStatus === "suspended" && getAppReleaseStatus(g) !== "SUSPENDED") return false;
         const dEval = evaluateGameDate(g);
         if (!dEval.inRange) return false;
         if (q) {
@@ -901,7 +905,8 @@ function PlayStoreIntelligenceView({
       { value: "all", label: "All Statuses", icon: "rule" },
       { value: "live", label: "Live Only", icon: "sensors" },
       { value: "prereg", label: "Pre-Register Only", icon: "app_registration" },
-      { value: "early_access", label: "Early Access Only", icon: "schedule" }
+      { value: "early_access", label: "Early Access Only", icon: "schedule" },
+      { value: "suspended", label: "Unpublished / Suspended", icon: "block" }
     ],
     []
   );
@@ -1562,23 +1567,26 @@ function PlayStoreIntelligenceView({
               <button
                 type="button"
                 disabled={scanStatus.running}
-                onClick={() =>
-                  handleStartScan({
-                    mode: unscannedPublisherCount > 0 ? "unscanned_only" : "update_all"
-                  })
-                }
-                title={
-                  unscannedPublisherCount > 0
-                    ? `Scan ${unscannedPublisherCount} unscanned publisher accounts first`
-                    : `Refresh all ${overview.publishers.length} Play Store publisher catalogues`
-                }
+                onClick={() => handleStartScan({ mode: "update_all" })}
+                title={`Refresh all ${overview.publishers.length} Play Store publisher accounts`}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[16px] text-emerald-500">sync</span>
-                {unscannedPublisherCount > 0
-                  ? `Scan Unscanned (${unscannedPublisherCount})`
-                  : `Update All (${overview.publishers.length})`}
+                Update all data ({overview.publishers.length})
               </button>
+
+              {unscannedPublisherCount > 0 && (
+                <button
+                  type="button"
+                  disabled={scanStatus.running}
+                  onClick={() => handleStartScan({ mode: "unscanned_only" })}
+                  title={`Scan ${unscannedPublisherCount} unscanned publisher accounts first`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition disabled:opacity-50"
+                >
+                  <span className="material-symbols-outlined text-[16px] text-amber-500">cloud_sync</span>
+                  Scan Unscanned ({unscannedPublisherCount})
+                </button>
+              )}
 
               <button
                 type="button"
@@ -2653,7 +2661,7 @@ function PlayStoreIntelligenceView({
                                     Likely Paid
                                   </span>
                                 )}
-                                {(g.has_campaign || g.campaign_active) && (
+                                {(g.has_campaign || g.campaign_active) && getAppReleaseStatus(g) !== "SUSPENDED" && !g.is_suspended && (
                                   <span
                                     className="px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[9px] font-semibold uppercase tracking-wider shrink-0 border border-sky-500/30 select-none cursor-help"
                                     title={
@@ -2710,6 +2718,17 @@ function PlayStoreIntelligenceView({
                         <td className="py-2.5 px-3 text-center">
                           {(() => {
                             const status = getAppReleaseStatus(g);
+                            if (status === "SUSPENDED") {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-urgent-red/15 text-urgent-red border border-urgent-red/30 select-none whitespace-nowrap"
+                                  title="App is unpublished or suspended on Google Play"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-urgent-red" />
+                                  Unpublished
+                                </span>
+                              );
+                            }
                             if (status === "PRE_REGISTERED") {
                               return (
                                 <span

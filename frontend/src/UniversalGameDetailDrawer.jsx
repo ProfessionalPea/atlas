@@ -257,7 +257,15 @@ export default function UniversalGameDetailDrawer({
                         Likely Paid
                       </span>
                     )}
-                    {(game.has_campaign || game.campaign_active) && (
+                    {(game.is_suspended === true || game.release_status === "SUSPENDED") && (
+                      <span
+                        className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-urgent-red/15 border-urgent-red/30 text-urgent-red select-none"
+                        title="App is unpublished or suspended on Google Play"
+                      >
+                        Unpublished / Suspended
+                      </span>
+                    )}
+                    {(game.has_campaign || game.campaign_active) && !game.is_suspended && game.release_status !== "SUSPENDED" && (
                       <span
                         className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase border bg-sky-50 dark:bg-sky-500/15 border-sky-300 dark:border-sky-500/30 text-sky-700 dark:text-sky-300 select-none cursor-help"
                         title={
