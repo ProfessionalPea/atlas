@@ -2376,6 +2376,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         }
       }
 
+      invalidatePlayOverviewCache();
       res.json({
         status: 'imported',
         listsCreated,
@@ -2579,7 +2580,8 @@ function registerPlayStoreRoutes({ app, pool }) {
       mode,
       totalPublishers: validTargets.length,
       createdList,
-      targetListIds: [...targetListIds]
+      targetListIds: [...targetListIds],
+      scanStatus: playScanStatus
     });
 
     (async () => {
@@ -3090,6 +3092,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         }
       }
 
+      invalidatePlayOverviewCache();
       res.json({ status: 'updated' });
     } catch (err) {
       console.error('[Play Update Publisher Error]:', err);
@@ -3100,6 +3103,7 @@ function registerPlayStoreRoutes({ app, pool }) {
   app.delete('/api/play/publishers/:id', async (req, res) => {
     try {
       await pool.query(`DELETE FROM play_publishers WHERE id = $1`, [req.params.id]);
+      invalidatePlayOverviewCache();
       res.json({ status: 'deleted' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete publisher.' });
@@ -3132,6 +3136,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         );
       }
 
+      invalidatePlayOverviewCache();
       res.json({ status: 'created', list });
     } catch (err) {
       console.error('[Play Create List Error]:', err);
@@ -3156,6 +3161,7 @@ function registerPlayStoreRoutes({ app, pool }) {
          RETURNING *`,
         [listId, name, description ?? null]
       );
+      invalidatePlayOverviewCache();
       res.json({ status: 'updated', list: updated.rows[0] });
     } catch (err) {
       console.error('[Play Rename List Error]:', err);
@@ -3166,6 +3172,7 @@ function registerPlayStoreRoutes({ app, pool }) {
   app.delete('/api/play/lists/:id', async (req, res) => {
     try {
       await pool.query(`DELETE FROM play_lists WHERE id = $1`, [req.params.id]);
+      invalidatePlayOverviewCache();
       res.json({ status: 'deleted' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete list.' });
@@ -3204,6 +3211,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         );
       }
 
+      invalidatePlayOverviewCache();
       res.json({ status: 'updated' });
     } catch (err) {
       console.error('[Play List Membership Error]:', err);

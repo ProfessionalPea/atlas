@@ -273,7 +273,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     };
   }, [loadOverview]);
 
-  // Adaptive scan status polling: 2s while actively scanning, 10s while idle, paused when tab is hidden
+  const lastCompletedPublishersRef = useRef(0);
+
+  // Adaptive scan status polling: 1.5s while actively scanning, 8s while idle, paused when tab is hidden
   useEffect(() => {
     let disposed = false;
     let timerId = null;
@@ -288,17 +290,22 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         if (res.ok) {
           const st = await res.json();
           if (st.running) isActive = true;
-          setScanStatus((prev) => {
-            if (prev.running && !st.running) {
-              loadOverview({ fresh: true });
-            }
-            return st;
-          });
+          const completedNow = Number(st.completedPublishers || 0);
+          if (
+            (scanStatus.running && !st.running) ||
+            (st.running && completedNow > lastCompletedPublishersRef.current)
+          ) {
+            lastCompletedPublishersRef.current = completedNow;
+            loadOverview({ fresh: true });
+          } else if (!st.running) {
+            lastCompletedPublishersRef.current = 0;
+          }
+          setScanStatus(st);
         }
       } catch {}
 
       if (!disposed) {
-        const nextDelay = isActive ? 2000 : 10000;
+        const nextDelay = isActive ? 1500 : 8000;
         timerId = setTimeout(checkStatus, nextDelay);
       }
     };
@@ -805,7 +812,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       if (res.ok) {
         if (selectedListId === `group_${groupId}`) setSelectedListId("all");
         setGroupModal(null);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Delete batch error:", err);
@@ -892,30 +899,48 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         listIds: scanTargetListIds,
         newListName: scanNewListName.trim() || undefined
       };
+      setScanStatus((prev) => ({
+        ...prev,
+        running: true,
+        state: "scanning",
+        phase: "starting",
+        completedPublishers: 0,
+        totalPublishers: Array.isArray(payload.links) ? payload.links.length : prev.totalPublishers || 1,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        log: "> 🚀 Starting Amazon catalogue scan..."
+      }));
       const res = await fetcher(`${API_BASE}/api/amazon/scan`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (res.ok) {
+        if (data?.scanStatus) {
+          setScanStatus(data.scanStatus);
+        }
         setValidationResult(null);
         setScanNewListName("");
         setShowScannerModal(false);
         if (data?.createdList?.id) {
-          await loadOverview();
+          await loadOverview({ fresh: true });
           setSelectedListId(data.createdList.id);
         }
-      } else if (data?.validation) {
-        setValidationResult({
-          totalSubmitted: data.validation.length,
-          validCount: data.validation.filter((v) => v.valid && !v.duplicate).length,
-          duplicateCount: data.validation.filter((v) => v.duplicate).length,
-          invalidCount: data.validation.filter((v) => !v.valid).length,
-          validation: data.validation
-        });
+      } else {
+        setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
+        if (data?.validation) {
+          setValidationResult({
+            totalSubmitted: data.validation.length,
+            validCount: data.validation.filter((v) => v.valid && !v.duplicate).length,
+            duplicateCount: data.validation.filter((v) => v.duplicate).length,
+            invalidCount: data.validation.filter((v) => !v.valid).length,
+            validation: data.validation
+          });
+        }
       }
     } catch (err) {
       console.error("Scan start failed:", err);
+      setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
     }
   };
 
@@ -967,7 +992,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         if (res.ok) {
           const data = await res.json();
           targetListId = data?.list?.id;
-          await loadOverview();
+          await loadOverview({ fresh: true });
           if (targetListId) setSelectedListId(targetListId);
           setListModal(null);
         }
@@ -986,7 +1011,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
             publisherIds: listModal.publisherIds || []
           })
         });
-        await loadOverview();
+        await loadOverview({ fresh: true });
         setListModal(null);
       }
 
@@ -1008,7 +1033,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       if (res.ok) {
         if (Number(selectedListId) === Number(listId)) setSelectedListId("all");
         setListModal(null);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Delete list failed:", err);
@@ -1028,7 +1053,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         })
       });
       if (res.ok) {
-        await loadOverview();
+        await loadOverview({ fresh: true });
         setEditingPublisher(null);
       }
     } catch (err) {
@@ -1054,7 +1079,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
             prev ? { ...prev, list_ids: (prev.list_ids || []).filter((id) => Number(id) !== Number(listId)) } : null
           );
         }
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Remove from list failed:", err);
@@ -1069,7 +1094,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
         setConfirmDeletePub(null);
         setEditingPublisher(null);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Delete publisher failed:", err);

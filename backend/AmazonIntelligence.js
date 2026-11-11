@@ -747,7 +747,8 @@ function registerAmazonRoutes({ app, pool }) {
       totalPublishers: validTargets.length,
       createdList,
       targetListIds: [...targetListIds],
-      validation: batch
+      validation: batch,
+      scanStatus: amazonScanStatus
     });
 
     (async () => {
@@ -899,6 +900,7 @@ function registerAmazonRoutes({ app, pool }) {
         }
       }
 
+      invalidateAmazonOverviewCache();
       res.json({ status: 'updated' });
     } catch (err) {
       console.error('[Amazon Update Publisher Error]:', err);
@@ -909,6 +911,7 @@ function registerAmazonRoutes({ app, pool }) {
   app.delete('/api/amazon/publishers/:id', async (req, res) => {
     try {
       await pool.query(`DELETE FROM amazon_publishers WHERE id = $1`, [req.params.id]);
+      invalidateAmazonOverviewCache();
       res.json({ status: 'deleted' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete publisher.' });
@@ -941,6 +944,7 @@ function registerAmazonRoutes({ app, pool }) {
         );
       }
 
+      invalidateAmazonOverviewCache();
       res.json({ status: 'created', list });
     } catch (err) {
       console.error('[Amazon Create List Error]:', err);
@@ -965,6 +969,7 @@ function registerAmazonRoutes({ app, pool }) {
          RETURNING *`,
         [listId, name, description ?? null]
       );
+      invalidateAmazonOverviewCache();
       res.json({ status: 'updated', list: updated.rows[0] });
     } catch (err) {
       console.error('[Amazon Rename List Error]:', err);
@@ -976,6 +981,7 @@ function registerAmazonRoutes({ app, pool }) {
   app.delete('/api/amazon/lists/:id', async (req, res) => {
     try {
       await pool.query(`DELETE FROM amazon_lists WHERE id = $1`, [req.params.id]);
+      invalidateAmazonOverviewCache();
       res.json({ status: 'deleted' });
     } catch (err) {
       res.status(500).json({ error: 'Failed to delete list.' });
@@ -1015,6 +1021,7 @@ function registerAmazonRoutes({ app, pool }) {
         );
       }
 
+      invalidateAmazonOverviewCache();
       res.json({ status: 'updated' });
     } catch (err) {
       console.error('[Amazon List Membership Error]:', err);

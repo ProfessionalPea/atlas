@@ -328,7 +328,10 @@ function PlayStoreIntelligenceView({
     };
   }, [loadOverview]);
 
-  // Adaptive scan status polling: 2s while actively scanning, 10s while idle, paused when tab is hidden
+  const lastCompletedPublishersRef = useRef(0);
+  const lastCompletedCountriesRef = useRef(0);
+
+  // Adaptive scan status polling: 1.5s while actively scanning, 8s while idle, paused when tab is hidden
   useEffect(() => {
     let disposed = false;
     let timerId = null;
@@ -336,7 +339,6 @@ function PlayStoreIntelligenceView({
     const checkStatuses = async () => {
       if (disposed) return;
       if (document.hidden && !scanStatus.running && !countryQueueStatus.running) {
-        // Paused in background tab
         return;
       }
 
@@ -349,27 +351,37 @@ function PlayStoreIntelligenceView({
         if (scanRes.ok) {
           const st = await scanRes.json();
           if (st.running) isActive = true;
-          setScanStatus((prev) => {
-            if (prev.running && !st.running) {
-              loadOverview({ fresh: true });
-            }
-            return st;
-          });
+          const completedNow = Number(st.completedPublishers || 0);
+          if (
+            (scanStatus.running && !st.running) ||
+            (st.running && completedNow > lastCompletedPublishersRef.current)
+          ) {
+            lastCompletedPublishersRef.current = completedNow;
+            loadOverview({ fresh: true });
+          } else if (!st.running) {
+            lastCompletedPublishersRef.current = 0;
+          }
+          setScanStatus(st);
         }
         if (cqRes.ok) {
           const cq = await cqRes.json();
           if (cq.running) isActive = true;
-          setCountryQueueStatus((prev) => {
-            if (prev.running && !cq.running) {
-              loadOverview({ fresh: true });
-            }
-            return cq;
-          });
+          const completedCountriesNow = Number(cq.completedPackages || 0);
+          if (
+            (countryQueueStatus.running && !cq.running) ||
+            (cq.running && completedCountriesNow > lastCompletedCountriesRef.current)
+          ) {
+            lastCompletedCountriesRef.current = completedCountriesNow;
+            loadOverview({ fresh: true });
+          } else if (!cq.running) {
+            lastCompletedCountriesRef.current = 0;
+          }
+          setCountryQueueStatus(cq);
         }
       } catch {}
 
       if (!disposed) {
-        const nextDelay = isActive ? 2000 : 10000;
+        const nextDelay = isActive ? 1500 : 8000;
         timerId = setTimeout(checkStatuses, nextDelay);
       }
     };
@@ -1007,7 +1019,7 @@ function PlayStoreIntelligenceView({
       if (res.ok) {
         if (selectedListId === `group_${groupId}`) setSelectedListId("all");
         setGroupModal(null);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Delete batch error:", err);
@@ -1074,7 +1086,7 @@ function PlayStoreIntelligenceView({
       const data = await res.json();
       if (res.ok) {
         setCampaignSyncResult(data);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       } else {
         alert(`Campaign sync error: ${data?.error || "Unknown error"}`);
       }
@@ -1164,22 +1176,40 @@ function PlayStoreIntelligenceView({
         listIds: scanTargetListIds,
         newListName: scanNewListName.trim() || undefined
       };
+      // Optimistically show the progress banner immediately at 0ms
+      setScanStatus((prev) => ({
+        ...prev,
+        running: true,
+        state: "scanning",
+        phase: "starting",
+        completedPublishers: 0,
+        totalPublishers: payload.mode === "update_all" ? overview.publishers.length : (Array.isArray(payload.links) ? payload.links.length : prev.totalPublishers || 1),
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+        log: "> 🚀 Starting Play Store catalogue scan..."
+      }));
       const res = await fetcher(`${API_BASE}/api/play/scan`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (res.ok) {
+        if (data?.scanStatus) {
+          setScanStatus(data.scanStatus);
+        }
         setValidationResult(null);
         setScanNewListName("");
         setShowScannerModal(false);
         if (data?.createdList?.id) {
-          await loadOverview();
+          await loadOverview({ fresh: true });
           setSelectedListId(data.createdList.id);
         }
+      } else {
+        setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
       }
     } catch (err) {
       console.error("Play scan start failed:", err);
+      setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
     }
   };
 
@@ -1273,7 +1303,7 @@ function PlayStoreIntelligenceView({
       if (res.ok) {
         const data = await res.json();
         setSheetImportResult(data);
-        await loadOverview();
+        await loadOverview({ fresh: true });
         if (sheetAutoScanNew && Array.isArray(data.newPublisherUrls) && data.newPublisherUrls.length > 0) {
           await handleStartScan({
             mode: "batch",
@@ -1298,15 +1328,40 @@ function PlayStoreIntelligenceView({
         publisherId: countryBatchScope === "publisher" && selectedPublisherObj ? selectedPublisherObj.id : undefined,
         skipDays: countryBatchSkipDays
       };
+      setCountryQueueStatus((prev) => ({
+        ...prev,
+        running: true,
+        paused: false,
+        state: "running",
+        completedPackages: 0,
+        totalPackages: Math.max(1, prev.totalPackages || 1),
+        log: "> 🌍 Starting batch country availability scan..."
+      }));
       const res = await fetcher(`${API_BASE}/api/play/country-queue/start`, {
         method: "POST",
         body: JSON.stringify(payload)
       });
       if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.status === "nothing_to_scan") {
+          setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle", totalPackages: 0 }));
+        } else if (data?.totalPackages) {
+          setCountryQueueStatus((prev) => ({
+            ...prev,
+            running: true,
+            state: "running",
+            scopeLabel: data.scopeLabel || prev.scopeLabel,
+            totalPackages: data.totalPackages,
+            skippedPackages: data.skippedPackages || 0
+          }));
+        }
         setShowCountryBatchModal(false);
+      } else {
+        setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle" }));
       }
     } catch (err) {
       console.error("Failed to start country queue:", err);
+      setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle" }));
     }
   };
 
@@ -1316,6 +1371,10 @@ function PlayStoreIntelligenceView({
         method: "POST",
         body: JSON.stringify({ action })
       });
+      const cqRes = await fetcher(`${API_BASE}/api/play/country-queue/status`);
+      if (cqRes.ok) {
+        setCountryQueueStatus(await cqRes.json());
+      }
     } catch (err) {
       console.error("Country queue control error:", err);
     }
@@ -1340,7 +1399,7 @@ function PlayStoreIntelligenceView({
         if (res.ok) {
           const data = await res.json();
           targetListId = data?.list?.id;
-          await loadOverview();
+          await loadOverview({ fresh: true });
           if (targetListId) setSelectedListId(targetListId);
           setListModal(null);
         }
@@ -1359,7 +1418,7 @@ function PlayStoreIntelligenceView({
             publisherIds: listModal.publisherIds || []
           })
         });
-        await loadOverview();
+        await loadOverview({ fresh: true });
         setListModal(null);
       }
 
@@ -1381,7 +1440,7 @@ function PlayStoreIntelligenceView({
       if (res.ok) {
         if (Number(selectedListId) === Number(listId)) setSelectedListId("all");
         setListModal(null);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Delete list failed:", err);
@@ -1401,7 +1460,7 @@ function PlayStoreIntelligenceView({
         })
       });
       if (res.ok) {
-        await loadOverview();
+        await loadOverview({ fresh: true });
         setEditingPublisher(null);
       }
     } catch (err) {
@@ -1427,7 +1486,7 @@ function PlayStoreIntelligenceView({
             prev ? { ...prev, list_ids: (prev.list_ids || []).filter((id) => Number(id) !== Number(listId)) } : null
           );
         }
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Remove from list failed:", err);
@@ -1442,7 +1501,7 @@ function PlayStoreIntelligenceView({
         if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
         setConfirmDeletePub(null);
         setEditingPublisher(null);
-        await loadOverview();
+        await loadOverview({ fresh: true });
       }
     } catch (err) {
       console.error("Delete publisher failed:", err);
