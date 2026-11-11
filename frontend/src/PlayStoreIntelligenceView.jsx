@@ -594,7 +594,10 @@ function PlayStoreIntelligenceView({
   );
 
   const unscannedPublisherCount = useMemo(
-    () => (overview.publishers || []).filter((p) => Number(p.total_games || 0) === 0).length,
+    () =>
+      (overview.publishers || []).filter(
+        (p) => !p.last_scanned_at || p.last_scan_status === "unscanned"
+      ).length,
     [overview.publishers]
   );
 

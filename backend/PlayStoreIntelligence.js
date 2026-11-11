@@ -2502,7 +2502,9 @@ function registerPlayStoreRoutes({ app, pool }) {
         .filter((v) => v.valid);
     } else if (mode === 'update_all' || mode === 'unscanned_only') {
       const whereClause =
-        mode === 'unscanned_only' ? `WHERE COALESCE(total_games, 0) = 0 OR last_scan_status = 'unscanned'` : '';
+        mode === 'unscanned_only'
+          ? `WHERE last_scan_status = 'unscanned' OR last_scanned_at IS NULL`
+          : '';
       const pubsRes = await pool.query(
         `SELECT id, publisher_name, source_url, developer_id
          FROM play_publishers
