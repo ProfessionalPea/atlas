@@ -4,7 +4,10 @@ const { chromium } = require('playwright');
 const { getDatabasePool } = require('./Security');
 const {
   initializeIntelligenceFeatures,
-  persistVideoAssets
+  persistVideoAssets,
+  getCreativeExtractionCache,
+  persistCreativeExtractionCache,
+  touchCreativeVideoAssets
 } = require('./IntelligenceFeatures');
 const { extractVideoAssets } = require('./GoogleAdsScannerV2');
 const { isGoogleHost, classifyGoogleResponse, createBoundedQueue, waitForStableSignal } = require('./ScannerResilience');
@@ -295,8 +298,8 @@ async function persistCreativeVideos(creativeId, advertiserId, attribution, allA
 const videoPersistenceQueue = createBoundedQueue(
   async job => persistCreativeVideos(job.creativeId, job.advertiserId, job.attribution, job.allAssets),
   {
-    concurrency: 2,
-    maxPending: 24,
+    concurrency: 3,
+    maxPending: 256,
     onError(error, job) {
       console.warn('[Broad Scanner] Queued video persistence failed for ' + job.creativeId + ': ' + error.message);
     }
@@ -380,6 +383,278 @@ async function hasSlowAdRenderer(adPage, videoMap, sawVideoRendererSignal) {
   }
 
   return false;
+}
+
+const EXTRACTION_CACHE_Queue = createBoundedQueue(
+  async job => persistCreativeExtractionCache(videoPool, job),
+  {
+    concurrency: 3,
+    maxPending: 64,
+    onError(error, job) {
+      console.warn('[Broad Scanner] Queued cache persistence failed for ' + job.creativeId + ': ' + error.message);
+    }
+  }
+);
+
+const DEFAULT_RPC_HEADERS = {
+  'Content-Type': 'application/x-www-form-urlencoded',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Origin': 'https://adstransparency.google.com',
+  'Referer': 'https://adstransparency.google.com/?region=any'
+};
+
+function parseAnjiRpcJson(rawText) {
+  if (!rawText || typeof rawText !== 'string') return null;
+  const cleaned = rawText.replace(/^\)\]\}'\s*/, '').trim();
+  if (!cleaned) return null;
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAdvertiserIdViaRpc(queryText) {
+  const cleanQuery = String(queryText || '').trim();
+  if (!cleanQuery) return null;
+  if (/^AR[0-9]{15,}$/i.test(cleanQuery)) return cleanQuery.toUpperCase();
+
+  try {
+    const { rows } = await videoPool.query(
+      `SELECT ads_id
+       FROM competitors
+       WHERE ads_id IS NOT NULL
+         AND ads_id LIKE 'AR%'
+         AND LOWER(TRIM(name)) = LOWER(TRIM($1))
+       ORDER BY id DESC
+       LIMIT 1`,
+      [cleanQuery]
+    );
+    if (rows[0]?.ads_id) return String(rows[0].ads_id).trim().toUpperCase();
+  } catch {}
+
+  try {
+    const res = await fetch(
+      'https://adstransparency.google.com/anji/_/rpc/SearchService/SearchSuggestions?authuser=',
+      {
+        method: 'POST',
+        headers: DEFAULT_RPC_HEADERS,
+        body: 'f.req=' + encodeURIComponent(JSON.stringify({
+          '1': cleanQuery,
+          '2': 10,
+          '3': 10,
+          '5': { '1': 1 }
+        })),
+        signal: AbortSignal.timeout(8000)
+      }
+    );
+    if (!res.ok) return null;
+    const payload = parseAnjiRpcJson(await res.text());
+    const items = Array.isArray(payload?.['1']) ? payload['1'] : [];
+    const advertisers = items
+      .map(item => item?.['1'])
+      .filter(adv => adv && typeof adv['1'] === 'string' && /^AR[0-9]{15,}$/i.test(String(adv['2'] || '')));
+
+    if (!advertisers.length) return null;
+
+    const lowerQuery = cleanQuery.toLowerCase();
+    const candidates = advertisers.filter(adv => {
+      const name = String(adv['1'] || '').trim().toLowerCase();
+      if (/\.(com|net|org|io|co|dojo|app|site|dev)$/i.test(name)) return false;
+      return name.includes(lowerQuery) || lowerQuery.includes(name);
+    });
+
+    const poolToRank = candidates.length ? candidates : advertisers;
+    poolToRank.sort((a, b) => {
+      const aExact = String(a['1'] || '').trim().toLowerCase() === lowerQuery ? 1 : 0;
+      const bExact = String(b['1'] || '').trim().toLowerCase() === lowerQuery ? 1 : 0;
+      if (aExact !== bExact) return bExact - aExact;
+      const aMaxAds = Number(a?.['4']?.['2']?.['2'] || a?.['4']?.['2']?.['1'] || 0);
+      const bMaxAds = Number(b?.['4']?.['2']?.['2'] || b?.['4']?.['2']?.['1'] || 0);
+      return bMaxAds - aMaxAds;
+    });
+
+    return String(poolToRank[0]['2']).toUpperCase();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSearchCreativesRpcPage(advertiserId, pageToken = null) {
+  const reqPayload = {
+    '2': 40,
+    '3': {
+      '12': { '1': '', '2': true },
+      '13': { '1': [advertiserId] }
+    },
+    '7': { '1': 1, '2': 0, '3': 2586 }
+  };
+  if (pageToken) reqPayload['4'] = pageToken;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await fetch(
+        'https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=',
+        {
+          method: 'POST',
+          headers: DEFAULT_RPC_HEADERS,
+          body: 'f.req=' + encodeURIComponent(JSON.stringify(reqPayload)),
+          signal: AbortSignal.timeout(10000)
+        }
+      );
+      if (res.status === 429 || res.status >= 500) {
+        await new Promise(resolve => setTimeout(resolve, 900 * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) return null;
+      const parsed = parseAnjiRpcJson(await res.text());
+      if (!parsed) return null;
+      const items = Array.isArray(parsed['1']) ? parsed['1'] : [];
+      const nextToken = typeof parsed['2'] === 'string' && parsed['2'].trim() ? parsed['2'].trim() : null;
+      const creatives = [];
+      for (const item of items) {
+        const creativeId = typeof item?.['2'] === 'string' ? item['2'].trim() : null;
+        if (!creativeId || !/^CR[0-9]+$/.test(creativeId)) continue;
+        const previewUrl = typeof item?.['3']?.['1']?.['4'] === 'string' ? item['3']['1']['4'].trim() : null;
+        creatives.push({
+          creativeId,
+          previewUrls: previewUrl ? [previewUrl] : [],
+          formatCode: Number(item?.['4']) || null
+        });
+      }
+      return { creatives, nextPageToken: nextToken };
+    } catch {
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+      }
+    }
+  }
+  return null;
+}
+
+async function fetchCreativePreviewUrlsByIdRpc(advertiserId, creativeId) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetch(
+        'https://adstransparency.google.com/anji/_/rpc/LookupService/GetCreativeById?authuser=',
+        {
+          method: 'POST',
+          headers: DEFAULT_RPC_HEADERS,
+          body: 'f.req=' + encodeURIComponent(JSON.stringify({
+            '1': advertiserId,
+            '2': creativeId,
+            '5': { '1': 1, '2': 0, '3': 2586 }
+          })),
+          signal: AbortSignal.timeout(8000)
+        }
+      );
+      if (res.status === 429 || res.status >= 500) {
+        await new Promise(resolve => setTimeout(resolve, 900 * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) return [];
+      const parsed = parseAnjiRpcJson(await res.text());
+      const variations = Array.isArray(parsed?.['1']?.['5']) ? parsed['1']['5'] : [];
+      const urls = [];
+      for (const variation of variations) {
+        const url = variation?.['1']?.['4'];
+        if (typeof url === 'string' && url.startsWith('http')) urls.push(url);
+      }
+      return [...new Set(urls)];
+    } catch {}
+  }
+  return [];
+}
+
+async function fetchPreviewScriptWithRetry(previewUrl) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const res = await fetch(previewUrl, {
+        headers: {
+          'User-Agent': DEFAULT_RPC_HEADERS['User-Agent'],
+          'Accept': '*/*',
+          'Referer': 'https://adstransparency.google.com/'
+        },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (res.status === 429 || res.status >= 500) {
+        await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1) + Math.floor(Math.random() * 250)));
+        continue;
+      }
+      if (!res.ok) return { ok: false, status: res.status, body: '' };
+      const body = await res.text();
+      if (/Error 429 \(Too Many Requests\)|unusual traffic|google\.com\/sorry/i.test(body.slice(0, 1200))) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        continue;
+      }
+      return { ok: true, status: 200, body };
+    } catch {
+      if (attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+  }
+  return { ok: false, status: 0, body: '' };
+}
+
+function isNonAndroidOrUnrenderablePreview(previewBody) {
+  if (!previewBody) return false;
+  const decoded = decodeForInspection(previewBody);
+  if (/apps\.apple\.com|itunes\.apple\.com|\bAppStore\b|\bitunes\b|\bid[0-9]{9,12}\b/i.test(decoded)) {
+    return true;
+  }
+  return false;
+}
+
+function isBrokenPreviewVariation(previewBody) {
+  if (!previewBody) return false;
+  return /ASSETS_DO_NOT_MATCH_REQUEST|UNABLE_TO_RENDER_PREVIEW/i.test(previewBody);
+}
+
+async function inspectCreativeViaRpcFastPath(advertiserId, creativeId, initialPreviewUrls = []) {
+  const discoveredPackages = new Set();
+  const discoveredVideos = new Map();
+  const triedUrls = new Set();
+  let sawValidResponse = false;
+  let sawNonAndroidAppStore = false;
+  let sawBrokenVariation = false;
+
+  const inspectUrlList = async urls => {
+    for (const url of urls) {
+      if (!url || triedUrls.has(url)) continue;
+      triedUrls.add(url);
+      const res = await fetchPreviewScriptWithRetry(url);
+      if (!res.ok || !res.body) continue;
+      sawValidResponse = true;
+
+      for (const pkg of extractBroadPackages(res.body)) discoveredPackages.add(pkg);
+      if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(res.body)) {
+        for (const asset of extractVideoAssets(res.body)) mergeVideoAsset(discoveredVideos, asset);
+      }
+
+      if (discoveredPackages.size > 0) return true;
+      if (isNonAndroidOrUnrenderablePreview(res.body)) sawNonAndroidAppStore = true;
+      if (isBrokenPreviewVariation(res.body)) sawBrokenVariation = true;
+    }
+    return false;
+  };
+
+  await inspectUrlList(initialPreviewUrls);
+
+  if (discoveredPackages.size === 0 && (!initialPreviewUrls.length || sawBrokenVariation || !sawNonAndroidAppStore)) {
+    const fallbackUrls = await fetchCreativePreviewUrlsByIdRpc(advertiserId, creativeId);
+    if (fallbackUrls.length > 0) {
+      await inspectUrlList(fallbackUrls);
+    }
+  }
+
+  return {
+    packages: [...discoveredPackages],
+    videos: [...discoveredVideos.values()],
+    resolved: discoveredPackages.size > 0 || sawNonAndroidAppStore || (sawValidResponse && triedUrls.size > 0),
+    isNonAndroid: discoveredPackages.size === 0 && sawNonAndroidAppStore
+  };
 }
 
 async function scanCompetitor(
@@ -525,51 +800,48 @@ async function scanCompetitor(
 
   let browser = null;
   let context = null;
-  try {
-    fs.mkdirSync(profileDir, { recursive: true });
-    context = await chromium.launchPersistentContext(profileDir, {
-      ...launchOptions,
-      ...contextSettings,
-      channel: 'chrome'
-    }).catch(() =>
-      chromium.launchPersistentContext(profileDir, {
+  let searchPage = null;
+
+  const ensureBrowserContext = async () => {
+    if (context) return context;
+    try {
+      fs.mkdirSync(profileDir, { recursive: true });
+      context = await chromium.launchPersistentContext(profileDir, {
         ...launchOptions,
-        ...contextSettings
-      })
-    );
-  } catch {
-    browser = await chromium.launch({ ...launchOptions, channel: 'chrome' }).catch(() => chromium.launch(launchOptions));
-    context = await browser.newContext(contextSettings);
-  }
-
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    if (!window.chrome) window.chrome = { runtime: {}, app: {}, csi: () => {}, loadTimes: () => {} };
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-  });
-
-  // Load any persisted Google cookies (e.g. GOOGLE_ABUSE_EXEMPTION / SOCS / NID from CAPTCHA clearance)
-  try {
-    const rawCookies = process.env.ATLAS_GOOGLE_COOKIES
-      ? JSON.parse(process.env.ATLAS_GOOGLE_COOKIES)
-      : fs.existsSync(cookiesFilePath)
-        ? JSON.parse(fs.readFileSync(cookiesFilePath, 'utf8'))
-        : null;
-    if (Array.isArray(rawCookies) && rawCookies.length > 0) {
-      await context.addCookies(rawCookies);
+        ...contextSettings,
+        channel: 'chrome'
+      }).catch(() =>
+        chromium.launchPersistentContext(profileDir, {
+          ...launchOptions,
+          ...contextSettings
+        })
+      );
+    } catch {
+      browser = await chromium.launch({ ...launchOptions, channel: 'chrome' }).catch(() => chromium.launch(launchOptions));
+      context = await browser.newContext(contextSettings);
     }
-  } catch (cookieErr) {
-    console.warn('[Broad Scanner] Could not load saved Google cookies:', cookieErr.message);
-  }
 
-  const searchPage = context.pages()[0] || await context.newPage();
-  await searchPage.route('**/*', route => {
-    const type = route.request().resourceType();
-    // Only abort images, media, and fonts; let stylesheets load so Google's web components render properly
-    if (['image', 'media', 'font'].includes(type)) route.abort();
-    else route.continue();
-  });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      if (!window.chrome) window.chrome = { runtime: {}, app: {}, csi: () => {}, loadTimes: () => {} };
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    });
+
+    try {
+      const rawCookies = process.env.ATLAS_GOOGLE_COOKIES
+        ? JSON.parse(process.env.ATLAS_GOOGLE_COOKIES)
+        : fs.existsSync(cookiesFilePath)
+          ? JSON.parse(fs.readFileSync(cookiesFilePath, 'utf8'))
+          : null;
+      if (Array.isArray(rawCookies) && rawCookies.length > 0) {
+        await context.addCookies(rawCookies);
+      }
+    } catch (cookieErr) {
+      console.warn('[Broad Scanner] Could not load saved Google cookies:', cookieErr.message);
+    }
+    return context;
+  };
 
   let lastDiscoveryActivityAt = Date.now();
   let pendingDiscoveryResponses = 0;
@@ -594,31 +866,35 @@ async function scanCompetitor(
   const handleFailedDiscoveryRequest = request => finishDiscoveryRequest(request, true);
 
   try {
-    searchPage.setDefaultTimeout(120000);
-    searchPage.setDefaultNavigationTimeout(120000);
-
     let arId = null;
     let hasClicked = false;
     const previewUrlsByCreative = new Map();
     const seenCreativeIds = new Set();
+    let rpcNextPageToken = null;
+    let rpcDiscoveryActive = false;
+    let rpcDiscoveryExhausted = false;
+
+    const addPreviewUrlsForCreative = (crId, urls) => {
+      if (!crId || !Array.isArray(urls) || !urls.length) return;
+      if (!previewUrlsByCreative.has(crId)) previewUrlsByCreative.set(crId, new Set());
+      const set = previewUrlsByCreative.get(crId);
+      for (const u of urls) {
+        if (typeof u === 'string' && u.startsWith('http')) set.add(u);
+      }
+    };
 
     const extractPreviewUrlsFromJsonText = (rawText, targetCreativeId = null) => {
       if (!rawText || !rawText.includes('ads/preview/content.js')) return;
       const decoded = decodeForInspection(rawText);
-      // Pair each CR... id with nearby content.js URLs, and also collect any standalone content.js URLs for targetCreativeId
       const urlRegex = /https:\/\/displayads-formats\.googleusercontent\.com\/ads\/preview\/content\.js\?[^"'\s<>\\]+/g;
       if (targetCreativeId) {
         for (const match of decoded.matchAll(urlRegex)) {
-          if (!previewUrlsByCreative.has(targetCreativeId)) previewUrlsByCreative.set(targetCreativeId, new Set());
-          previewUrlsByCreative.get(targetCreativeId).add(match[0]);
+          addPreviewUrlsForCreative(targetCreativeId, [match[0]]);
         }
       }
       const itemRegex = /"(CR[0-9]{10,})"[\s\S]{0,600}?(https:\/\/displayads-formats\.googleusercontent\.com\/ads\/preview\/content\.js\?[^"'\s<>\\]+)/g;
       for (const match of decoded.matchAll(itemRegex)) {
-        const crId = match[1];
-        const previewUrl = match[2];
-        if (!previewUrlsByCreative.has(crId)) previewUrlsByCreative.set(crId, new Set());
-        previewUrlsByCreative.get(crId).add(previewUrl);
+        addPreviewUrlsForCreative(match[1], [match[2]]);
       }
     };
 
@@ -633,147 +909,184 @@ async function scanCompetitor(
     };
 
     emitProgress(0, maxAdsToInspect, '> Booting scanner for "' + query + '". Target: ' + targetUniqueGames + ' unique games; safety cap: ' + maxAdsToInspect + ' inspected ads.');
-    searchPage.on('request', trackDiscoveryRequest);
-    searchPage.on('requestfinished', finishDiscoveryRequest);
-    searchPage.on('requestfailed', handleFailedDiscoveryRequest);
-    searchPage.on('response', async response => {
-      const request = response.request();
-      const resourceType = request.resourceType();
-      if (!trackedRequestTypes.has(resourceType)) return;
-      pendingDiscoveryResponses += 1;
 
-      try {
-        const url = response.url() || '';
-        const headers = response.headers();
-        const contentType = String(headers['content-type'] || '').toLowerCase();
-        const contentLength = Number(headers['content-length']);
-        const headerAssessment = recordResponseAssessment(
-          classifyGoogleResponse({ status: response.status(), contentType, resourceType, url }),
-          url
-        );
-        if (headerAssessment.blocked) return;
+    // Stage 1: Resolve Advertiser ID directly via DB / SearchSuggestions RPC (takes ~300ms instead of 10-15s browser boot)
+    arId = await resolveAdvertiserIdViaRpc(query);
+    throwIfStopped();
 
-        const status = response.status();
-        if (status >= 300 && status < 400) return;
-
-        const shouldReadBody = resourceType === 'document' ||
-          /text\/html|application\/xhtml\+xml/i.test(contentType) ||
-          (hasClicked && ['xhr', 'fetch'].includes(resourceType));
-        if (!shouldReadBody || (Number.isFinite(contentLength) && contentLength > 5000000)) return;
-
-        const body = await response.text();
-        const assessment = recordResponseAssessment(
-          classifyGoogleResponse({ status, contentType, body, resourceType, url }),
-          url
-        );
-        if (assessment.blocked || assessment.suspicious) return;
-        if (!hasClicked || !['xhr', 'fetch'].includes(resourceType)) return;
-        if (url.includes('SearchAdvertisers')) return;
-
-        if (!arId) {
-          const postData = request.postData() || '';
-          const match = url.match(/(AR[0-9]{15,})/) || postData.match(/(AR[0-9]{15,})/);
-          if (match) arId = match[1];
+    if (arId) {
+      const firstRpcPage = await fetchSearchCreativesRpcPage(arId, null);
+      throwIfStopped();
+      if (firstRpcPage) {
+        rpcDiscoveryActive = true;
+        rpcNextPageToken = firstRpcPage.nextPageToken;
+        rpcDiscoveryExhausted = !firstRpcPage.nextPageToken || firstRpcPage.creatives.length === 0;
+        for (const item of firstRpcPage.creatives) {
+          adIds.add(item.creativeId);
+          addPreviewUrlsForCreative(item.creativeId, item.previewUrls);
         }
-        if (!arId) arId = body.match(/(AR[0-9]{15,})/)?.[1] || null;
-        for (const match of body.matchAll(/"(CR[0-9]+)"/g)) adIds.add(match[1]);
-        extractPreviewUrlsFromJsonText(body);
-      } catch (error) {
-        const msg = String(error?.message || '');
-        if (!/No data found for resource|navigated away|redirect responses|Target closed|closed/i.test(msg)) {
-          console.warn('[Broad Scanner] Could not inspect discovery response: ' + msg);
+        if (adIds.size >= maxAdsToInspect) {
+          discoveryStopReason = 'safety_limit';
+        } else if (rpcDiscoveryExhausted) {
+          discoveryStopReason = 'ads_exhausted';
         }
-      } finally {
-        pendingDiscoveryResponses = Math.max(0, pendingDiscoveryResponses - 1);
-        lastDiscoveryActivityAt = Date.now();
-      }
-    });
-
-
-
-    if (/^AR[0-9]{15,}$/i.test(query)) {
-      arId = query.toUpperCase();
-      hasClicked = true;
-      await searchPage.goto(`https://adstransparency.google.com/advertiser/${arId}?region=any`, {
-        waitUntil: 'domcontentloaded', timeout: 60000
-      });
-      await waitForStableSignal({
-        inspect: async () => {},
-        getSignature: () => String(arId || '') + ':' + adIds.size,
-        getLastActivityAt: () => lastDiscoveryActivityAt,
-        getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
-        getStopError,
-        minWaitMs: 1600,
-        stableForMs: 1100,
-        quietForMs: 850,
-        pollIntervalMs: 250,
-        normalMaxWaitMs: 6000,
-        slowMaxWaitMs: 6000
-      });
-      throwIfStopped();
-    } else {
-      await searchPage.goto('https://adstransparency.google.com/?region=any', {
-        waitUntil: 'domcontentloaded', timeout: 60000
-      });
-      await waitForStableSignal({
-        inspect: async () => {},
-        getSignature: () => 'advertiser-search-home',
-        getLastActivityAt: () => lastDiscoveryActivityAt,
-        getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
-        getStopError,
-        minWaitMs: 400,
-        stableForMs: 350,
-        quietForMs: 300,
-        pollIntervalMs: 150,
-        normalMaxWaitMs: 2500,
-        slowMaxWaitMs: 2500
-      });
-      throwIfStopped();
-
-      const searchBox = searchPage.getByRole('textbox').first();
-      try {
-        await searchBox.waitFor({ state: 'visible', timeout: 15000 });
-      } catch (error) {
-        throwIfStopped();
-        throw error;
-      }
-      await searchBox.click();
-      await searchBox.fill(query);
-      try {
-        await searchPage.locator('[role="option"]').first().waitFor({ state: 'visible', timeout: 6000 });
-      } catch (error) {
-        throwIfStopped();
-        await searchPage.waitForTimeout(350);
-      }
-      throwIfStopped();
-
-      const options = await searchPage.locator('[role="option"]').all();
-      let matchedOption = null;
-      for (const option of options) {
-        const text = (await option.innerText()).trim();
-        const firstLine = text.split('\n')[0].trim().toLowerCase();
-        if (/\.(com|net|org|io|co|dojo|app|site|dev)/i.test(firstLine)) continue;
-        if (firstLine.includes(query.toLowerCase())) {
-          matchedOption = option;
-          break;
+        if (adIds.size > 0) {
+          emitProgress(0, maxAdsToInspect, '> Intercepted ' + adIds.size + ' ad creatives via Transparency RPC; preparing fast inspection.');
         }
       }
-      if (!matchedOption) {
-        scanStopReason = 'no_matching_advertiser';
-        emitProgress(0, maxAdsToInspect, `> No registered advertiser matching "${query}" was found.`);
-        return [];
-      }
+    }
 
-      hasClicked = true;
-      await matchedOption.click();
-      let waited = 0;
-      while (!arId && waited < 15000) {
+    // Fallback to Playwright browser discovery ONLY if RPC resolution/discovery was unavailable
+    if (!rpcDiscoveryActive) {
+      const activeContext = await ensureBrowserContext();
+      searchPage = activeContext.pages()[0] || await activeContext.newPage();
+      await searchPage.route('**/*', route => {
+        const type = route.request().resourceType();
+        if (['image', 'media', 'font'].includes(type)) route.abort();
+        else route.continue();
+      });
+      searchPage.setDefaultTimeout(120000);
+      searchPage.setDefaultNavigationTimeout(120000);
+      searchPage.on('request', trackDiscoveryRequest);
+      searchPage.on('requestfinished', finishDiscoveryRequest);
+      searchPage.on('requestfailed', handleFailedDiscoveryRequest);
+      searchPage.on('response', async response => {
+        const request = response.request();
+        const resourceType = request.resourceType();
+        if (!trackedRequestTypes.has(resourceType)) return;
+        pendingDiscoveryResponses += 1;
+
+        try {
+          const url = response.url() || '';
+          const headers = response.headers();
+          const contentType = String(headers['content-type'] || '').toLowerCase();
+          const contentLength = Number(headers['content-length']);
+          const headerAssessment = recordResponseAssessment(
+            classifyGoogleResponse({ status: response.status(), contentType, resourceType, url }),
+            url
+          );
+          if (headerAssessment.blocked) return;
+
+          const status = response.status();
+          if (status >= 300 && status < 400) return;
+
+          const shouldReadBody = resourceType === 'document' ||
+            /text\/html|application\/xhtml\+xml/i.test(contentType) ||
+            (hasClicked && ['xhr', 'fetch'].includes(resourceType));
+          if (!shouldReadBody || (Number.isFinite(contentLength) && contentLength > 5000000)) return;
+
+          const body = await response.text();
+          const assessment = recordResponseAssessment(
+            classifyGoogleResponse({ status, contentType, body, resourceType, url }),
+            url
+          );
+          if (assessment.blocked || assessment.suspicious) return;
+          if (!hasClicked || !['xhr', 'fetch'].includes(resourceType)) return;
+          if (url.includes('SearchAdvertisers')) return;
+
+          if (!arId) {
+            const postData = request.postData() || '';
+            const match = url.match(/(AR[0-9]{15,})/) || postData.match(/(AR[0-9]{15,})/);
+            if (match) arId = match[1];
+          }
+          if (!arId) arId = body.match(/(AR[0-9]{15,})/)?.[1] || null;
+          for (const match of body.matchAll(/"(CR[0-9]+)"/g)) adIds.add(match[1]);
+          extractPreviewUrlsFromJsonText(body);
+        } catch (error) {
+          const msg = String(error?.message || '');
+          if (!/No data found for resource|navigated away|redirect responses|Target closed|closed/i.test(msg)) {
+            console.warn('[Broad Scanner] Could not inspect discovery response: ' + msg);
+          }
+        } finally {
+          pendingDiscoveryResponses = Math.max(0, pendingDiscoveryResponses - 1);
+          lastDiscoveryActivityAt = Date.now();
+        }
+      });
+
+      if (arId || /^AR[0-9]{15,}$/i.test(query)) {
+        arId = (arId || query).toUpperCase();
+        hasClicked = true;
+        await searchPage.goto(`https://adstransparency.google.com/advertiser/${arId}?region=any`, {
+          waitUntil: 'domcontentloaded', timeout: 60000
+        });
+        await waitForStableSignal({
+          inspect: async () => {},
+          getSignature: () => String(arId || '') + ':' + adIds.size,
+          getLastActivityAt: () => lastDiscoveryActivityAt,
+          getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
+          getStopError,
+          minWaitMs: 1600,
+          stableForMs: 1100,
+          quietForMs: 850,
+          pollIntervalMs: 250,
+          normalMaxWaitMs: 6000,
+          slowMaxWaitMs: 6000
+        });
         throwIfStopped();
-        await searchPage.waitForTimeout(300);
-        waited += 300;
+      } else {
+        await searchPage.goto('https://adstransparency.google.com/?region=any', {
+          waitUntil: 'domcontentloaded', timeout: 60000
+        });
+        await waitForStableSignal({
+          inspect: async () => {},
+          getSignature: () => 'advertiser-search-home',
+          getLastActivityAt: () => lastDiscoveryActivityAt,
+          getPendingCount: () => activeDiscoveryRequests.size + pendingDiscoveryResponses,
+          getStopError,
+          minWaitMs: 400,
+          stableForMs: 350,
+          quietForMs: 300,
+          pollIntervalMs: 150,
+          normalMaxWaitMs: 2500,
+          slowMaxWaitMs: 2500
+        });
+        throwIfStopped();
+
+        const searchBox = searchPage.getByRole('textbox').first();
+        try {
+          await searchBox.waitFor({ state: 'visible', timeout: 15000 });
+        } catch (error) {
+          throwIfStopped();
+          throw error;
+        }
+        await searchBox.click();
+        await searchBox.fill(query);
+        try {
+          await searchPage.locator('[role="option"]').first().waitFor({ state: 'visible', timeout: 6000 });
+        } catch (error) {
+          throwIfStopped();
+          await searchPage.waitForTimeout(350);
+        }
+        throwIfStopped();
+
+        const options = await searchPage.locator('[role="option"]').all();
+        let matchedOption = null;
+        for (const option of options) {
+          const text = (await option.innerText()).trim();
+          const firstLine = text.split('\n')[0].trim().toLowerCase();
+          if (/\.(com|net|org|io|co|dojo|app|site|dev)/i.test(firstLine)) continue;
+          if (firstLine.includes(query.toLowerCase())) {
+            matchedOption = option;
+            break;
+          }
+        }
+        if (!matchedOption) {
+          scanStopReason = 'no_matching_advertiser';
+          emitProgress(0, maxAdsToInspect, `> No registered advertiser matching "${query}" was found.`);
+          return [];
+        }
+
+        hasClicked = true;
+        await matchedOption.click();
+        let waited = 0;
+        while (!arId && waited < 15000) {
+          throwIfStopped();
+          await searchPage.waitForTimeout(300);
+          waited += 300;
+        }
+        throwIfStopped();
+        if (!arId) throw new Error('Failed to resolve advertiser ID.');
       }
-      throwIfStopped();
-      if (!arId) throw new Error('Failed to resolve advertiser ID.');
     }
 
     const initialBatchSize = Math.min(10, maxAdsToInspect);
@@ -782,6 +1095,33 @@ async function scanCompetitor(
     const collectMoreAds = async () => {
       throwIfStopped();
       const sizeBefore = adIds.size;
+
+      if (rpcDiscoveryActive) {
+        if (rpcDiscoveryExhausted || !rpcNextPageToken) {
+          discoveryStopReason = 'ads_exhausted';
+          return false;
+        }
+        const nextPage = await fetchSearchCreativesRpcPage(arId, rpcNextPageToken);
+        throwIfStopped();
+        if (!nextPage) {
+          strikes += 1;
+          if (strikes >= 3) discoveryStopReason = 'discovery_error';
+          return false;
+        }
+        rpcNextPageToken = nextPage.nextPageToken;
+        if (!nextPage.nextPageToken || nextPage.creatives.length === 0) {
+          rpcDiscoveryExhausted = true;
+        }
+        for (const item of nextPage.creatives) {
+          adIds.add(item.creativeId);
+          addPreviewUrlsForCreative(item.creativeId, item.previewUrls);
+        }
+        if (adIds.size >= maxAdsToInspect) discoveryStopReason = 'safety_limit';
+        else if (rpcDiscoveryExhausted) discoveryStopReason = 'ads_exhausted';
+        return adIds.size > sizeBefore;
+      }
+
+      if (!searchPage) return false;
       await searchPage.mouse.wheel(0, 3000);
       await waitForStableSignal({
         inspect: async () => {},
@@ -827,17 +1167,39 @@ async function scanCompetitor(
       discoveryStopReason = discoveryNetworkFailure ? 'discovery_error' : 'ads_exhausted';
     }
 
+    const knownPackagesByCreative = new Map();
     try {
-      const { rows: seenRows } = await videoPool.query(
-        `SELECT ac.creative_id
-         FROM ad_creatives ac
-         LEFT JOIN competitors c ON c.id = ac.competitor_id
-         WHERE ac.creative_id LIKE 'CR%'
-           AND ($1::text IS NULL OR c.ads_id = $1 OR ac.creative_id = ANY($2::text[]))`,
-        [arId || null, [...adIds]]
-      );
-      for (const row of seenRows) {
-        if (row.creative_id) seenCreativeIds.add(row.creative_id);
+      await ensureVideoDb();
+      const [seenRes, cacheRes] = await Promise.all([
+        videoPool.query(
+          `SELECT ac.creative_id, ac.package_name
+           FROM ad_creatives ac
+           LEFT JOIN competitors c ON c.id = ac.competitor_id
+           WHERE ac.creative_id LIKE 'CR%'
+             AND ($1::text IS NULL OR c.ads_id = $1 OR ac.creative_id = ANY($2::text[]))`,
+          [arId || null, [...adIds]]
+        ),
+        getCreativeExtractionCache(videoPool, [...adIds]).catch(() => new Map())
+      ]);
+      for (const row of seenRes.rows) {
+        if (row.creative_id) {
+          seenCreativeIds.add(row.creative_id);
+          if (row.package_name && isValidPackage(row.package_name)) {
+            if (!knownPackagesByCreative.has(row.creative_id)) knownPackagesByCreative.set(row.creative_id, new Set());
+            knownPackagesByCreative.get(row.creative_id).add(String(row.package_name).trim().toLowerCase());
+          }
+        }
+      }
+      for (const [crId, entry] of cacheRes.entries()) {
+        if (Array.isArray(entry?.packageNames) && entry.packageNames.length > 0) {
+          seenCreativeIds.add(crId);
+          for (const pkg of entry.packageNames) {
+            if (isValidPackage(pkg)) {
+              if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
+              knownPackagesByCreative.get(crId).add(String(pkg).trim().toLowerCase());
+            }
+          }
+        }
       }
     } catch {}
 
@@ -848,12 +1210,12 @@ async function scanCompetitor(
       const emptyMessage = scanStopReason === 'discovery_error'
         ? '> Discovery ended with network errors before any ad creatives could be collected; results may be incomplete.'
         : '> No ad creatives were available for this advertiser.';
-      await searchPage.close().catch(() => {});
+      if (searchPage) await searchPage.close().catch(() => {});
       emitProgress(0, maxAdsToInspect, emptyMessage);
       return [];
     }
 
-    // If all initial creatives were already seen in previous scans, scroll a couple more times up front to surface fresh creatives.
+    // If all initial creatives were already seen in previous scans, fetch/scroll a couple more times up front to surface fresh creatives.
     while (
       idArray.every(id => seenCreativeIds.has(id)) &&
       adIds.size < Math.min(120, maxAdsToInspect) &&
@@ -862,6 +1224,20 @@ async function scanCompetitor(
     ) {
       const added = await collectMoreAds();
       if (!added) break;
+      try {
+        const cacheMore = await getCreativeExtractionCache(videoPool, [...adIds]).catch(() => new Map());
+        for (const [crId, entry] of cacheMore.entries()) {
+          if (Array.isArray(entry?.packageNames) && entry.packageNames.length > 0) {
+            seenCreativeIds.add(crId);
+            for (const pkg of entry.packageNames) {
+              if (isValidPackage(pkg)) {
+                if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
+                knownPackagesByCreative.get(crId).add(String(pkg).trim().toLowerCase());
+              }
+            }
+          }
+        }
+      } catch {}
       idArray = prioritizeUnseenCreatives([...adIds]).slice(0, maxAdsToInspect);
     }
 
@@ -870,96 +1246,67 @@ async function scanCompetitor(
     results.length = 0;
     let queuedVideoPersistenceTasks = 0;
     const sourceDiscoveryTotals = { requestUrl: 0, responseBody: 0, frameHtml: 0 };
+    const FAST_RPC_CONCURRENCY = Math.max(1, Math.min(6, Number(process.env.ATLAS_FAST_SCAN_CONCURRENCY) || 4));
+    let nextCreativeCursor = 0;
+    let paginationLock = null;
 
-    for (let i = 0; i < maxAdsToInspect; i += 1) {
-      while (i >= idArray.length && !discoveryStopReason && !accounting.hasReachedTarget()) {
-        const previousSize = adIds.size;
-        let addedAds = false;
-        try {
-          addedAds = await collectMoreAds();
-        } catch (scrollError) {
-          if (scrollError && scrollError.code === 'ATLAS_SCAN_BLOCKED' && results.length > 0) {
-            scanStopReason = 'rate_limited';
-            console.warn(
-              `⚠️ [Broad Scanner] Rate limited during feed scroll after finding ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} games). Preserving results.`
-            );
-            break;
-          }
-          throw scrollError;
-        }
-        if (scanStopReason) break;
-        if (addedAds || adIds.size > previousSize) {
-          const remaining = prioritizeUnseenCreatives(
-            [...adIds].filter(id => !inspectedCreativeIds.has(id))
-          );
-          idArray = [...inspectedCreativeIds, ...remaining].slice(0, maxAdsToInspect);
-          emitProgress( accounting.getSnapshot().adsInspected, maxAdsToInspect,
-            '> Intercepted ' + idArray.length + ' ad creatives so far; ' +
-            accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found.'
-          );
-        }
-      }
-      if (scanStopReason) break;
-      if (i >= idArray.length || accounting.hasReachedTarget()) break;
-      if (isCancelled()) {
-        // User abort: stop inspecting but keep (and return) everything collected so far.
-        scanStopReason = 'cancelled';
-        break;
-      }
-      const adId = idArray[i];
-      inspectedCreativeIds.add(adId);
-      accounting.markInspected();
-
-      // Paginated Fast-Path: Before opening a full Playwright tab for `adId`, check if `SearchCreatives`
-      // already gave us a lightweight `ads/preview/content.js` URL for this creative. Fetching it via HTTP
-      // takes ~150ms vs ~3-6s for a full browser tab and often reveals the Android package ID immediately!
-      if (previewUrlsByCreative.has(adId)) {
-        const fastPackages = new Set();
-        const fastVideos = new Map();
-        for (const previewUrl of previewUrlsByCreative.get(adId)) {
-          try {
-            const previewRes = await fetch(previewUrl, { signal: AbortSignal.timeout(3500) });
-            if (previewRes.ok) {
-              const previewBody = await previewRes.text();
-              for (const pkg of extractBroadPackages(previewBody)) fastPackages.add(pkg);
-              if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(previewBody)) {
-                for (const asset of extractVideoAssets(previewBody)) mergeVideoAsset(fastVideos, asset);
-              }
-            }
-          } catch {}
-        }
-        if (fastPackages.size > 0) {
-          const uniqueInAd = [...fastPackages];
-          const packageAccounting = accounting.recordPackages(uniqueInAd);
-          sourceDiscoveryTotals.responseBody += uniqueInAd.length;
-          for (const pkg of uniqueInAd) globallyDiscovered.add(String(pkg).trim().toLowerCase());
-          const videoAssets = [...fastVideos.values()];
-          for (const pkg of uniqueInAd) {
-            results.push({
-              creativeId: adId,
-              package: pkg,
-              discoveredPackages: uniqueInAd,
-              videoAssets: uniqueInAd.length === 1 ? videoAssets : []
-            });
-            await onPackageFound(pkg);
-          }
-          emitProgress(
-            accounting.getSnapshot().adsInspected,
-            maxAdsToInspect,
-            `> Ad ${i + 1} (fast preview): discovered ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}; ` +
-              accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found' +
-              (packageAccounting.isDuplicateAd ? ' (duplicate creative)' : '')
-          );
-          if (accounting.hasReachedTarget()) {
-            scanStopReason = 'target_reached';
-            break;
-          }
+    const ensureNextCreativeAvailable = async indexNeeded => {
+      while (indexNeeded >= idArray.length && !discoveryStopReason && !accounting.hasReachedTarget() && !scanStopReason) {
+        if (paginationLock) {
+          await paginationLock;
           continue;
         }
+        paginationLock = (async () => {
+          const previousSize = adIds.size;
+          let addedAds = false;
+          try {
+            addedAds = await collectMoreAds();
+          } catch (scrollError) {
+            if (scrollError && scrollError.code === 'ATLAS_SCAN_BLOCKED' && results.length > 0) {
+              scanStopReason = 'rate_limited';
+              console.warn(
+                `⚠️ [Broad Scanner] Rate limited during feed pagination after finding ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} games). Preserving results.`
+              );
+              return;
+            }
+            throw scrollError;
+          }
+          if (addedAds || adIds.size > previousSize) {
+            const uninspected = [...adIds].filter(id => !inspectedCreativeIds.has(id));
+            try {
+              const cacheBatch = await getCreativeExtractionCache(videoPool, uninspected).catch(() => new Map());
+              for (const [crId, entry] of cacheBatch.entries()) {
+                if (Array.isArray(entry?.packageNames) && entry.packageNames.length > 0) {
+                  seenCreativeIds.add(crId);
+                  for (const pkg of entry.packageNames) {
+                    if (isValidPackage(pkg)) {
+                      if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
+                      knownPackagesByCreative.get(crId).add(String(pkg).trim().toLowerCase());
+                    }
+                  }
+                }
+              }
+            } catch {}
+            const remaining = prioritizeUnseenCreatives(uninspected);
+            idArray = [...inspectedCreativeIds, ...remaining].slice(0, maxAdsToInspect);
+            emitProgress(
+              accounting.getSnapshot().adsInspected,
+              maxAdsToInspect,
+              '> Intercepted ' + idArray.length + ' ad creatives so far; ' +
+                accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found.'
+            );
+          }
+        })().finally(() => {
+          paginationLock = null;
+        });
+        await paginationLock;
       }
+    };
 
+    const inspectSingleCreativeInBrowser = async (adId, displayIndex) => {
       const url = `https://adstransparency.google.com/advertiser/${arId}/creative/${adId}?region=any`;
-      const adPage = await context.newPage();
+      const activeContext = await ensureBrowserContext();
+      const adPage = await activeContext.newPage();
       const discovered = new Set();
       const videoMap = new Map();
       const frameEvidence = new Map();
@@ -1082,7 +1429,6 @@ async function scanCompetitor(
           }
           if (!assessment.suspicious) recordPackages(body, 'responseBody');
 
-          // Response payloads can discover assets, but cannot establish ownership.
           if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(body)) {
             const assets = extractVideoAssets(body);
             for (const asset of assets) mergeVideoAsset(videoMap, asset);
@@ -1106,8 +1452,6 @@ async function scanCompetitor(
         if (activeRelevantRequests.delete(request)) lastRelevantSignalAt = Date.now();
       };
 
-
-
       adPage.on('request', requestHandler);
       adPage.on('requestfinished', finishCreativeRequest);
       adPage.on('requestfailed', finishCreativeRequest);
@@ -1127,9 +1471,8 @@ async function scanCompetitor(
 
       try {
         try {
-          await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await adPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
         } catch (error) {
-          // Google can still expose useful evidence when document navigation times out.
           throwIfStopped();
           console.warn('[Broad Scanner] Creative navigation was incomplete for ' + adId + ': ' + error.message);
         }
@@ -1154,35 +1497,18 @@ async function scanCompetitor(
           getPendingCount: () => activeRelevantRequests.size + pendingResponseBodies,
           shouldExtendWait: () => slowRendererDetected || sawVideoRendererSignal || videoMap.size > 0,
           getStopError,
-          minWaitMs: 1800,
-          stableForMs: 1450,
-          quietForMs: 1000,
-          pollIntervalMs: 850,
-          normalMaxWaitMs: 6500,
-          slowMaxWaitMs: 15000
+          minWaitMs: 1200,
+          stableForMs: 950,
+          quietForMs: 750,
+          pollIntervalMs: 600,
+          normalMaxWaitMs: 4500,
+          slowMaxWaitMs: 9000
         });
 
         if (readiness.status === 'max-wait') {
-          console.log('[Broad Scanner] Ad ' + (i + 1) + ' reached its bounded ' + readiness.maxWaitMs + 'ms inspection budget; preserving all evidence collected.');
+          console.log('[Broad Scanner] Ad ' + displayIndex + ' reached its bounded ' + readiness.maxWaitMs + 'ms inspection budget; preserving all evidence collected.');
         }
         throwIfStopped();
-
-        if (discovered.size === 0 && previewUrlsByCreative.has(adId)) {
-          for (const previewUrl of previewUrlsByCreative.get(adId)) {
-            try {
-              const previewRes = await fetch(previewUrl, { signal: AbortSignal.timeout(4500) });
-              if (previewRes.ok) {
-                const previewBody = await previewRes.text();
-                recordPackages(previewBody, 'responseBody');
-                if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(previewBody)) {
-                  for (const asset of extractVideoAssets(previewBody)) mergeVideoAsset(videoMap, asset);
-                }
-              }
-            } catch {}
-          }
-        }
-
-
 
         const uniqueInAd = [...discovered];
         const packageAccounting = accounting.recordPackages(uniqueInAd);
@@ -1203,6 +1529,11 @@ async function scanCompetitor(
           });
           queuedVideoPersistenceTasks += 1;
         }
+        EXTRACTION_CACHE_Queue.enqueue({
+          creativeId: adId,
+          packageNames: uniqueInAd,
+          videoCount: videoAssets.length
+        }).catch(() => {});
 
         if (uniqueInAd.length) {
           for (const pkg of uniqueInAd) {
@@ -1215,52 +1546,26 @@ async function scanCompetitor(
             await onPackageFound(pkg);
           }
           console.log(
-            `🟢 [Broad Scanner] [Ad #${i + 1} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] Discovered ${uniqueInAd.length} package(s): ${uniqueInAd.slice(0, 5).join(', ')}`
+            `🟢 [Broad Scanner] [Ad #${displayIndex} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] Discovered ${uniqueInAd.length} package(s): ${uniqueInAd.slice(0, 5).join(', ')}`
           );
           emitProgress(
             accounting.getSnapshot().adsInspected,
             maxAdsToInspect,
-            `> Ad ${i + 1}: discovered ${uniqueInAd.length} valid package${uniqueInAd.length === 1 ? '' : 's'}; ` +
+            `> Ad ${displayIndex}: discovered ${uniqueInAd.length} valid package${uniqueInAd.length === 1 ? '' : 's'}; ` +
             accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found' +
             (packageAccounting.isDuplicateAd ? ' (duplicate creative)' : '') +
             (videoAssets.length ? ` · ${videoAssets.length} video${videoAssets.length === 1 ? '' : 's'}` : '')
           );
         } else {
           console.log(
-            `🟡 [Broad Scanner] [Ad #${i + 1} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] No valid package found.`
+            `🟡 [Broad Scanner] [Ad #${displayIndex} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] No valid package found.`
           );
           emitProgress(
             accounting.getSnapshot().adsInspected,
             maxAdsToInspect,
-            `> Ad ${i + 1}: no valid package found.`
+            `> Ad ${displayIndex}: no valid package found.`
           );
         }
-      } catch (error) {
-        if (error && error.code === 'ATLAS_SCAN_CANCELLED') {
-          scanStopReason = 'cancelled';
-          console.warn(`🛑 [Broad Scanner] Aborted by user. Preserving ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} unique games) found so far.`);
-          break;
-        }
-        if (error && error.code === 'ATLAS_SCAN_BLOCKED') {
-          if (results.length > 0) {
-            scanStopReason = 'rate_limited';
-            console.warn(
-              `⚠️ [Broad Scanner] Rate limited by Google after inspecting ${accounting.getSnapshot().adsInspected} ads. Gracefully preserving ${results.length} package mappings (${accounting.getSnapshot().uniqueGamesFound} unique games) found so far.`
-            );
-            emitProgress(
-              accounting.getSnapshot().adsInspected,
-              maxAdsToInspect,
-              `> Scan paused by Google rate limit. Preserving all ${accounting.getSnapshot().uniqueGamesFound} games discovered.`
-            );
-            break;
-          }
-          throw error;
-        }
-        emitProgress(
-          accounting.getSnapshot().adsInspected,
-          maxAdsToInspect,
-          `> Ad ${i + 1}: ${error.message || 'error'}; continuing.`
-        );
       } finally {
         adPage.off('request', requestHandler);
         adPage.off('requestfinished', finishCreativeRequest);
@@ -1268,21 +1573,173 @@ async function scanCompetitor(
         adPage.off('response', responseHandler);
         await adPage.close().catch(() => {});
       }
+    };
 
-      if (scanStopReason) break;
-      if (accounting.hasReachedTarget()) {
-        scanStopReason = 'target_reached';
-        break;
+    const runCreativeWorker = async workerIdx => {
+      if (workerIdx > 0) {
+        await new Promise(resolve => setTimeout(resolve, workerIdx * 110));
       }
+      while (!scanStopReason && !accounting.hasReachedTarget()) {
+        if (isCancelled()) {
+          scanStopReason = 'cancelled';
+          break;
+        }
 
-      // Natural pacing / jitter between inspecting consecutive ad creatives to avoid burst rate-limiting
-      if (i + 1 < idArray.length && !isCancelled()) {
-        const jitter = Math.floor(Math.random() * 450) + 350; // 350ms - 800ms
-        await new Promise(resolve => setTimeout(resolve, jitter));
+        const i = nextCreativeCursor;
+        if (i >= maxAdsToInspect) break;
+        nextCreativeCursor += 1;
+
+        await ensureNextCreativeAvailable(i);
+        if (scanStopReason || i >= idArray.length || accounting.hasReachedTarget()) break;
+        if (isCancelled()) {
+          scanStopReason = 'cancelled';
+          break;
+        }
+
+        const adId = idArray[i];
+        const displayIndex = i + 1;
+        inspectedCreativeIds.add(adId);
+        accounting.markInspected();
+
+        // Fast Path A: Creative already resolved in DB cache (`ad_creatives` or `creative_extraction_cache`)
+        const cachedPackages = knownPackagesByCreative.get(adId);
+        if (cachedPackages && cachedPackages.size > 0) {
+          const uniqueInAd = [...cachedPackages];
+          const packageAccounting = accounting.recordPackages(uniqueInAd);
+          for (const pkg of uniqueInAd) globallyDiscovered.add(pkg);
+          touchCreativeVideoAssets(videoPool, adId).catch(() => {});
+          for (const pkg of uniqueInAd) {
+            results.push({
+              creativeId: adId,
+              package: pkg,
+              discoveredPackages: uniqueInAd,
+              videoAssets: []
+            });
+            await onPackageFound(pkg);
+          }
+          emitProgress(
+            accounting.getSnapshot().adsInspected,
+            maxAdsToInspect,
+            `> Ad ${displayIndex} (cached): reused ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}; ` +
+              accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found' +
+              (packageAccounting.isDuplicateAd ? ' (duplicate creative)' : '')
+          );
+          if (accounting.hasReachedTarget()) {
+            scanStopReason = 'target_reached';
+            break;
+          }
+          continue;
+        }
+
+        // Fast Path B: Direct HTTP RPC + Preview Script Inspection (resolves ~98% of creatives in ~250ms without launching a Playwright tab)
+        const initialUrls = previewUrlsByCreative.has(adId) ? [...previewUrlsByCreative.get(adId)] : [];
+        const fastResult = await inspectCreativeViaRpcFastPath(arId, adId, initialUrls);
+
+        if (fastResult.packages.length > 0 || fastResult.resolved) {
+          const uniqueInAd = fastResult.packages;
+          const packageAccounting = accounting.recordPackages(uniqueInAd);
+          sourceDiscoveryTotals.responseBody += uniqueInAd.length;
+          for (const pkg of uniqueInAd) globallyDiscovered.add(pkg);
+          const videoAssets = fastResult.videos || [];
+
+          if (videoAssets.length > 0) {
+            const attribution = {
+              packageAssets: uniqueInAd.length === 1 ? new Map([[uniqueInAd[0], videoAssets]]) : new Map(),
+              unassigned: uniqueInAd.length === 1 ? [] : videoAssets
+            };
+            videoPersistenceQueue.enqueue({
+              creativeId: adId,
+              advertiserId: arId,
+              attribution,
+              allAssets: videoAssets
+            }).catch(() => {});
+            queuedVideoPersistenceTasks += 1;
+          }
+          if (uniqueInAd.length > 0) {
+            EXTRACTION_CACHE_Queue.enqueue({
+              creativeId: adId,
+              packageNames: uniqueInAd,
+              videoCount: videoAssets.length
+            }).catch(() => {});
+          }
+
+          if (uniqueInAd.length > 0) {
+            for (const pkg of uniqueInAd) {
+              results.push({
+                creativeId: adId,
+                package: pkg,
+                discoveredPackages: uniqueInAd,
+                videoAssets: uniqueInAd.length === 1 ? videoAssets : []
+              });
+              await onPackageFound(pkg);
+            }
+            console.log(
+              `🟢 [Broad Scanner Fast] [Ad #${displayIndex} | Unique Games: ${accounting.getSnapshot().uniqueGamesFound}/${targetUniqueGames}] Discovered ${uniqueInAd.length} package(s): ${uniqueInAd.slice(0, 5).join(', ')}`
+            );
+            emitProgress(
+              accounting.getSnapshot().adsInspected,
+              maxAdsToInspect,
+              `> Ad ${displayIndex} (fast preview): discovered ${uniqueInAd.length} package${uniqueInAd.length === 1 ? '' : 's'}; ` +
+                accounting.getSnapshot().uniqueGamesFound + '/' + targetUniqueGames + ' unique games found' +
+                (packageAccounting.isDuplicateAd ? ' (duplicate creative)' : '')
+            );
+          } else {
+            emitProgress(
+              accounting.getSnapshot().adsInspected,
+              maxAdsToInspect,
+              fastResult.isNonAndroid
+                ? `> Ad ${displayIndex}: skipped iOS / non-Android creative.`
+                : `> Ad ${displayIndex}: no Android package in creative preview.`
+            );
+          }
+
+          if (accounting.hasReachedTarget()) {
+            scanStopReason = 'target_reached';
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 60 + (workerIdx * 30)));
+          continue;
+        }
+
+        // Slow Fallback Path: Only open a Playwright tab when RPC preview script was unavailable
+        try {
+          await inspectSingleCreativeInBrowser(adId, displayIndex);
+        } catch (error) {
+          if (error && error.code === 'ATLAS_SCAN_CANCELLED') {
+            scanStopReason = 'cancelled';
+            break;
+          }
+          if (error && error.code === 'ATLAS_SCAN_BLOCKED') {
+            if (results.length > 0) {
+              scanStopReason = 'rate_limited';
+              emitProgress(
+                accounting.getSnapshot().adsInspected,
+                maxAdsToInspect,
+                `> Scan paused by Google rate limit. Preserving all ${accounting.getSnapshot().uniqueGamesFound} games discovered.`
+              );
+              break;
+            }
+            throw error;
+          }
+          emitProgress(
+            accounting.getSnapshot().adsInspected,
+            maxAdsToInspect,
+            `> Ad ${displayIndex}: ${error.message || 'error'}; continuing.`
+          );
+        }
+
+        if (accounting.hasReachedTarget()) {
+          scanStopReason = 'target_reached';
+          break;
+        }
       }
-    }
+    };
 
-    await searchPage.close().catch(() => {});
+    await Promise.all(
+      Array.from({ length: FAST_RPC_CONCURRENCY }, (_, workerIdx) => runCreativeWorker(workerIdx))
+    );
+
+    if (searchPage) await searchPage.close().catch(() => {});
 
     if (!scanStopReason) {
       if (accounting.hasReachedTarget()) scanStopReason = 'target_reached';
@@ -1339,15 +1796,19 @@ async function scanCompetitor(
     return results && results.length > 0 ? results : [];
   } finally {
     try {
-      searchPage.off('request', trackDiscoveryRequest);
-      searchPage.off('requestfinished', finishDiscoveryRequest);
-      searchPage.off('requestfailed', handleFailedDiscoveryRequest);
+      if (searchPage) {
+        searchPage.off('request', trackDiscoveryRequest);
+        searchPage.off('requestfinished', finishDiscoveryRequest);
+        searchPage.off('requestfailed', handleFailedDiscoveryRequest);
+      }
     } catch {}
     try {
-      const cookies = await context.cookies();
-      const googleCookies = cookies.filter(c => c.domain && c.domain.includes('google.com'));
-      if (googleCookies.length > 0) {
-        fs.writeFileSync(cookiesFilePath, JSON.stringify(googleCookies, null, 2), 'utf8');
+      if (context) {
+        const cookies = await context.cookies();
+        const googleCookies = cookies.filter(c => c.domain && c.domain.includes('google.com'));
+        if (googleCookies.length > 0) {
+          fs.writeFileSync(cookiesFilePath, JSON.stringify(googleCookies, null, 2), 'utf8');
+        }
       }
     } catch {}
     if (context) await context.close().catch(() => {});

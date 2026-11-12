@@ -205,7 +205,7 @@ function verifySessionToken(token) {
 const gplayRaw = require("google-play-scraper");
 const gplay = gplayRaw.default || gplayRaw;
 
-const INGESTION_METADATA_CONCURRENCY = 4;
+const INGESTION_METADATA_CONCURRENCY = 8;
 
 function runWithTimeout(operation, timeoutMs, label) {
   let timeoutId;
@@ -243,23 +243,37 @@ function createFallbackPlayAppData(pkg, targetDisplayName) {
 
 async function fetchPackageEnrichment(pkg, targetDisplayName) {
   let appData = null;
+  let ds5 = null;
   let primaryTimedOut = false;
 
-  try {
-    appData = await runWithTimeout(
+  const [appResult, ds5Result] = await Promise.allSettled([
+    runWithTimeout(
       () => gplay.app({ appId: pkg, country: "us" }),
-      8000,
+      6500,
       `Google Play app lookup for ${pkg}`
-    );
-  } catch (error) {
-    primaryTimedOut = error?.code === "ATLAS_LOOKUP_TIMEOUT";
+    ),
+    runWithTimeout(
+      () => fetchPlayStoreDs5(pkg, { timeoutMs: 6000 }),
+      6500,
+      `Google Play ds:5 lookup for ${pkg}`
+    )
+  ]);
+
+  if (appResult.status === "fulfilled") {
+    appData = appResult.value;
+  } else {
+    primaryTimedOut = appResult.reason?.code === "ATLAS_LOOKUP_TIMEOUT";
+  }
+
+  if (ds5Result.status === "fulfilled") {
+    ds5 = ds5Result.value;
   }
 
   if (!appData && !primaryTimedOut) {
     try {
       appData = await runWithTimeout(
         () => gplay.app({ appId: pkg }),
-        6000,
+        4500,
         `Google Play fallback lookup for ${pkg}`
       );
     } catch {}
@@ -268,25 +282,17 @@ async function fetchPackageEnrichment(pkg, targetDisplayName) {
   const hasPlayData = Boolean(appData);
   if (!appData) appData = createFallbackPlayAppData(pkg, targetDisplayName);
 
-  // google-play-scraper only reads the legacy ds:5[1][2][10] release-date path, which
-  // Google no longer populates for newer listings. Fall back to Atlas's own ds:5 parser.
-  if (!appData.released || appData.released === "Unknown" || !appData.summary) {
-    try {
-      const ds5 = await runWithTimeout(
-        () => fetchPlayStoreDs5(pkg, { timeoutMs: 7000 }),
-        7500,
-        `Google Play ds:5 lookup for ${pkg}`
-      );
-      appData = { ...appData };
-      if ((!appData.released || appData.released === "Unknown") && (ds5?.rawReleaseDate || ds5?.releaseDate)) {
-        appData.released = ds5.rawReleaseDate || ds5.releaseDate;
-      }
-      if (ds5?.releaseDate) appData.releaseDateIso = ds5.releaseDate;
-      if (!appData.summary && ds5?.shortDescription) appData.summary = ds5.shortDescription;
-      if ((!appData.description || appData.description === "Captured directly via ad stream") && ds5?.longDescription) {
-        appData.description = ds5.longDescription;
-      }
-    } catch {}
+  // Merge Atlas's own ds:5 parser fields when google-play-scraper misses newer release-date/summary paths.
+  if (ds5) {
+    appData = { ...appData };
+    if ((!appData.released || appData.released === "Unknown") && (ds5.rawReleaseDate || ds5.releaseDate)) {
+      appData.released = ds5.rawReleaseDate || ds5.releaseDate;
+    }
+    if (ds5.releaseDate) appData.releaseDateIso = ds5.releaseDate;
+    if (!appData.summary && ds5.shortDescription) appData.summary = ds5.shortDescription;
+    if ((!appData.description || appData.description === "Captured directly via ad stream") && ds5.longDescription) {
+      appData.description = ds5.longDescription;
+    }
   }
 
   let similarApps = [];
@@ -294,14 +300,14 @@ async function fetchPackageEnrichment(pkg, targetDisplayName) {
     try {
       const rawSimilar = await runWithTimeout(
         () => gplay.similar({ appId: pkg, country: "us" }),
-        5000,
+        3500,
         `Google Play similar-app lookup for ${pkg}`
       );
       similarApps = Array.isArray(rawSimilar) ? rawSimilar : [];
     } catch {}
   }
 
-  return { appData, similarApps };
+  return { appData, similarApps, ds5 };
 }
 
 function parseReleaseDateIso(value) {
@@ -2140,9 +2146,16 @@ app.post("/api/scan", async (req, res) => {
             async ([pkg]) => {
               if (activeScanCancelled) return;
               try {
+                const prefetchedDs5 = enrichmentByPackage.get(pkg)?.ds5 || null;
                 await runWithTimeout(
-                  () => runFullTelemetryForPackage(pool, pkg, { allowRemoteSellersFetch: false, skipSuggestionsRpc: true, skipNetworks: true }),
-                  10000,
+                  () => runFullTelemetryForPackage(pool, pkg, {
+                    prefetchedDs5,
+                    allowRemoteSellersFetch: false,
+                    skipSuggestionsRpc: true,
+                    skipNetworks: true,
+                    skipCard: true
+                  }),
+                  8000,
                   `Play Store telemetry for ${pkg}`
                 );
               } catch (telemetryErr) {

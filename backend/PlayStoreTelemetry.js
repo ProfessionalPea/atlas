@@ -1739,11 +1739,13 @@ async function runFullTelemetryForPackage(pool, packageName, options = {}) {
   const pkg = String(packageName || '').trim();
   if (!pkg) throw new Error('package_name is required');
 
-  let ds5 = null;
-  try {
-    ds5 = await fetchPlayStoreDs5(pkg);
-  } catch (err) {
-    console.warn(`[PlayTelemetry] Play Store ds:5 fetch warning for ${pkg}: ${err.message}`);
+  let ds5 = options.prefetchedDs5 || null;
+  if (!ds5) {
+    try {
+      ds5 = await fetchPlayStoreDs5(pkg);
+    } catch (err) {
+      console.warn(`[PlayTelemetry] Play Store ds:5 fetch warning for ${pkg}: ${err.message}`);
+    }
   }
 
   await ensureGameRowForTelemetry(pool, pkg, ds5);
