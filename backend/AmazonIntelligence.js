@@ -315,9 +315,27 @@ async function initializeAmazonStorage(pool) {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
+      competitor_id INTEGER REFERENCES competitors(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
     );
+
+    ALTER TABLE amazon_lists ADD COLUMN IF NOT EXISTS competitor_id INTEGER REFERENCES competitors(id) ON DELETE SET NULL;
+
+    INSERT INTO competitors (name)
+    SELECT DISTINCT TRIM(al.name)
+    FROM amazon_lists al
+    WHERE al.competitor_id IS NULL
+      AND TRIM(COALESCE(al.name, '')) <> ''
+      AND NOT EXISTS (
+        SELECT 1 FROM competitors c WHERE LOWER(TRIM(c.name)) = LOWER(TRIM(al.name))
+      );
+
+    UPDATE amazon_lists al
+    SET competitor_id = c.id
+    FROM competitors c
+    WHERE al.competitor_id IS NULL
+      AND LOWER(TRIM(al.name)) = LOWER(TRIM(c.name));
 
     CREATE TABLE IF NOT EXISTS amazon_list_publishers (
       list_id INTEGER NOT NULL REFERENCES amazon_lists(id) ON DELETE CASCADE,
@@ -615,7 +633,7 @@ function registerAmazonRoutes({ app, pool }) {
         `);
         competitorGroups = (groupsRes.rows || []).map((row) => {
           const matchedLists = lists.filter(
-            (l) => (row.competitor_ids || []).includes(l.competitor_id) || (row.competitor_ids || []).includes(l.id)
+            (l) => l.competitor_id && (row.competitor_ids || []).includes(Number(l.competitor_id))
           );
           const pubIdSet = new Set();
           matchedLists.forEach((l) => (l.publisher_ids || []).forEach((pId) => pubIdSet.add(pId)));
@@ -925,9 +943,26 @@ function registerAmazonRoutes({ app, pool }) {
       if (!name) return res.status(400).json({ error: 'List name is required.' });
       const description = String(req.body?.description || '').trim() || null;
 
+      let competitorId = null;
+      try {
+        const existingComp = await pool.query(
+          `SELECT id FROM competitors WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+          [name]
+        );
+        if (existingComp.rows[0]?.id) {
+          competitorId = existingComp.rows[0].id;
+        } else {
+          const compRes = await pool.query(
+            `INSERT INTO competitors (name) VALUES ($1) RETURNING id`,
+            [name]
+          );
+          competitorId = compRes.rows[0]?.id || null;
+        }
+      } catch (_) {}
+
       const listRes = await pool.query(
-        `INSERT INTO amazon_lists (name, description) VALUES ($1, $2) RETURNING *`,
-        [name, description]
+        `INSERT INTO amazon_lists (name, description, competitor_id) VALUES ($1, $2, $3) RETURNING *`,
+        [name, description, competitorId]
       );
       const list = listRes.rows[0];
 

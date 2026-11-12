@@ -14,44 +14,109 @@ async function initializeCompetitorGroupsStorage(pool) {
       competitor_id INTEGER REFERENCES competitors(id) ON DELETE CASCADE,
       PRIMARY KEY (group_id, competitor_id)
     );
+
+    -- Enforce strict 1-batch-per-competitor rule: deduplicate any legacy multi-batch rows first
+    DELETE FROM competitor_group_members gm1
+    USING competitor_group_members gm2
+    WHERE gm1.competitor_id = gm2.competitor_id
+      AND gm1.group_id > gm2.group_id;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_competitor_group_members_unique_comp
+      ON competitor_group_members(competitor_id);
   `);
-  console.log('📦 [Competitor Groups] Schema initialized.');
+  console.log('📦 [Competitor Groups] Schema initialized (1 batch per competitor enforced).');
 }
 
 /**
- * Resolves a mix of competitors.id and/or play_lists.id / amazon_lists.id to canonical competitors.id
+ * Resolves incoming competitor identifiers to canonical competitors.id.
+ * Options:
+ * - source: 'play_list' | 'amazon_list' | 'competitor' | 'auto'
  */
-async function resolveCompetitorIds(client, rawIds) {
+async function resolveCompetitorIds(client, rawIds, source = 'auto') {
   if (!Array.isArray(rawIds) || rawIds.length === 0) return [];
-  const cleanInputIds = rawIds.map(Number).filter((id) => Number.isInteger(id) && id > 0);
+  const cleanInputIds = [...new Set(rawIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))];
   if (cleanInputIds.length === 0) return [];
 
   const validCompetitorIds = new Set();
 
-  // 1. Direct IDs that match competitors.id
+  if (source === 'play_list') {
+    const { rows } = await client.query(
+      `SELECT competitor_id FROM play_lists WHERE id = ANY($1::int[]) AND competitor_id IS NOT NULL`,
+      [cleanInputIds]
+    );
+    rows.forEach((r) => validCompetitorIds.add(Number(r.competitor_id)));
+    return Array.from(validCompetitorIds);
+  }
+
+  if (source === 'amazon_list') {
+    const { rows } = await client.query(
+      `SELECT id, name, competitor_id FROM amazon_lists WHERE id = ANY($1::int[])`,
+      [cleanInputIds]
+    );
+    for (const row of rows) {
+      if (row.competitor_id) {
+        validCompetitorIds.add(Number(row.competitor_id));
+      } else if (row.name) {
+        const cleanName = String(row.name).trim();
+        const existingComp = await client.query(
+          `SELECT id FROM competitors WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+          [cleanName]
+        );
+        let compId = existingComp.rows[0]?.id ? Number(existingComp.rows[0].id) : null;
+        if (!compId) {
+          const compRes = await client.query(
+            `INSERT INTO competitors (name) VALUES ($1) RETURNING id`,
+            [cleanName]
+          );
+          compId = Number(compRes.rows[0].id);
+        }
+        await client.query(`UPDATE amazon_lists SET competitor_id = $1 WHERE id = $2`, [compId, row.id]);
+        validCompetitorIds.add(compId);
+      }
+    }
+    return Array.from(validCompetitorIds);
+  }
+
+  // Default ('competitor' or 'auto'): check direct competitors.id first; only fall back to play_lists for IDs not in competitors
   const { rows: directRows } = await client.query(
     `SELECT id FROM competitors WHERE id = ANY($1::int[])`,
     [cleanInputIds]
   );
-  directRows.forEach((r) => validCompetitorIds.add(r.id));
+  const matchedDirect = new Set(directRows.map((r) => Number(r.id)));
+  matchedDirect.forEach((id) => validCompetitorIds.add(id));
 
-  // 2. Play Lists that have competitor_id pointing to competitors.id
-  const { rows: playListRows } = await client.query(
-    `SELECT competitor_id FROM play_lists WHERE id = ANY($1::int[]) AND competitor_id IS NOT NULL`,
-    [cleanInputIds]
-  );
-  playListRows.forEach((r) => validCompetitorIds.add(r.competitor_id));
-
-  // 3. Amazon Lists matched to competitors by name
-  try {
-    const { rows: amazonRows } = await client.query(
-      `SELECT c.id FROM amazon_lists al JOIN competitors c ON LOWER(TRIM(c.name)) = LOWER(TRIM(al.name)) WHERE al.id = ANY($1::int[])`,
-      [cleanInputIds]
+  const remainingIds = cleanInputIds.filter((id) => !matchedDirect.has(id));
+  if (remainingIds.length > 0) {
+    const { rows: playListRows } = await client.query(
+      `SELECT competitor_id FROM play_lists WHERE id = ANY($1::int[]) AND competitor_id IS NOT NULL`,
+      [remainingIds]
     );
-    amazonRows.forEach((r) => validCompetitorIds.add(r.id));
-  } catch (_) {}
+    playListRows.forEach((r) => validCompetitorIds.add(Number(r.competitor_id)));
+  }
 
   return Array.from(validCompetitorIds);
+}
+
+/**
+ * Checks whether any of the target canonical competitor IDs are already assigned to a DIFFERENT group.
+ */
+async function findConflictingBatchMemberships(client, competitorIds, excludeGroupId = null) {
+  if (!Array.isArray(competitorIds) || competitorIds.length === 0) return [];
+  const params = [competitorIds];
+  let query = `
+    SELECT gm.competitor_id, c.name AS competitor_name, g.id AS group_id, g.name AS group_name
+    FROM competitor_group_members gm
+    JOIN competitors c ON c.id = gm.competitor_id
+    JOIN competitor_groups g ON g.id = gm.group_id
+    WHERE gm.competitor_id = ANY($1::int[])
+  `;
+  if (excludeGroupId) {
+    params.push(Number(excludeGroupId));
+    query += ` AND gm.group_id <> $2`;
+  }
+  query += ` ORDER BY c.name ASC`;
+  const { rows } = await client.query(query, params);
+  return rows;
 }
 
 function triggerOverviewInvalidation() {
@@ -102,7 +167,7 @@ function registerCompetitorGroupRoutes({ app, pool }) {
   // 2. Create a new Competitor Group (Admin only)
   app.post('/api/competitor-groups', async (req, res) => {
     try {
-      const { name, description = '', competitorIds, competitor_ids } = req.body || {};
+      const { name, description = '', competitorIds, competitor_ids, idSource } = req.body || {};
       const trimmedName = String(name || '').trim();
       const trimmedDesc = description != null ? String(description).trim() : null;
       const rawIds = competitor_ids !== undefined ? competitor_ids : competitorIds;
@@ -113,20 +178,37 @@ function registerCompetitorGroupRoutes({ app, pool }) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+
+        const existingGroupRes = await client.query(
+          `SELECT id FROM competitor_groups WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+          [trimmedName]
+        );
+        if (existingGroupRes.rows.length > 0) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ error: `A competitor batch named "${trimmedName}" already exists.` });
+        }
+
+        const validIds = await resolveCompetitorIds(client, rawIds, idSource || 'auto');
+        const conflicts = await findConflictingBatchMemberships(client, validIds, null);
+        if (conflicts.length > 0) {
+          await client.query('ROLLBACK');
+          const detail = conflicts
+            .map((c) => `"${c.competitor_name}" (already in batch "${c.group_name}")`)
+            .join(', ');
+          return res.status(409).json({
+            error: `Each competitor can only belong to one batch. Conflict: ${detail}.`
+          });
+        }
+
         const insertRes = await client.query(
-          `INSERT INTO competitor_groups (name, description) VALUES ($1, $2)
-           ON CONFLICT (name) DO UPDATE SET description = COALESCE(EXCLUDED.description, competitor_groups.description)
-           RETURNING *`,
+          `INSERT INTO competitor_groups (name, description) VALUES ($1, $2) RETURNING *`,
           [trimmedName, trimmedDesc]
         );
         const group = insertRes.rows[0];
 
-        const validIds = await resolveCompetitorIds(client, rawIds);
-        await client.query(`DELETE FROM competitor_group_members WHERE group_id = $1`, [group.id]);
-
         for (const cId of validIds) {
           await client.query(
-            `INSERT INTO competitor_group_members (group_id, competitor_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            `INSERT INTO competitor_group_members (group_id, competitor_id) VALUES ($1, $2)`,
             [group.id, cId]
           );
         }
@@ -138,7 +220,11 @@ function registerCompetitorGroupRoutes({ app, pool }) {
       } catch (e) {
         await client.query('ROLLBACK');
         if (e.code === '23505') {
-          return res.status(409).json({ error: `A competitor batch named "${trimmedName}" already exists.` });
+          return res.status(409).json({
+            error: e.constraint === 'idx_competitor_group_members_unique_comp'
+              ? 'One or more selected competitors already belong to another batch.'
+              : `A competitor batch named "${trimmedName}" already exists.`
+          });
         }
         throw e;
       } finally {
@@ -156,7 +242,7 @@ function registerCompetitorGroupRoutes({ app, pool }) {
       const groupId = Number(req.params.id);
       if (!groupId) return res.status(400).json({ error: 'Invalid group ID.' });
 
-      const { name, description, competitorIds, competitor_ids } = req.body || {};
+      const { name, description, competitorIds, competitor_ids, idSource } = req.body || {};
       const trimmedName = name != null ? String(name).trim() : null;
       const trimmedDesc = description !== undefined ? (description != null ? String(description).trim() : null) : undefined;
       const rawIds = competitor_ids !== undefined ? competitor_ids : competitorIds;
@@ -170,6 +256,28 @@ function registerCompetitorGroupRoutes({ app, pool }) {
           return res.status(404).json({ error: 'Competitor batch not found.' });
         }
 
+        if (rawIds !== undefined) {
+          const validIds = await resolveCompetitorIds(client, rawIds, idSource || 'auto');
+          const conflicts = await findConflictingBatchMemberships(client, validIds, groupId);
+          if (conflicts.length > 0) {
+            await client.query('ROLLBACK');
+            const detail = conflicts
+              .map((c) => `"${c.competitor_name}" (already in batch "${c.group_name}")`)
+              .join(', ');
+            return res.status(409).json({
+              error: `Each competitor can only belong to one batch. Conflict: ${detail}.`
+            });
+          }
+
+          await client.query(`DELETE FROM competitor_group_members WHERE group_id = $1`, [groupId]);
+          for (const cId of validIds) {
+            await client.query(
+              `INSERT INTO competitor_group_members (group_id, competitor_id) VALUES ($1, $2)`,
+              [groupId, cId]
+            );
+          }
+        }
+
         if (trimmedName || trimmedDesc !== undefined) {
           await client.query(
             `UPDATE competitor_groups
@@ -180,16 +288,6 @@ function registerCompetitorGroupRoutes({ app, pool }) {
           );
         }
 
-        if (rawIds !== undefined) {
-          const validIds = await resolveCompetitorIds(client, rawIds);
-          await client.query(`DELETE FROM competitor_group_members WHERE group_id = $1`, [groupId]);
-          for (const cId of validIds) {
-            await client.query(
-              `INSERT INTO competitor_group_members (group_id, competitor_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-              [groupId, cId]
-            );
-          }
-        }
         await client.query('COMMIT');
 
         triggerOverviewInvalidation();
@@ -198,7 +296,11 @@ function registerCompetitorGroupRoutes({ app, pool }) {
       } catch (e) {
         await client.query('ROLLBACK');
         if (e.code === '23505') {
-          return res.status(409).json({ error: `A competitor batch named "${trimmedName}" already exists.` });
+          return res.status(409).json({
+            error: e.constraint === 'idx_competitor_group_members_unique_comp'
+              ? 'One or more selected competitors already belong to another batch.'
+              : `A competitor batch named "${trimmedName}" already exists.`
+          });
         }
         throw e;
       } finally {

@@ -157,6 +157,25 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
         </div>
       </div>
 
+      {/* ACTIVE BATCH COMPETITORS STRIP */}
+      {activeGroup && (
+        <div className="p-3.5 rounded-2xl bg-surface-solid border border-border-subtle flex flex-wrap items-center gap-2 shadow-sm">
+          <span className="text-xs font-semibold text-text-muted flex items-center gap-1 mr-1">
+            <span className="material-symbols-outlined text-[15px] text-electric-blue">folder_special</span>
+            Batch "{activeGroup.name}" Competitors ({(activeGroup.competitor_names || []).length}):
+          </span>
+          {(activeGroup.competitor_names || []).map((name, idx) => (
+            <span
+              key={idx}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-electric-blue/10 border border-electric-blue/25 text-electric-blue text-xs font-semibold"
+            >
+              <span className="material-symbols-outlined text-[13px]">folder</span>
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* METRICS ROW */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <div className="p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">

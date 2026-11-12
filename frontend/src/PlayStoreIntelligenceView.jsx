@@ -852,11 +852,12 @@ function PlayStoreIntelligenceView({
 
     if ((overview.competitorGroups || []).length > 0) {
       overview.competitorGroups.forEach((grp) => {
+        const compCount = Array.isArray(grp.competitor_names) ? grp.competitor_names.length : (grp.competitor_ids?.length || 0);
         list.push({
           value: `group_${grp.id}`,
           label: grp.name,
           group: "Competitor Batches (Groups)",
-          badge: `${grp.account_count || 0} accounts`,
+          badge: `${compCount} ${compCount === 1 ? "comp" : "comps"} · ${grp.account_count || 0} accts`,
           icon: "folder_special"
         });
       });
@@ -941,9 +942,7 @@ function PlayStoreIntelligenceView({
   const openBatchManager = useCallback((targetGroup = null) => {
     if (targetGroup) {
       const compIds = Array.isArray(targetGroup.competitor_ids) && targetGroup.competitor_ids.length > 0
-        ? [...targetGroup.competitor_ids]
-        : Array.isArray(targetGroup.list_ids)
-        ? [...targetGroup.list_ids]
+        ? targetGroup.competitor_ids.map(Number)
         : [];
       setGroupModal({
         mode: "edit",
@@ -951,6 +950,7 @@ function PlayStoreIntelligenceView({
         name: targetGroup.name,
         description: targetGroup.description || "",
         competitorIds: compIds,
+        searchQuery: "",
         saving: false,
         error: null
       });
@@ -961,11 +961,33 @@ function PlayStoreIntelligenceView({
         name: "",
         description: "",
         competitorIds: [],
+        searchQuery: "",
         saving: false,
         error: null
       });
     }
   }, []);
+
+  const handleSelectBatchInModal = (val) => {
+    if (val === "new") {
+      openBatchManager(null);
+      return;
+    }
+    const gId = Number(val);
+    const found = (overview.competitorGroups || []).find((g) => Number(g.id) === gId);
+    if (found) openBatchManager(found);
+  };
+
+  // Map each canonical competitor_id -> the batch { id, name } it belongs to
+  const competitorBatchAssignmentMap = useMemo(() => {
+    const map = new Map();
+    for (const grp of overview.competitorGroups || []) {
+      for (const cId of grp.competitor_ids || []) {
+        map.set(Number(cId), { id: Number(grp.id), name: grp.name });
+      }
+    }
+    return map;
+  }, [overview.competitorGroups]);
 
   const handleSaveBatch = async (e) => {
     e?.preventDefault();
@@ -983,7 +1005,8 @@ function PlayStoreIntelligenceView({
           name: groupModal.name.trim(),
           description: groupModal.description?.trim() || "",
           competitor_ids: groupModal.competitorIds,
-          competitorIds: groupModal.competitorIds
+          competitorIds: groupModal.competitorIds,
+          idSource: "competitor"
         })
       });
       if (res.ok) {
@@ -2139,6 +2162,49 @@ function PlayStoreIntelligenceView({
               </div>
             )}
           </div>
+
+          {/* Active Batch Member Competitors Strip */}
+          {activeGroupObj && (
+            <div className="pt-2.5 border-t border-border-subtle flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-semibold text-text-muted flex items-center gap-1 mr-1">
+                  <span className="material-symbols-outlined text-[14px] text-electric-blue">folder_special</span>
+                  Batch "{activeGroupObj.name}" Competitors ({(activeGroupObj.competitor_names || []).length}):
+                </span>
+                {(overview.lists || [])
+                  .filter((l) => l.competitor_id && (activeGroupObj.competitor_ids || []).map(Number).includes(Number(l.competitor_id)))
+                  .map((comp) => (
+                    <button
+                      key={comp.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedListId(comp.id);
+                        setSelectedPublisher("all");
+                      }}
+                      title={`Switch filter to competitor "${comp.name}" (${comp.account_count || 0} accounts)`}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-electric-blue/10 hover:bg-electric-blue/20 border border-electric-blue/25 text-electric-blue text-[11px] font-semibold transition"
+                    >
+                      <span className="material-symbols-outlined text-[13px]">folder</span>
+                      <span>{comp.name}</span>
+                      <span className="text-[10px] opacity-75">({comp.account_count || 0})</span>
+                    </button>
+                  ))}
+                {(activeGroupObj.competitor_names || []).length === 0 && (
+                  <span className="text-[11px] text-text-muted italic">No competitors assigned to this batch yet.</span>
+                )}
+              </div>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => openBatchManager(activeGroupObj)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-input-bg border border-border-subtle hover:border-electric-blue text-text-main text-[11px] font-semibold transition shrink-0"
+                >
+                  <span className="material-symbols-outlined text-[13px]">edit</span>
+                  Manage Batch Members
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Admin List Quick Action buttons */}
           {isAdmin && activeListObj && (
@@ -4101,7 +4167,7 @@ function PlayStoreIntelligenceView({
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="bg-surface-solid border border-border-subtle rounded-3xl w-full max-w-xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+              className="bg-surface-solid border border-border-subtle rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
             >
               <div className="p-5 border-b border-border-subtle flex items-center justify-between">
                 <div>
@@ -4110,7 +4176,7 @@ function PlayStoreIntelligenceView({
                     {groupModal.mode === "create" ? "Create Competitor Batch" : `Edit Batch: ${groupModal.name}`}
                   </h3>
                   <p className="text-xs text-text-muted mt-0.5">
-                    Group multiple competitors (e.g. Trenzy &amp; Gaminator) into a unified batch named Bahria.
+                    Group multiple competitors into a unified batch. Each competitor can only belong to one batch.
                   </p>
                 </div>
                 <button
@@ -4130,71 +4196,214 @@ function PlayStoreIntelligenceView({
                   </div>
                 )}
 
-                <div>
-                  <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
-                    Batch Name
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={groupModal.name}
-                    onChange={(e) => setGroupModal({ ...groupModal, name: e.target.value })}
-                    placeholder="e.g. Bahria"
-                    className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
-                  />
+                {/* Existing Batches Overview & Switcher */}
+                {(overview.competitorGroups || []).length > 0 && (
+                  <div className="p-3 rounded-2xl bg-input-bg/70 border border-border-subtle flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[14px] text-electric-blue">layers</span>
+                        Existing Batches ({(overview.competitorGroups || []).length}) — Click to View / Edit
+                      </span>
+                      {groupModal.mode === "edit" && (
+                        <button
+                          type="button"
+                          onClick={() => openBatchManager(null)}
+                          className="text-[11px] font-semibold text-electric-blue hover:underline flex items-center gap-0.5"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">add</span>
+                          Create New Batch
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                      {(overview.competitorGroups || []).map((grp) => {
+                        const isActiveBatch = groupModal.mode === "edit" && Number(groupModal.groupId) === Number(grp.id);
+                        const members = Array.isArray(grp.competitor_names) ? grp.competitor_names : [];
+                        return (
+                          <button
+                            key={grp.id}
+                            type="button"
+                            onClick={() => handleSelectBatchInModal(grp.id)}
+                            className={`px-2.5 py-1.5 rounded-xl border text-left transition flex flex-col gap-0.5 max-w-full ${
+                              isActiveBatch
+                                ? "bg-electric-blue/15 border-electric-blue text-electric-blue shadow-sm"
+                                : "bg-surface-solid border-border-subtle text-text-main hover:border-electric-blue/40"
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 text-xs font-semibold">
+                              <span className="material-symbols-outlined text-[13px]">folder_special</span>
+                              <span>{grp.name}</span>
+                              <span className="text-[10px] text-text-muted font-normal">
+                                ({members.length} {members.length === 1 ? "competitor" : "competitors"} · {grp.account_count || 0} accts)
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-text-muted truncate max-w-[260px]">
+                              {members.length > 0 ? members.join(", ") : "No competitors assigned"}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
+                      Batch Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={groupModal.name}
+                      onChange={(e) => setGroupModal({ ...groupModal, name: e.target.value })}
+                      placeholder="e.g. Bahria"
+                      className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
+                      Description (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={groupModal.description}
+                      onChange={(e) => setGroupModal({ ...groupModal, description: e.target.value })}
+                      placeholder="e.g. Trenzy and Gaminator studio network"
+                      className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
+                    />
+                  </div>
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
-                    Description (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={groupModal.description}
-                    onChange={(e) => setGroupModal({ ...groupModal, description: e.target.value })}
-                    placeholder="e.g. Trenzy and Gaminator studio network"
-                    className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
-                  />
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                     <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
                       Select Member Competitors ({groupModal.competitorIds.length} selected)
                     </label>
-                    <span className="text-[10px] text-text-muted">
-                      Select competitors to group
-                    </span>
+                    {groupModal.competitorIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setGroupModal({ ...groupModal, competitorIds: [] })}
+                        className="text-[11px] text-text-muted hover:text-urgent-red font-semibold transition"
+                      >
+                        Clear Selection
+                      </button>
+                    )}
                   </div>
+
+                  {/* Selected Competitors Pills */}
+                  {groupModal.competitorIds.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 mb-2.5 p-2 rounded-xl bg-electric-blue/5 border border-electric-blue/20">
+                      {(overview.lists || [])
+                        .filter((c) => groupModal.competitorIds.includes(Number(c.competitor_id)))
+                        .map((comp) => (
+                          <span
+                            key={comp.id}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-electric-blue/15 text-electric-blue border border-electric-blue/30 text-[11px] font-semibold"
+                          >
+                            <span>{comp.name}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setGroupModal({
+                                  ...groupModal,
+                                  competitorIds: groupModal.competitorIds.filter((id) => id !== Number(comp.competitor_id))
+                                })
+                              }
+                              className="hover:text-urgent-red ml-0.5 flex items-center"
+                              title={`Remove ${comp.name}`}
+                            >
+                              <span className="material-symbols-outlined text-[13px]">close</span>
+                            </button>
+                          </span>
+                        ))}
+                    </div>
+                  )}
+
+                  {/* Search Competitors Input */}
+                  <div className="relative mb-2">
+                    <span className="material-symbols-outlined text-[16px] text-text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                      search
+                    </span>
+                    <input
+                      type="text"
+                      value={groupModal.searchQuery || ""}
+                      onChange={(e) => setGroupModal({ ...groupModal, searchQuery: e.target.value })}
+                      placeholder="Search competitors by name..."
+                      className="w-full h-9 pl-9 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:border-electric-blue outline-none"
+                    />
+                    {groupModal.searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setGroupModal({ ...groupModal, searchQuery: "" })}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main"
+                      >
+                        <span className="material-symbols-outlined text-[15px]">close</span>
+                      </button>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1.5 bg-input-bg rounded-xl border border-border-subtle">
-                    {(overview.lists || []).map((comp) => {
-                      const targetId = comp.competitor_id || comp.id;
-                      const isChecked = groupModal.competitorIds.includes(targetId) || groupModal.competitorIds.includes(comp.id);
-                      return (
-                        <label
-                          key={comp.id}
-                          className={`flex items-center gap-2.5 p-2 rounded-lg cursor-pointer text-xs font-medium transition ${
-                            isChecked
-                              ? "bg-electric-blue/15 text-electric-blue border border-electric-blue/30"
-                              : "bg-surface-solid text-text-main border border-border-subtle hover:bg-surface-glass"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={(e) => {
-                              const next = e.target.checked
-                                ? [...groupModal.competitorIds.filter((id) => id !== targetId && id !== comp.id), targetId]
-                                : groupModal.competitorIds.filter((id) => id !== targetId && id !== comp.id);
-                              setGroupModal({ ...groupModal, competitorIds: next });
-                            }}
-                            className="accent-electric-blue rounded w-4 h-4 cursor-pointer"
-                          />
-                          <span className="truncate flex-1 font-semibold">{comp.name}</span>
-                          <span className="text-[10px] text-text-muted">({comp.account_count || 0})</span>
-                        </label>
-                      );
-                    })}
+                    {(overview.lists || [])
+                      .filter((comp) => {
+                        const q = (groupModal.searchQuery || "").trim().toLowerCase();
+                        if (!q) return true;
+                        const assigned = competitorBatchAssignmentMap.get(Number(comp.competitor_id));
+                        return (
+                          String(comp.name || "").toLowerCase().includes(q) ||
+                          String(assigned?.name || "").toLowerCase().includes(q)
+                        );
+                      })
+                      .map((comp) => {
+                        const targetId = Number(comp.competitor_id);
+                        const isChecked = Number.isInteger(targetId) && targetId > 0 && groupModal.competitorIds.includes(targetId);
+                        const assignedBatch = competitorBatchAssignmentMap.get(targetId);
+                        const isAssignedToOtherBatch =
+                          Boolean(assignedBatch) &&
+                          (groupModal.mode === "create" || Number(assignedBatch.id) !== Number(groupModal.groupId));
+
+                        return (
+                          <label
+                            key={comp.id}
+                            title={
+                              isAssignedToOtherBatch
+                                ? `${comp.name} is already assigned to batch "${assignedBatch.name}". Remove it from "${assignedBatch.name}" first.`
+                                : `${comp.name} (${comp.account_count || 0} accounts)`
+                            }
+                            className={`flex items-center gap-2.5 p-2 rounded-lg text-xs font-medium transition ${
+                              isAssignedToOtherBatch
+                                ? "bg-surface-solid/50 text-text-muted border border-border-subtle/50 opacity-60 cursor-not-allowed"
+                                : isChecked
+                                ? "bg-electric-blue/15 text-electric-blue border border-electric-blue/30 cursor-pointer"
+                                : "bg-surface-solid text-text-main border border-border-subtle hover:bg-surface-glass cursor-pointer"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              disabled={isAssignedToOtherBatch || !targetId}
+                              checked={isChecked}
+                              onChange={(e) => {
+                                if (isAssignedToOtherBatch || !targetId) return;
+                                const next = e.target.checked
+                                  ? [...groupModal.competitorIds.filter((id) => id !== targetId), targetId]
+                                  : groupModal.competitorIds.filter((id) => id !== targetId);
+                                setGroupModal({ ...groupModal, competitorIds: next });
+                              }}
+                              className="accent-electric-blue rounded w-4 h-4 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-semibold">{comp.name}</div>
+                              {isAssignedToOtherBatch && (
+                                <div className="text-[10px] text-amber-500 truncate">
+                                  In "{assignedBatch.name}"
+                                </div>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-text-muted shrink-0">({comp.account_count || 0})</span>
+                          </label>
+                        );
+                      })}
                   </div>
                 </div>
 

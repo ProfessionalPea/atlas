@@ -2179,7 +2179,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         `);
         competitorGroups = (groupsRes.rows || []).map((row) => {
           const matchedLists = lists.filter(
-            (l) => (row.competitor_ids || []).includes(l.competitor_id) || (row.competitor_ids || []).includes(l.id)
+            (l) => l.competitor_id && (row.competitor_ids || []).includes(Number(l.competitor_id))
           );
           const pubIdSet = new Set();
           matchedLists.forEach((l) => (l.publisher_ids || []).forEach((pId) => pubIdSet.add(pId)));
