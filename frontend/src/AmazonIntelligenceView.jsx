@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import { API_BASE } from "./apiConfig";
+import AtlasFeedback from "./AtlasFeedback.jsx";
 import AtlasSelect from "./AtlasSelect";
 import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
 
@@ -187,9 +188,55 @@ function AmazonIntelligenceView({ isAdmin = false }) {
 
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
+  const [isRefreshingOverview, setIsRefreshingOverview] = useState(false);
+  const [isDeletingList, setIsDeletingList] = useState(false);
+  const [isDeletingPub, setIsDeletingPub] = useState(false);
+  const [removingPublisherId, setRemovingPublisherId] = useState(null);
+  const [copiedAsin, setCopiedAsin] = useState(null);
+  const [showAllPublishers, setShowAllPublishers] = useState(false);
+  const [visibleRowCount, setVisibleRowCount] = useState(150);
+  const catalogSectionRef = useRef(null);
+  const overviewLengthRef = useRef(0);
   const cachedEtagRef = useRef(null);
 
+  useEffect(() => {
+    overviewLengthRef.current = (overview.games || []).length + (overview.publishers || []).length;
+  }, [overview.games, overview.publishers]);
+
+  useEffect(() => {
+    setShowAllPublishers(false);
+  }, [selectedListId, appTypeFilter]);
+
+  useEffect(() => {
+    setVisibleRowCount(150);
+  }, [selectedListId, selectedPublisher, selectedPricing, searchQuery, sortBy, appTypeFilter, durationPreset, dateBasis, customStartDate, customEndDate, includeUnknownDates]);
+
+  const scrollToCatalogIfBelowFold = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      const el = catalogSectionRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.top > window.innerHeight * 0.68 || rect.top < 0) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  }, []);
+
+  const handleCopyAsin = useCallback(async (asin, e) => {
+    if (e) e.stopPropagation();
+    if (!asin) return;
+    const ok = await AtlasFeedback.copy(asin, "ASIN");
+    if (ok) {
+      setCopiedAsin(asin);
+      window.setTimeout(() => {
+        setCopiedAsin((prev) => (prev === asin ? null : prev));
+      }, 1400);
+    }
+  }, []);
+
   const loadOverview = useCallback(async (options = {}) => {
+    const hasExistingData = overviewLengthRef.current > 0;
+    if (hasExistingData) setIsRefreshingOverview(true);
     try {
       const headers = {};
       const forceFresh = options?.fresh === true;
@@ -239,6 +286,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       console.error("Failed to load Amazon overview:", err);
     } finally {
       setLoading(false);
+      setIsRefreshingOverview(false);
     }
   }, [fetcher]);
 
@@ -485,8 +533,8 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       };
     }
 
-    const daysMap = { "30d": 30, "90d": 90, "6m": 182, "1y": 365 };
-    const labelsMap = { "30d": "Last 30 Days", "90d": "Last 90 Days", "6m": "Last 6 Months", "1y": "Last 1 Year" };
+    const daysMap = { today: 1, "7d": 7, "14d": 14, "30d": 30, "90d": 90, "6m": 182, "1y": 365 };
+    const labelsMap = { today: "Today / Last 24h", "7d": "Last 7 Days", "14d": "Last 14 Days", "30d": "Last 30 Days", "90d": "Last 90 Days", "6m": "Last 6 Months", "1y": "Last 1 Year" };
     const days = daysMap[durationPreset] || 30;
     const startMs = endOfTodayMs - days * 86400 * 1000;
     return { active: true, startMs, endMs: endOfTodayMs, label: labelsMap[durationPreset] || "Selected Period" };
@@ -804,12 +852,18 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       });
       if (res.ok) {
         const saved = await res.json();
+        const savedName = groupModal.name.trim();
+        const isCreateMode = groupModal.mode === "create";
         setGroupModal(null);
         await loadOverview({ fresh: true });
         const targetId = saved?.id || saved?.group?.id;
         if (targetId) {
           setSelectedListId(`group_${targetId}`);
         }
+        AtlasFeedback.toast(
+          `${isCreateMode ? "Created" : "Updated"} competitor batch "${savedName}".`,
+          { tone: "success" }
+        );
       } else {
         const err = await res.json().catch(() => ({}));
         setGroupModal((prev) => ({
@@ -829,16 +883,25 @@ function AmazonIntelligenceView({ isAdmin = false }) {
   };
 
   const handleDeleteBatch = async (groupId) => {
-    if (!window.confirm("Are you sure you want to delete this competitor batch? Competitors and publisher accounts will NOT be deleted.")) return;
+    const ok = await AtlasFeedback.confirm(
+      "Are you sure you want to delete this competitor batch? Competitors and publisher accounts will NOT be deleted.",
+      { title: "Delete Competitor Batch", confirmLabel: "Delete Batch", destructive: true }
+    );
+    if (!ok) return;
     try {
       const res = await fetcher(`${API_BASE}/api/competitor-groups/${groupId}`, { method: "DELETE" });
       if (res.ok) {
         if (selectedListId === `group_${groupId}`) setSelectedListId("all");
         setGroupModal(null);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Competitor batch deleted.", { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        AtlasFeedback.toast(errData?.error || "Failed to delete competitor batch.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Delete batch error:", err);
+      AtlasFeedback.toast(err?.message || "Failed to delete competitor batch.", { tone: "danger" });
     }
   };
 
@@ -937,7 +1000,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         method: "POST",
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         if (data?.scanStatus) {
           setScanStatus(data.scanStatus);
@@ -949,8 +1012,10 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           await loadOverview({ fresh: true });
           setSelectedListId(data.createdList.id);
         }
+        AtlasFeedback.toast("Amazon scan started.", { tone: "success" });
       } else {
         setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
+        AtlasFeedback.toast(data?.error || "Failed to start Amazon scan.", { tone: "danger" });
         if (data?.validation) {
           setValidationResult({
             totalSubmitted: data.validation.length,
@@ -964,6 +1029,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     } catch (err) {
       console.error("Scan start failed:", err);
       setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
+      AtlasFeedback.toast(err?.message || "Failed to start Amazon scan.", { tone: "danger" });
     }
   };
 
@@ -999,43 +1065,61 @@ function AmazonIntelligenceView({ isAdmin = false }) {
   // Save Create / Edit List modal (and optionally jump straight to Add & Scan Accounts for that list)
   const handleSaveListModal = async (e, openScannerAfter = false) => {
     if (e) e.preventDefault();
-    if (!listModal || !listModal.name.trim()) return;
+    if (!listModal || !listModal.name.trim() || isSavingList) return;
     setIsSavingList(true);
+    setListModal((prev) => (prev ? { ...prev, error: null } : null));
     try {
       let targetListId = listModal.listId;
-      if (listModal.mode === "create") {
+      const savedName = listModal.name.trim();
+      const isCreate = listModal.mode === "create";
+      if (isCreate) {
         const res = await fetcher(`${API_BASE}/api/amazon/lists`, {
           method: "POST",
           body: JSON.stringify({
-            name: listModal.name.trim(),
+            name: savedName,
             description: listModal.description?.trim() || null,
             publisherIds: listModal.publisherIds || []
           })
         });
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          const data = await res.json();
           targetListId = data?.list?.id;
           await loadOverview({ fresh: true });
           if (targetListId) setSelectedListId(targetListId);
           setListModal(null);
+          AtlasFeedback.toast(`Created competitor list "${savedName}".`, { tone: "success" });
+        } else {
+          setListModal((prev) => (prev ? { ...prev, error: data?.error || "Failed to create list." } : null));
+          return;
         }
       } else {
-        await fetcher(`${API_BASE}/api/amazon/lists/${listModal.listId}`, {
+        const patchRes = await fetcher(`${API_BASE}/api/amazon/lists/${listModal.listId}`, {
           method: "PATCH",
           body: JSON.stringify({
-            name: listModal.name.trim(),
+            name: savedName,
             description: listModal.description?.trim() || null
           })
         });
-        await fetcher(`${API_BASE}/api/amazon/lists/${listModal.listId}/publishers`, {
+        if (!patchRes.ok) {
+          const patchErr = await patchRes.json().catch(() => ({}));
+          setListModal((prev) => (prev ? { ...prev, error: patchErr?.error || "Failed to save list details." } : null));
+          return;
+        }
+        const pubRes = await fetcher(`${API_BASE}/api/amazon/lists/${listModal.listId}/publishers`, {
           method: "POST",
           body: JSON.stringify({
             action: "set",
             publisherIds: listModal.publisherIds || []
           })
         });
+        if (!pubRes.ok) {
+          const pubErr = await pubRes.json().catch(() => ({}));
+          setListModal((prev) => (prev ? { ...prev, error: pubErr?.error || "Failed to update list publishers." } : null));
+          return;
+        }
         await loadOverview({ fresh: true });
         setListModal(null);
+        AtlasFeedback.toast(`Saved changes to "${savedName}".`, { tone: "success" });
       }
 
       if (openScannerAfter && targetListId && targetListId !== "new") {
@@ -1045,28 +1129,43 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       }
     } catch (err) {
       console.error("Save list failed:", err);
+      setListModal((prev) => (prev ? { ...prev, error: err?.message || "Failed to save list." } : null));
     } finally {
       setIsSavingList(false);
     }
   };
 
   const handleDeleteList = async (listId) => {
+    const ok = await AtlasFeedback.confirm(
+      "Delete this Amazon competitor list? Publisher accounts and games will remain in Atlas.",
+      { title: "Delete Competitor List", confirmLabel: "Delete List", destructive: true }
+    );
+    if (!ok) return;
+    setIsDeletingList(true);
     try {
       const res = await fetcher(`${API_BASE}/api/amazon/lists/${listId}`, { method: "DELETE" });
       if (res.ok) {
         if (Number(selectedListId) === Number(listId)) setSelectedListId("all");
         setListModal(null);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Competitor list deleted.", { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setListModal((prev) => (prev ? { ...prev, error: errData?.error || "Failed to delete list." } : null));
       }
     } catch (err) {
       console.error("Delete list failed:", err);
+      setListModal((prev) => (prev ? { ...prev, error: err?.message || "Failed to delete list." } : null));
+    } finally {
+      setIsDeletingList(false);
     }
   };
 
   const handleSavePublisherModal = async (e) => {
     e.preventDefault();
-    if (!editingPublisher) return;
+    if (!editingPublisher || isSavingPublisher) return;
     setIsSavingPublisher(true);
+    setEditingPublisher((prev) => (prev ? { ...prev, error: null } : null));
     try {
       const res = await fetcher(`${API_BASE}/api/amazon/publishers/${editingPublisher.id}`, {
         method: "PATCH",
@@ -1075,19 +1174,26 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           listIds: editingPublisher.list_ids || []
         })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
+        const label = editingPublisher.display_name?.trim() || editingPublisher.publisher_name;
         await loadOverview({ fresh: true });
         setEditingPublisher(null);
+        AtlasFeedback.toast(`Updated Amazon account "${label}".`, { tone: "success" });
+      } else {
+        setEditingPublisher((prev) => (prev ? { ...prev, error: data?.error || "Failed to save account." } : null));
       }
     } catch (err) {
       console.error("Save publisher failed:", err);
+      setEditingPublisher((prev) => (prev ? { ...prev, error: err?.message || "Failed to save account." } : null));
     } finally {
       setIsSavingPublisher(false);
     }
   };
 
   const handleRemoveFromCurrentList = async (pubId, listId = activeListObj?.id) => {
-    if (!pubId || !listId) return;
+    if (!pubId || !listId || removingPublisherId) return;
+    setRemovingPublisherId(pubId);
     try {
       const res = await fetcher(`${API_BASE}/api/amazon/lists/${listId}/publishers`, {
         method: "POST",
@@ -1103,24 +1209,40 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           );
         }
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Removed account from list.", { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        AtlasFeedback.toast(errData?.error || "Failed to remove account from list.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Remove from list failed:", err);
+      AtlasFeedback.toast(err?.message || "Failed to remove account from list.", { tone: "danger" });
+    } finally {
+      setRemovingPublisherId(null);
     }
   };
 
   const executeDeletePublisherFromAtlas = async (pub) => {
-    if (!pub || !pub.id) return;
+    if (!pub || !pub.id || isDeletingPub) return;
+    setIsDeletingPub(true);
     try {
       const res = await fetcher(`${API_BASE}/api/amazon/publishers/${pub.id}`, { method: "DELETE" });
       if (res.ok) {
+        const disp = getDisplayName(pub.publisher_name);
         if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
         setConfirmDeletePub(null);
         setEditingPublisher(null);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast(`Deleted "${disp}" from Atlas.`, { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        AtlasFeedback.toast(errData?.error || "Failed to delete account.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Delete publisher failed:", err);
+      AtlasFeedback.toast(err?.message || "Failed to delete account.", { tone: "danger" });
+    } finally {
+      setIsDeletingPub(false);
     }
   };
 
@@ -1159,6 +1281,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     a.download = `atlas-amazon-games.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    AtlasFeedback.toast(`Exported ${rows.length.toLocaleString()} Amazon titles to CSV.`, { tone: "success" });
   };
 
   const scanProgressPct = useMemo(() => {
@@ -1218,8 +1341,14 @@ function AmazonIntelligenceView({ isAdmin = false }) {
             <span className="material-symbols-outlined text-[15px]">storefront</span>
             Amazon Intelligence
           </div>
-          <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">
-            Competitor Research &amp; Portfolio Analysis
+          <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium flex items-center gap-3 flex-wrap">
+            <span>Competitor Research &amp; Portfolio Analysis</span>
+            {isRefreshingOverview && !loading && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px] font-semibold tracking-normal">
+                <span className="material-symbols-outlined text-[13px] animate-spin">progress_activity</span>
+                Syncing
+              </span>
+            )}
           </h1>
         </div>
 
@@ -1799,7 +1928,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {comparisonPublishers.map((pub) => {
+            {(showAllPublishers ? comparisonPublishers : comparisonPublishers.slice(0, 12)).map((pub) => {
               const pSt = publisherStatsByName.get(pub.publisher_name) || {
                 total: Number(pub.total_games) || 0,
                 free: Number(pub.free_games) || 0,
@@ -1833,8 +1962,10 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedPublisher(isSelected && selectedPricing === "all" ? "all" : pub.publisher_name);
+                          const clearing = isSelected && selectedPricing === "all";
+                          setSelectedPublisher(clearing ? "all" : pub.publisher_name);
                           setSelectedPricing("all");
+                          if (!clearing) scrollToCatalogIfBelowFold();
                         }}
                         className="text-left min-w-0 flex-1"
                       >
@@ -1871,7 +2002,17 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                             title={`Re-scan ${dispName}`}
                             className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
                           >
-                            <span className="material-symbols-outlined text-[15px]">refresh</span>
+                            <span
+                              className={`material-symbols-outlined text-[15px] ${
+                                scanStatus.running &&
+                                String(scanStatus.currentPublisher || "").trim().toLowerCase() ===
+                                  String(pub.publisher_name || "").trim().toLowerCase()
+                                  ? "animate-spin text-amber-400"
+                                  : ""
+                              }`}
+                            >
+                              refresh
+                            </span>
                           </button>
                           <button
                             type="button"
@@ -1891,11 +2032,18 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                           {activeListObj && (
                             <button
                               type="button"
+                              disabled={removingPublisherId === pub.id}
                               onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
                               title={`Remove "${dispName}" from list "${activeListObj.name}"`}
-                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition disabled:opacity-40"
                             >
-                              <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                              <span
+                                className={`material-symbols-outlined text-[15px] ${
+                                  removingPublisherId === pub.id ? "animate-spin text-urgent-red" : ""
+                                }`}
+                              >
+                                {removingPublisherId === pub.id ? "progress_activity" : "folder_off"}
+                              </span>
                             </button>
                           )}
                         </div>
@@ -1916,6 +2064,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                               onClick={() => {
                                 setSelectedPublisher(pub.publisher_name);
                                 setSelectedPricing("free");
+                                scrollToCatalogIfBelowFold();
                               }}
                               style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
                               title={`${dispName}: ${free} Free games (click to filter)`}
@@ -1930,6 +2079,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                               onClick={() => {
                                 setSelectedPublisher(pub.publisher_name);
                                 setSelectedPricing("paid");
+                                scrollToCatalogIfBelowFold();
                               }}
                               style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
                               title={`${dispName}: ${paid} Paid games · Median $${Number(pub.median_paid_price || 0).toFixed(2)} (click to filter)`}
@@ -1962,6 +2112,19 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 </div>
               );
             })}
+            {comparisonPublishers.length > 12 && (
+              <div className="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => setShowAllPublishers((prev) => !prev)}
+                  className="px-4 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/50 transition"
+                >
+                  {showAllPublishers
+                    ? "Collapse to Top 12 Accounts"
+                    : `Show all ${comparisonPublishers.length} accounts (+${comparisonPublishers.length - 12} more)`}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2044,14 +2207,30 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       )}
 
       {/* GAME DIRECTORY TABLE */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4">
+      <div
+        ref={catalogSectionRef}
+        className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4"
+      >
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-text-main flex items-center gap-2">
+            <h2 className="text-base font-semibold text-text-main flex flex-wrap items-center gap-2">
               <span>Games ({filteredGames.length.toLocaleString()})</span>
               {appTypeFilter !== "all" && (
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 capitalize">
                   {appTypeFilter}s only
+                </span>
+              )}
+              {selectedPublisher !== "all" && (
+                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full bg-electric-blue/10 border border-electric-blue/30 text-electric-blue">
+                  <span>{getDisplayName(selectedPublisher)}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPublisher("all")}
+                    className="hover:underline font-semibold"
+                    title="Clear account filter"
+                  >
+                    Clear
+                  </button>
                 </span>
               )}
             </h2>
@@ -2107,81 +2286,169 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         {loading ? (
           <div className="py-12 text-center text-xs text-text-muted">Loading Amazon intelligence dataset...</div>
         ) : (
-          <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[540px] overflow-y-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-input-bg text-text-muted uppercase text-[10px] sticky top-0 z-10">
-                <tr>
-                  <th className="py-3 px-4">Game</th>
-                  <th className="py-3 px-3">Account</th>
-                  <th className="py-3 px-3">Pricing</th>
-                  <th className="py-3 px-3 text-right">Price</th>
-                  <th className="py-3 px-3 text-right">Rating</th>
-                  <th className="py-3 px-3 text-right">Reviews</th>
-                  <th className="py-3 px-4 text-right">Launch Date</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border-subtle">
-                {filteredGames.slice(0, 300).map((g) => (
-                  <tr
-                    key={`${g.asin}-${g.publisher_id || g.publisher_name}`}
-                    onClick={() => setActiveGameDrawer(g)}
-                    className="hover:bg-input-bg/60 cursor-pointer transition"
-                  >
-                    <td className="py-2.5 px-4">
-                      <div className="flex items-center gap-3 min-w-0">
-                        {g.icon && (
-                          <img
-                            src={g.icon}
-                            alt=""
-                            className="w-9 h-9 rounded-lg object-cover shrink-0 border border-border-subtle"
-                            loading="lazy"
-                          />
-                        )}
-                        <div className="min-w-0">
-                          <div className="font-semibold text-text-main truncate max-w-xs">{g.title}</div>
-                          <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
-                            <span>{g.asin}</span>
-                            {Number(g.shared_publisher_count) > 1 && (
-                              <span
-                                className="px-1.5 py-0.2 rounded bg-electric-blue/15 text-electric-blue font-sans font-semibold"
-                                title={`Published under ${g.shared_publisher_count} accounts: ${(g.shared_publishers || []).join(", ")}`}
-                              >
-                                Shared ({g.shared_publisher_count} accounts)
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
-                    <td className="py-2.5 px-3">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                          g.pricing === "free"
-                            ? "bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
-                            : "bg-amber-500/15 text-amber-400"
+          <>
+            <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[540px] overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-input-bg text-text-muted uppercase text-[10px] sticky top-0 z-10">
+                  <tr>
+                    <th className="py-3 px-4">Game</th>
+                    <th className="py-3 px-3">Account</th>
+                    <th className="py-3 px-3">Pricing</th>
+                    <th className="py-3 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy(sortBy === "price_desc" ? "price_asc" : "price_desc")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "price_desc" || sortBy === "price_asc" ? "text-amber-400 font-bold" : ""
                         }`}
                       >
-                        {g.pricing}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">
-                      {g.pricing === "free" ? "$0.00" : `$${Number(g.price || 0).toFixed(2)}`}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono">
-                      {g.rating ? `⭐ ${Number(g.rating).toFixed(1)}` : "—"}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono">
-                      {g.review_count ? Number(g.review_count).toLocaleString() : "0"}
-                    </td>
-                    <td className="py-2.5 px-4 text-right font-mono text-text-muted">
-                      {g.release_date ? String(g.release_date).slice(0, 10) : "Unknown"}
-                    </td>
+                        <span>Price</span>
+                        {(sortBy === "price_desc" || sortBy === "price_asc") && (
+                          <span className="material-symbols-outlined text-[13px]">
+                            {sortBy === "price_asc" ? "arrow_upward" : "arrow_downward"}
+                          </span>
+                        )}
+                      </button>
+                    </th>
+                    <th className="py-3 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy("rating")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "rating" ? "text-amber-400 font-bold" : ""
+                        }`}
+                      >
+                        <span>Rating</span>
+                        {sortBy === "rating" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                      </button>
+                    </th>
+                    <th className="py-3 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy("reviews")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "reviews" ? "text-amber-400 font-bold" : ""
+                        }`}
+                      >
+                        <span>Reviews</span>
+                        {sortBy === "reviews" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                      </button>
+                    </th>
+                    <th className="py-3 px-4 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy("release")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "release" ? "text-amber-400 font-bold" : ""
+                        }`}
+                      >
+                        <span>Launch Date</span>
+                        {sortBy === "release" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                      </button>
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-border-subtle">
+                  {filteredGames.slice(0, visibleRowCount).map((g) => (
+                    <tr
+                      key={`${g.asin}-${g.publisher_id || g.publisher_name}`}
+                      onClick={() => setActiveGameDrawer(g)}
+                      className="hover:bg-input-bg/60 cursor-pointer transition"
+                    >
+                      <td className="py-2.5 px-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                          {g.icon && (
+                            <img
+                              src={g.icon}
+                              alt=""
+                              className="w-9 h-9 rounded-lg object-cover shrink-0 border border-border-subtle"
+                              loading="lazy"
+                            />
+                          )}
+                          <div className="min-w-0">
+                            <div className="font-semibold text-text-main truncate max-w-xs">{g.title}</div>
+                            <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
+                              <span>{g.asin}</span>
+                              <button
+                                type="button"
+                                onClick={(e) => handleCopyAsin(g.asin, e)}
+                                title="Copy ASIN"
+                                aria-label={`Copy ${g.asin}`}
+                                className="p-0.5 rounded hover:bg-input-bg text-text-muted hover:text-amber-400 transition shrink-0"
+                              >
+                                <span
+                                  className={`material-symbols-outlined text-[12px] ${
+                                    copiedAsin === g.asin ? "text-emerald-400" : ""
+                                  }`}
+                                >
+                                  {copiedAsin === g.asin ? "check" : "content_copy"}
+                                </span>
+                              </button>
+                              {Number(g.shared_publisher_count) > 1 && (
+                                <span
+                                  className="px-1.5 py-0.2 rounded bg-electric-blue/15 text-electric-blue font-sans font-semibold"
+                                  title={`Published under ${g.shared_publisher_count} accounts: ${(g.shared_publishers || []).join(", ")}`}
+                                >
+                                  Shared ({g.shared_publisher_count} accounts)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
+                      <td className="py-2.5 px-3">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                            g.pricing === "free"
+                              ? "bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
+                              : "bg-amber-500/15 text-amber-400"
+                          }`}
+                        >
+                          {g.pricing}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">
+                        {g.pricing === "free" ? "$0.00" : `$${Number(g.price || 0).toFixed(2)}`}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono">
+                        {g.rating ? `⭐ ${Number(g.rating).toFixed(1)}` : "—"}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono">
+                        {g.review_count ? Number(g.review_count).toLocaleString() : "0"}
+                      </td>
+                      <td className="py-2.5 px-4 text-right font-mono text-text-muted">
+                        {g.release_date ? String(g.release_date).slice(0, 10) : "Unknown"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {filteredGames.length > visibleRowCount && (
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+                <span>
+                  Showing {visibleRowCount.toLocaleString()} of {filteredGames.length.toLocaleString()} titles
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleRowCount((c) => c + 200)}
+                    className="px-3.5 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-text-main font-semibold hover:border-amber-400/50 transition"
+                  >
+                    Show +200 More
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleRowCount(filteredGames.length)}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 text-amber-400 font-semibold hover:bg-amber-500/25 transition"
+                  >
+                    Show All ({filteredGames.length.toLocaleString()})
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -2235,7 +2502,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                   type="text"
                   required
                   value={listModal.name}
-                  onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
+                  onChange={(e) => setListModal({ ...listModal, name: e.target.value, error: null })}
                   placeholder="e.g. Ozi Tech"
                   className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
                 />
@@ -2332,14 +2599,22 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 </button>
               </div>
 
+              {listModal.error && (
+                <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs font-medium">
+                  {listModal.error}
+                </div>
+              )}
+
               <div className="flex items-center justify-between gap-2 pt-2">
                 {listModal.mode === "edit" ? (
                   <button
                     type="button"
+                    disabled={isDeletingList || isSavingList}
                     onClick={() => handleDeleteList(listModal.listId)}
-                    className="px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 disabled:opacity-50"
                   >
-                    Delete List
+                    {isDeletingList && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
+                    {isDeletingList ? "Deleting..." : "Delete List"}
                   </button>
                 ) : (
                   <div />
@@ -2610,16 +2885,28 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 </div>
               </div>
 
+              {editingPublisher.error && (
+                <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs font-medium">
+                  {editingPublisher.error}
+                </div>
+              )}
+
               <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
                       <button
                         type="button"
+                        disabled={removingPublisherId === editingPublisher.id || isSavingPublisher}
                         onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
-                        className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25 disabled:opacity-50"
                       >
-                        Remove from "{activeListObj.name}"
+                        {removingPublisherId === editingPublisher.id && (
+                          <span className="material-symbols-outlined text-[12px] animate-spin">progress_activity</span>
+                        )}
+                        {removingPublisherId === editingPublisher.id
+                          ? "Removing..."
+                          : `Remove from "${activeListObj.name}"`}
                       </button>
                     )}
                     <button
@@ -2683,10 +2970,12 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 </button>
                 <button
                   type="button"
+                  disabled={isDeletingPub}
                   onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
-                  className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
                 >
-                  Delete Permanently
+                  {isDeletingPub && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
+                  {isDeletingPub ? "Deleting..." : "Delete Permanently"}
                 </button>
               </div>
             </div>
@@ -2744,7 +3033,24 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               <div className="grid grid-cols-3 gap-2.5">
                 <div className="bg-input-bg rounded-xl p-3">
                   <div className="text-[10px] text-text-muted">ASIN</div>
-                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">{activeGameDrawer.asin}</div>
+                  <div className="flex items-center justify-between gap-1.5 mt-0.5">
+                    <div className="text-xs font-mono font-semibold text-text-main truncate">{activeGameDrawer.asin}</div>
+                    <button
+                      type="button"
+                      onClick={(e) => handleCopyAsin(activeGameDrawer.asin, e)}
+                      title="Copy ASIN"
+                      aria-label={`Copy ${activeGameDrawer.asin}`}
+                      className="p-0.5 rounded hover:bg-surface-solid text-text-muted hover:text-amber-400 transition shrink-0"
+                    >
+                      <span
+                        className={`material-symbols-outlined text-[13px] ${
+                          copiedAsin === activeGameDrawer.asin ? "text-emerald-400" : ""
+                        }`}
+                      >
+                        {copiedAsin === activeGameDrawer.asin ? "check" : "content_copy"}
+                      </span>
+                    </button>
+                  </div>
                 </div>
                 <div className="bg-input-bg rounded-xl p-3">
                   <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>

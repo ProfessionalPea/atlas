@@ -1,5 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "./apiConfig.js";
+import AtlasFeedback from "./AtlasFeedback.jsx";
+import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
@@ -36,27 +38,76 @@ function formatCompactNumber(num) {
 export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCountryScan = null }) {
   const [playData, setPlayData] = useState({ publishers: [], games: [], lists: [], competitorGroups: [] });
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshingPkg, setRefreshingPkg] = useState(null);
   const [search, setSearch] = useState("");
   const [selectedGroup, setSelectedGroup] = useState("all");
   const [selectedPricing, setSelectedPricing] = useState("all");
   const [sortBy, setSortBy] = useState("installs");
+  const [visibleCount, setVisibleCount] = useState(100);
   const [activeGameDrawer, setActiveGameDrawer] = useState(null);
+  const hasHydratedRef = useRef(false);
 
-  const loadData = useCallback(async () => {
+  useEffect(() => {
+    setVisibleCount(100);
+  }, [search, selectedGroup, selectedPricing, sortBy]);
+
+  const loadData = useCallback(async ({ fresh = false } = {}) => {
+    const keepVisible = hasHydratedRef.current;
+    if (keepVisible) setIsRefreshing(true);
+    else setLoading(true);
     try {
-      setLoading(true);
-      const res = await fetchJson(`${API_BASE}/api/play/overview`);
-      setPlayData(res || { publishers: [], games: [], lists: [], competitorGroups: [] });
+      const res = await fetchJson(`${API_BASE}/api/play/overview${fresh ? "?fresh=1" : ""}`);
+      if (res) {
+        hasHydratedRef.current = true;
+        setPlayData(res);
+        void setCachedCatalogue("play_overview", res);
+      }
     } catch (err) {
       console.error("Market Intelligence fetch error:", err);
+      if (fresh) {
+        AtlasFeedback.toast(err?.message || "Failed to refresh Market Intelligence.", { tone: "danger" });
+      }
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    loadData();
+    let mounted = true;
+    getCachedCatalogue("play_overview").then((cached) => {
+      if (mounted && cached?.data) {
+        hasHydratedRef.current = true;
+        setPlayData(cached.data);
+        setLoading(false);
+      }
+    });
+    void loadData();
+    return () => {
+      mounted = false;
+    };
   }, [loadData]);
+
+  const handleRefreshTelemetry = useCallback(async (pkgOrGame) => {
+    const pkg = typeof pkgOrGame === "string" ? pkgOrGame : pkgOrGame?.package_name;
+    if (!pkg || refreshingPkg) return;
+    setRefreshingPkg(pkg);
+    try {
+      const data = await fetchJson(`${API_BASE}/api/play/games/${encodeURIComponent(pkg)}/refresh`, {
+        method: "POST"
+      });
+      await loadData({ fresh: true });
+      if (data?.game) {
+        setActiveGameDrawer((prev) => (prev && prev.package_name === pkg ? { ...prev, ...data.game } : prev));
+      }
+      AtlasFeedback.toast(`Refreshed ${data?.game?.title || pkg}.`, { tone: "success" });
+    } catch (err) {
+      AtlasFeedback.toast(err?.message || `Failed to refresh ${pkg}.`, { tone: "danger" });
+    } finally {
+      setRefreshingPkg(null);
+    }
+  }, [loadData, refreshingPkg]);
 
   // Resolve active competitor group / batch
   const activeGroup = useMemo(() => {
@@ -148,11 +199,13 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
 
           <button
             type="button"
-            onClick={loadData}
-            className="h-9 px-3 rounded-xl bg-surface-solid border border-border-subtle hover:bg-input-bg text-text-main text-xs font-semibold flex items-center gap-1.5 transition"
+            disabled={isRefreshing}
+            onClick={() => loadData({ fresh: true })}
+            className="h-9 px-3 rounded-xl bg-surface-solid border border-border-subtle hover:bg-input-bg text-text-main text-xs font-semibold flex items-center gap-1.5 transition disabled:opacity-50"
             title="Refresh"
           >
-            <span className="material-symbols-outlined text-[15px]">refresh</span>
+            <span className={`material-symbols-outlined text-[15px] ${isRefreshing ? "animate-spin text-electric-blue" : ""}`}>refresh</span>
+            {isRefreshing ? "Syncing..." : "Refresh"}
           </button>
         </div>
       </div>
@@ -273,7 +326,7 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
                 </tr>
               </thead>
               <tbody>
-                {filteredGames.slice(0, 50).map((g) => (
+                {filteredGames.slice(0, visibleCount).map((g) => (
                   <tr
                     key={g.id || g.package_name}
                     onClick={() => setActiveGameDrawer(g)}
@@ -282,7 +335,7 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
                     <td className="py-2.5 px-3 max-w-[280px]">
                       <div className="flex items-center gap-2.5">
                         {g.icon ? (
-                          <img src={g.icon} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
+                          <img src={g.icon} alt="" className="w-8 h-8 rounded-lg object-cover flex-shrink-0" loading="lazy" />
                         ) : (
                           <div className="w-8 h-8 rounded-lg bg-input-bg flex items-center justify-center flex-shrink-0 text-text-muted">
                             <span className="material-symbols-outlined text-[18px]">sports_esports</span>
@@ -315,6 +368,29 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
                 ))}
               </tbody>
             </table>
+            {filteredGames.length > visibleCount && (
+              <div className="pt-3 flex items-center justify-between gap-2 text-xs text-text-muted border-t border-border-subtle mt-2">
+                <span>
+                  Showing {visibleCount.toLocaleString()} of {filteredGames.length.toLocaleString()} games
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((c) => c + 150)}
+                    className="px-3 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-text-main font-semibold hover:bg-surface-glass transition"
+                  >
+                    Show +150
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount(filteredGames.length)}
+                    className="px-3 py-1.5 rounded-xl bg-electric-blue/15 text-electric-blue font-semibold hover:bg-electric-blue/25 transition"
+                  >
+                    Show All ({filteredGames.length.toLocaleString()})
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -325,6 +401,9 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
           game={activeGameDrawer}
           allGames={playData.games || []}
           onClose={() => setActiveGameDrawer(null)}
+          onSelectGame={(sibling) => setActiveGameDrawer(sibling)}
+          onRefreshTelemetry={handleRefreshTelemetry}
+          isRefreshing={refreshingPkg === activeGameDrawer.package_name}
           isAdmin={isAdmin}
           onOpenCountryScan={onOpenCountryScan}
         />

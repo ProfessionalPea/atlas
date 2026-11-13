@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { createPortal } from "react-dom";
+import AtlasFeedback from "./AtlasFeedback.jsx";
 import { API_BASE } from "./apiConfig.js";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
@@ -136,17 +137,33 @@ export function KeywordPanel({ packageName, title, onClose }) {
                 </div>
               </div>
 
-              <div className="bg-input-bg rounded-full p-1 inline-flex gap-1 self-start lg:self-center flex-shrink-0">
-                {[["phrases", "Top phrases"], ["words", "Single words"]].map(([id, label]) => (
+              <div className="flex items-center gap-2 self-start lg:self-center flex-shrink-0">
+                {rows.length > 0 && (
                   <button
-                    key={id}
                     type="button"
-                    onClick={() => setTab(id)}
-                    className={`h-9 px-4 rounded-full text-[10px] font-medium transition-colors ${tab === id ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main"}`}
+                    onClick={() => {
+                      const topTerms = rows.slice(0, 10).map((r) => r.term).join(", ");
+                      AtlasFeedback.copy(topTerms, "Top 10 keywords");
+                    }}
+                    className="h-9 px-3 rounded-full bg-input-bg hover:bg-surface-glass border border-border-subtle text-[10px] font-semibold text-text-main inline-flex items-center gap-1.5 transition"
+                    title="Copy top 10 ranked keywords"
                   >
-                    {label}
+                    <span className="material-symbols-outlined text-[14px] text-electric-blue">content_copy</span>
+                    Copy Top 10
                   </button>
-                ))}
+                )}
+                <div className="bg-input-bg rounded-full p-1 inline-flex gap-1">
+                  {[["phrases", "Top phrases"], ["words", "Single words"]].map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setTab(id)}
+                      className={`h-9 px-4 rounded-full text-[10px] font-medium transition-colors ${tab === id ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -160,10 +177,19 @@ export function KeywordPanel({ packageName, title, onClose }) {
                   {rows.map((row, index) => (
                     <article key={`${row.type}-${row.term}`} className="rounded-2xl border border-border-subtle bg-surface-glass p-4 min-w-0">
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className="text-[10px] text-text-muted font-mono flex-shrink-0">#{index + 1}</span>
                             <h3 className="text-sm font-medium truncate">{row.term}</h3>
+                            <button
+                              type="button"
+                              onClick={() => AtlasFeedback.copy(row.term, "Keyword")}
+                              title={`Copy "${row.term}"`}
+                              aria-label={`Copy keyword ${row.term}`}
+                              className="p-1 rounded-md hover:bg-input-bg text-text-muted hover:text-electric-blue transition shrink-0"
+                            >
+                              <span className="material-symbols-outlined text-[13px]">content_copy</span>
+                            </button>
                           </div>
                           <div className="text-[9px] text-text-muted mt-1">Used by {row.documentShare}% of Atlas games</div>
                         </div>

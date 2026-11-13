@@ -6,6 +6,7 @@ import AtlasSelect from "./AtlasSelect";
 import { KeywordPanel } from "./KeywordPanel.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
+import { AtlasFeedback } from "./AtlasFeedback.jsx";
 
 const SAMPLE_PLAY_LINKS = [
   "https://play.google.com/store/apps/developer?id=Lion+Gamez+Studio",
@@ -227,14 +228,45 @@ function PlayStoreIntelligenceView({
   const [visibleRowCount, setVisibleRowCount] = useState(100);
   const [showAllPublishers, setShowAllPublishers] = useState(false);
 
-  // Single-game refresh state + Keyword Intelligence
+  // Single-game refresh state + Keyword Intelligence + tactile action states
   const [refreshingPkg, setRefreshingPkg] = useState(null);
+  const [queueingCountryPkg, setQueueingCountryPkg] = useState(null);
+  const [removingPublisherId, setRemovingPublisherId] = useState(null);
+  const [copiedPkg, setCopiedPkg] = useState(null);
+  const [isRefreshingOverview, setIsRefreshingOverview] = useState(false);
+  const [isDeletingList, setIsDeletingList] = useState(false);
+  const [isDeletingPub, setIsDeletingPub] = useState(false);
   const [keywordTarget, setKeywordTarget] = useState(null);
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
   const cachedEtagRef = useRef(null);
+  const catalogSectionRef = useRef(null);
+  const overviewLengthRef = useRef(0);
+  overviewLengthRef.current = overview.games.length;
+
+  const scrollToCatalogIfBelowFold = useCallback(() => {
+    if (typeof window === "undefined" || !catalogSectionRef.current) return;
+    const rect = catalogSectionRef.current.getBoundingClientRect();
+    if (rect.top > window.innerHeight - 100) {
+      catalogSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, []);
+
+  const handleCopyPackageId = useCallback(async (pkg, e) => {
+    if (e) e.stopPropagation();
+    if (!pkg) return;
+    const ok = await AtlasFeedback.copy(pkg, "Copied package ID");
+    if (ok) {
+      setCopiedPkg(pkg);
+      window.setTimeout(() => {
+        setCopiedPkg((prev) => (prev === pkg ? null : prev));
+      }, 1400);
+    }
+  }, []);
 
   const loadOverview = useCallback(async (options = {}) => {
+    const hasExistingData = overviewLengthRef.current > 0;
+    if (hasExistingData) setIsRefreshingOverview(true);
     try {
       const headers = {};
       const forceFresh = options?.fresh === true;
@@ -291,6 +323,7 @@ function PlayStoreIntelligenceView({
       console.error("Failed to load Play Store overview:", err);
     } finally {
       setLoading(false);
+      setIsRefreshingOverview(false);
     }
   }, [fetcher]);
 
@@ -1011,12 +1044,18 @@ function PlayStoreIntelligenceView({
       });
       if (res.ok) {
         const saved = await res.json();
+        const savedName = groupModal.name.trim();
+        const isCreateMode = groupModal.mode === "create";
         setGroupModal(null);
         await loadOverview({ fresh: true });
         const targetId = saved?.id || saved?.group?.id;
         if (targetId) {
           setSelectedListId(`group_${targetId}`);
         }
+        AtlasFeedback.toast(
+          `${isCreateMode ? "Created" : "Updated"} competitor batch "${savedName}".`,
+          { tone: "success" }
+        );
       } else {
         const err = await res.json().catch(() => ({}));
         setGroupModal((prev) => ({
@@ -1036,16 +1075,25 @@ function PlayStoreIntelligenceView({
   };
 
   const handleDeleteBatch = async (groupId) => {
-    if (!window.confirm("Are you sure you want to delete this competitor batch? Competitors and publisher accounts will NOT be deleted.")) return;
+    const ok = await AtlasFeedback.confirm(
+      "Are you sure you want to delete this competitor batch? Competitors and publisher accounts will NOT be deleted.",
+      { title: "Delete Competitor Batch", confirmLabel: "Delete Batch", destructive: true }
+    );
+    if (!ok) return;
     try {
       const res = await fetcher(`${API_BASE}/api/competitor-groups/${groupId}`, { method: "DELETE" });
       if (res.ok) {
         if (selectedListId === `group_${groupId}`) setSelectedListId("all");
         setGroupModal(null);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Competitor batch deleted.", { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        AtlasFeedback.toast(errData?.error || "Failed to delete competitor batch.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Delete batch error:", err);
+      AtlasFeedback.toast(err?.message || "Failed to delete competitor batch.", { tone: "danger" });
     }
   };
 
@@ -1106,15 +1154,16 @@ function PlayStoreIntelligenceView({
       const res = await fetcher(`${API_BASE}/api/play/sync-sheet-campaigns`, {
         method: "POST"
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setCampaignSyncResult(data);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Google Sheets campaigns synced.", { tone: "success" });
       } else {
-        alert(`Campaign sync error: ${data?.error || "Unknown error"}`);
+        AtlasFeedback.toast(`Campaign sync error: ${data?.error || "Unknown error"}`, { tone: "danger" });
       }
     } catch (err) {
-      alert(`Campaign sync failed: ${err.message}`);
+      AtlasFeedback.toast(`Campaign sync failed: ${err?.message || "Network error"}`, { tone: "danger" });
     } finally {
       setIsSyncingCampaigns(false);
     }
@@ -1227,12 +1276,15 @@ function PlayStoreIntelligenceView({
           await loadOverview({ fresh: true });
           setSelectedListId(data.createdList.id);
         }
+        AtlasFeedback.toast("Play Store scan started.", { tone: "success" });
       } else {
         setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
+        AtlasFeedback.toast(data?.error || "Failed to start Play Store scan.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Play scan start failed:", err);
       setScanStatus((prev) => ({ ...prev, running: false, state: "idle", log: "" }));
+      AtlasFeedback.toast(err?.message || "Failed to start Play Store scan.", { tone: "danger" });
     }
   };
 
@@ -1277,17 +1329,19 @@ function PlayStoreIntelligenceView({
       const res = await fetcher(`${API_BASE}/api/play/games/${encodeURIComponent(pkg)}/refresh`, {
         method: "POST"
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         await loadOverview({ fresh: true });
-        if (activeGameDrawer && activeGameDrawer.package_name === pkg) {
-          const data = await res.json();
-          if (data.game) {
-            setActiveGameDrawer((prev) => (prev ? { ...prev, ...data.game } : null));
-          }
+        if (activeGameDrawer && activeGameDrawer.package_name === pkg && data?.game) {
+          setActiveGameDrawer((prev) => (prev ? { ...prev, ...data.game } : null));
         }
+        AtlasFeedback.toast(`Refreshed ${data?.game?.title || pkg}.`, { tone: "success" });
+      } else {
+        AtlasFeedback.toast(data?.error || `Failed to refresh ${pkg}.`, { tone: "danger" });
       }
     } catch (err) {
       console.error("Game refresh failed:", err);
+      AtlasFeedback.toast(err?.message || `Failed to refresh ${pkg}.`, { tone: "danger" });
     } finally {
       setRefreshingPkg(null);
     }
@@ -1344,6 +1398,8 @@ function PlayStoreIntelligenceView({
 
   // Batch Country Scanner Queue Controls
   const handleStartCountryQueue = async (overridePayload = null) => {
+    const isSingle = overridePayload?.scope === "single" && overridePayload?.packageName;
+    if (isSingle) setQueueingCountryPkg(overridePayload.packageName);
     try {
       const payload = overridePayload || {
         scope: countryBatchScope,
@@ -1364,10 +1420,11 @@ function PlayStoreIntelligenceView({
         method: "POST",
         body: JSON.stringify(payload)
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json().catch(() => ({}));
         if (data?.status === "nothing_to_scan") {
           setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle", totalPackages: 0 }));
+          AtlasFeedback.toast("All games in this scope were recently country-scanned.", { tone: "info" });
         } else if (data?.totalPackages) {
           setCountryQueueStatus((prev) => ({
             ...prev,
@@ -1377,14 +1434,21 @@ function PlayStoreIntelligenceView({
             totalPackages: data.totalPackages,
             skippedPackages: data.skippedPackages || 0
           }));
+          AtlasFeedback.toast(`Queued ${data.totalPackages} title${data.totalPackages === 1 ? "" : "s"} for country scan.`, { tone: "success" });
+        } else {
+          AtlasFeedback.toast("Country availability scan queued.", { tone: "success" });
         }
         setShowCountryBatchModal(false);
       } else {
         setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle" }));
+        AtlasFeedback.toast(data?.error || "Failed to start country availability scan.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Failed to start country queue:", err);
       setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle" }));
+      AtlasFeedback.toast(err?.message || "Failed to start country availability scan.", { tone: "danger" });
+    } finally {
+      if (isSingle) setQueueingCountryPkg(null);
     }
   };
 
@@ -1406,43 +1470,61 @@ function PlayStoreIntelligenceView({
   // Save Create / Edit List modal
   const handleSaveListModal = async (e, openScannerAfter = false) => {
     if (e) e.preventDefault();
-    if (!listModal || !listModal.name.trim()) return;
+    if (!listModal || !listModal.name.trim() || isSavingList) return;
     setIsSavingList(true);
+    setListModal((prev) => (prev ? { ...prev, error: null } : null));
     try {
       let targetListId = listModal.listId;
-      if (listModal.mode === "create") {
+      const savedName = listModal.name.trim();
+      const isCreate = listModal.mode === "create";
+      if (isCreate) {
         const res = await fetcher(`${API_BASE}/api/play/lists`, {
           method: "POST",
           body: JSON.stringify({
-            name: listModal.name.trim(),
+            name: savedName,
             description: listModal.description?.trim() || null,
             publisherIds: listModal.publisherIds || []
           })
         });
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
-          const data = await res.json();
           targetListId = data?.list?.id;
           await loadOverview({ fresh: true });
           if (targetListId) setSelectedListId(targetListId);
           setListModal(null);
+          AtlasFeedback.toast(`Created competitor list "${savedName}".`, { tone: "success" });
+        } else {
+          setListModal((prev) => (prev ? { ...prev, error: data?.error || "Failed to create list." } : null));
+          return;
         }
       } else {
-        await fetcher(`${API_BASE}/api/play/lists/${listModal.listId}`, {
+        const patchRes = await fetcher(`${API_BASE}/api/play/lists/${listModal.listId}`, {
           method: "PATCH",
           body: JSON.stringify({
-            name: listModal.name.trim(),
+            name: savedName,
             description: listModal.description?.trim() || null
           })
         });
-        await fetcher(`${API_BASE}/api/play/lists/${listModal.listId}/publishers`, {
+        if (!patchRes.ok) {
+          const patchErr = await patchRes.json().catch(() => ({}));
+          setListModal((prev) => (prev ? { ...prev, error: patchErr?.error || "Failed to save list details." } : null));
+          return;
+        }
+        const pubRes = await fetcher(`${API_BASE}/api/play/lists/${listModal.listId}/publishers`, {
           method: "POST",
           body: JSON.stringify({
             action: "set",
             publisherIds: listModal.publisherIds || []
           })
         });
+        if (!pubRes.ok) {
+          const pubErr = await pubRes.json().catch(() => ({}));
+          setListModal((prev) => (prev ? { ...prev, error: pubErr?.error || "Failed to update list publishers." } : null));
+          return;
+        }
         await loadOverview({ fresh: true });
         setListModal(null);
+        AtlasFeedback.toast(`Saved changes to "${savedName}".`, { tone: "success" });
       }
 
       if (openScannerAfter && targetListId && targetListId !== "new") {
@@ -1452,28 +1534,43 @@ function PlayStoreIntelligenceView({
       }
     } catch (err) {
       console.error("Save list failed:", err);
+      setListModal((prev) => (prev ? { ...prev, error: err?.message || "Failed to save list." } : null));
     } finally {
       setIsSavingList(false);
     }
   };
 
   const handleDeleteList = async (listId) => {
+    const ok = await AtlasFeedback.confirm(
+      "Delete this competitor list? Publisher accounts and games will remain in Atlas.",
+      { title: "Delete Competitor List", confirmLabel: "Delete List", destructive: true }
+    );
+    if (!ok) return;
+    setIsDeletingList(true);
     try {
       const res = await fetcher(`${API_BASE}/api/play/lists/${listId}`, { method: "DELETE" });
       if (res.ok) {
         if (Number(selectedListId) === Number(listId)) setSelectedListId("all");
         setListModal(null);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Competitor list deleted.", { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setListModal((prev) => (prev ? { ...prev, error: errData?.error || "Failed to delete list." } : null));
       }
     } catch (err) {
       console.error("Delete list failed:", err);
+      setListModal((prev) => (prev ? { ...prev, error: err?.message || "Failed to delete list." } : null));
+    } finally {
+      setIsDeletingList(false);
     }
   };
 
   const handleSavePublisherModal = async (e) => {
     e.preventDefault();
-    if (!editingPublisher) return;
+    if (!editingPublisher || isSavingPublisher) return;
     setIsSavingPublisher(true);
+    setEditingPublisher((prev) => (prev ? { ...prev, error: null } : null));
     try {
       const res = await fetcher(`${API_BASE}/api/play/publishers/${editingPublisher.id}`, {
         method: "PATCH",
@@ -1482,19 +1579,26 @@ function PlayStoreIntelligenceView({
           listIds: editingPublisher.list_ids || []
         })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
+        const label = editingPublisher.display_name?.trim() || editingPublisher.publisher_name;
         await loadOverview({ fresh: true });
         setEditingPublisher(null);
+        AtlasFeedback.toast(`Updated publisher "${label}".`, { tone: "success" });
+      } else {
+        setEditingPublisher((prev) => (prev ? { ...prev, error: data?.error || "Failed to save publisher." } : null));
       }
     } catch (err) {
       console.error("Save publisher failed:", err);
+      setEditingPublisher((prev) => (prev ? { ...prev, error: err?.message || "Failed to save publisher." } : null));
     } finally {
       setIsSavingPublisher(false);
     }
   };
 
   const handleRemoveFromCurrentList = async (pubId, listId = activeListObj?.id) => {
-    if (!pubId || !listId) return;
+    if (!pubId || !listId || removingPublisherId) return;
+    setRemovingPublisherId(pubId);
     try {
       const res = await fetcher(`${API_BASE}/api/play/lists/${listId}/publishers`, {
         method: "POST",
@@ -1510,24 +1614,40 @@ function PlayStoreIntelligenceView({
           );
         }
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast("Removed publisher from list.", { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        AtlasFeedback.toast(errData?.error || "Failed to remove publisher from list.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Remove from list failed:", err);
+      AtlasFeedback.toast(err?.message || "Failed to remove publisher from list.", { tone: "danger" });
+    } finally {
+      setRemovingPublisherId(null);
     }
   };
 
   const executeDeletePublisherFromAtlas = async (pub) => {
-    if (!pub || !pub.id) return;
+    if (!pub || !pub.id || isDeletingPub) return;
+    setIsDeletingPub(true);
     try {
       const res = await fetcher(`${API_BASE}/api/play/publishers/${pub.id}`, { method: "DELETE" });
       if (res.ok) {
+        const disp = getDisplayName(pub.publisher_name);
         if (selectedPublisher === pub.publisher_name) setSelectedPublisher("all");
         setConfirmDeletePub(null);
         setEditingPublisher(null);
         await loadOverview({ fresh: true });
+        AtlasFeedback.toast(`Deleted "${disp}" from Atlas.`, { tone: "info" });
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        AtlasFeedback.toast(errData?.error || "Failed to delete publisher.", { tone: "danger" });
       }
     } catch (err) {
       console.error("Delete publisher failed:", err);
+      AtlasFeedback.toast(err?.message || "Failed to delete publisher.", { tone: "danger" });
+    } finally {
+      setIsDeletingPub(false);
     }
   };
 
@@ -1574,6 +1694,7 @@ function PlayStoreIntelligenceView({
     a.download = `atlas-playstore-games.csv`;
     a.click();
     URL.revokeObjectURL(url);
+    AtlasFeedback.toast(`Exported ${rows.length.toLocaleString()} rows to CSV.`, { tone: "success" });
   };
 
   const scanProgressPct = useMemo(() => {
@@ -1640,10 +1761,16 @@ function PlayStoreIntelligenceView({
 
       {/* HEADER */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-1">
-        <div>
+        <div className="flex items-center gap-2.5">
           <h1 className="text-xl md:text-2xl text-text-main tracking-tight font-semibold">
             Play Store Intelligence
           </h1>
+          {isRefreshingOverview && !loading && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-electric-blue/10 border border-electric-blue/25 text-electric-blue text-[10px] font-semibold">
+              <span className="material-symbols-outlined text-[12px] animate-spin">progress_activity</span>
+              Syncing
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -2405,8 +2532,10 @@ function PlayStoreIntelligenceView({
                       <button
                         type="button"
                         onClick={() => {
-                          setSelectedPublisher(isSelected && selectedPricing === "all" ? "all" : pub.publisher_name);
+                          const clearing = isSelected && selectedPricing === "all";
+                          setSelectedPublisher(clearing ? "all" : pub.publisher_name);
                           setSelectedPricing("all");
+                          if (!clearing) scrollToCatalogIfBelowFold();
                         }}
                         className="text-left min-w-0 flex-1"
                       >
@@ -2440,7 +2569,17 @@ function PlayStoreIntelligenceView({
                             title={`Scan / Refresh Play Store catalogue for ${dispName}`}
                             className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-emerald-400 transition disabled:opacity-40"
                           >
-                            <span className="material-symbols-outlined text-[15px]">refresh</span>
+                            <span
+                              className={`material-symbols-outlined text-[15px] ${
+                                scanStatus.running &&
+                                String(scanStatus.currentPublisher || "").trim().toLowerCase() ===
+                                  String(pub.publisher_name || "").trim().toLowerCase()
+                                  ? "animate-spin text-emerald-400"
+                                  : ""
+                              }`}
+                            >
+                              refresh
+                            </span>
                           </button>
                           <button
                             type="button"
@@ -2475,11 +2614,18 @@ function PlayStoreIntelligenceView({
                           {activeListObj && (
                             <button
                               type="button"
+                              disabled={removingPublisherId === pub.id}
                               onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
                               title={`Remove "${dispName}" from list "${activeListObj.name}"`}
-                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition"
+                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition disabled:opacity-40"
                             >
-                              <span className="material-symbols-outlined text-[15px]">folder_off</span>
+                              <span
+                                className={`material-symbols-outlined text-[15px] ${
+                                  removingPublisherId === pub.id ? "animate-spin text-urgent-red" : ""
+                                }`}
+                              >
+                                {removingPublisherId === pub.id ? "progress_activity" : "folder_off"}
+                              </span>
                             </button>
                           )}
                         </div>
@@ -2502,6 +2648,7 @@ function PlayStoreIntelligenceView({
                               onClick={() => {
                                 setSelectedPublisher(pub.publisher_name);
                                 setSelectedPricing("free");
+                                scrollToCatalogIfBelowFold();
                               }}
                               style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
                               title={`${dispName}: ${free} Free ${appTypeFilter === "app" ? "apps" : "games"} (click to filter)`}
@@ -2516,6 +2663,7 @@ function PlayStoreIntelligenceView({
                               onClick={() => {
                                 setSelectedPublisher(pub.publisher_name);
                                 setSelectedPricing("paid");
+                                scrollToCatalogIfBelowFold();
                               }}
                               style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
                               title={`${dispName}: ${paid} Paid ${appTypeFilter === "app" ? "apps" : "games"} (click to filter)`}
@@ -2655,10 +2803,13 @@ function PlayStoreIntelligenceView({
       )}
 
       {/* GAME DIRECTORY TABLE */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4">
+      <div
+        ref={catalogSectionRef}
+        className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4"
+      >
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-text-main flex items-center gap-2">
+            <h2 className="text-base font-semibold text-text-main flex flex-wrap items-center gap-2">
               <span>
                 {appTypeFilter === "app" ? "Play Store Apps" : appTypeFilter === "game" ? "Play Store Games" : "Play Store Catalog"}{" "}
                 ({filteredGames.length.toLocaleString()})
@@ -2666,6 +2817,19 @@ function PlayStoreIntelligenceView({
               {appTypeFilter !== "all" && (
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 capitalize">
                   {appTypeFilter}s only
+                </span>
+              )}
+              {selectedPublisher !== "all" && (
+                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full bg-electric-blue/10 border border-electric-blue/30 text-electric-blue">
+                  <span>{getDisplayName(selectedPublisher)}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPublisher("all")}
+                    className="hover:underline font-semibold"
+                    title="Clear account filter"
+                  >
+                    Clear
+                  </button>
                 </span>
               )}
             </h2>
@@ -2726,10 +2890,45 @@ function PlayStoreIntelligenceView({
                     <th className="py-3 px-3">Account</th>
                     <th className="py-3 px-3">Competitor</th>
                     <th className="py-3 px-3 text-center">Status</th>
-                    <th className="py-3 px-3 text-right">Real Installs</th>
-                    <th className="py-3 px-3 text-right">Rating &amp; Reviews</th>
+                    <th className="py-3 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy("installs")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "installs" ? "text-electric-blue font-bold" : ""
+                        }`}
+                      >
+                        <span>Real Installs</span>
+                        {sortBy === "installs" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                      </button>
+                    </th>
+                    <th className="py-3 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy(sortBy === "reviews" ? "rating" : "reviews")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "reviews" || sortBy === "rating" ? "text-electric-blue font-bold" : ""
+                        }`}
+                      >
+                        <span>{sortBy === "rating" ? "Rating (Sorted)" : "Rating & Reviews"}</span>
+                        {(sortBy === "reviews" || sortBy === "rating") && (
+                          <span className="material-symbols-outlined text-[13px]">arrow_downward</span>
+                        )}
+                      </button>
+                    </th>
                     <th className="py-3 px-3 text-center">Countries</th>
-                    <th className="py-3 px-3 text-right">Launch Date</th>
+                    <th className="py-3 px-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setSortBy("release")}
+                        className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
+                          sortBy === "release" ? "text-electric-blue font-bold" : ""
+                        }`}
+                      >
+                        <span>Launch Date</span>
+                        {sortBy === "release" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                      </button>
+                    </th>
                     {isAdmin && <th className="py-3 px-3 text-right">Actions</th>}
                   </tr>
                 </thead>
@@ -2802,8 +3001,23 @@ function PlayStoreIntelligenceView({
                                   </span>
                                 )}
                               </div>
-                              <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
+                              <div className="flex items-center gap-1 text-[10px] font-mono text-text-muted">
                                 <span className="truncate max-w-[200px]">{g.package_name}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleCopyPackageId(g.package_name, e)}
+                                  title="Copy package ID"
+                                  aria-label={`Copy ${g.package_name}`}
+                                  className="p-0.5 rounded hover:bg-input-bg text-text-muted hover:text-electric-blue transition shrink-0"
+                                >
+                                  <span
+                                    className={`material-symbols-outlined text-[12px] ${
+                                      copiedPkg === g.package_name ? "text-emerald-400" : ""
+                                    }`}
+                                  >
+                                    {copiedPkg === g.package_name ? "check" : "content_copy"}
+                                  </span>
+                                </button>
                               </div>
                             </div>
                           </div>
@@ -2922,7 +3136,7 @@ function PlayStoreIntelligenceView({
                           ) : isAdmin ? (
                             <button
                               type="button"
-                              disabled={countryQueueStatus.running}
+                              disabled={countryQueueStatus.running || queueingCountryPkg === g.package_name}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleStartCountryQueue({
@@ -2931,9 +3145,12 @@ function PlayStoreIntelligenceView({
                                   skipDays: 0
                                 });
                               }}
-                              className="px-2 py-0.5 rounded-full bg-input-bg border border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue text-[10px] font-semibold disabled:opacity-40"
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-input-bg border border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue text-[10px] font-semibold disabled:opacity-40"
                             >
-                              Scan Countries
+                              {queueingCountryPkg === g.package_name && (
+                                <span className="material-symbols-outlined text-[11px] animate-spin">progress_activity</span>
+                              )}
+                              {queueingCountryPkg === g.package_name ? "Queueing..." : "Scan Countries"}
                             </button>
                           ) : (
                             <span className="text-text-muted text-[11px]">—</span>
@@ -3042,7 +3259,7 @@ function PlayStoreIntelligenceView({
                   type="text"
                   required
                   value={listModal.name}
-                  onChange={(e) => setListModal({ ...listModal, name: e.target.value })}
+                  onChange={(e) => setListModal({ ...listModal, name: e.target.value, error: null })}
                   placeholder="e.g. Top Simulation Competitors"
                   className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
                 />
@@ -3138,14 +3355,22 @@ function PlayStoreIntelligenceView({
                 </button>
               </div>
 
+              {listModal.error && (
+                <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs font-medium">
+                  {listModal.error}
+                </div>
+              )}
+
               <div className="flex items-center justify-between gap-2 pt-2">
                 {listModal.mode === "edit" ? (
                   <button
                     type="button"
+                    disabled={isDeletingList || isSavingList}
                     onClick={() => handleDeleteList(listModal.listId)}
-                    className="px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 disabled:opacity-50"
                   >
-                    Delete List
+                    {isDeletingList && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
+                    {isDeletingList ? "Deleting..." : "Delete List"}
                   </button>
                 ) : (
                   <div />
@@ -4114,16 +4339,28 @@ function PlayStoreIntelligenceView({
                 </div>
               </div>
 
+              {editingPublisher.error && (
+                <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs font-medium">
+                  {editingPublisher.error}
+                </div>
+              )}
+
               <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
                       <button
                         type="button"
+                        disabled={removingPublisherId === editingPublisher.id || isSavingPublisher}
                         onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
-                        className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25"
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25 disabled:opacity-50"
                       >
-                        Remove from "{activeListObj.name}"
+                        {removingPublisherId === editingPublisher.id && (
+                          <span className="material-symbols-outlined text-[12px] animate-spin">progress_activity</span>
+                        )}
+                        {removingPublisherId === editingPublisher.id
+                          ? "Removing..."
+                          : `Remove from "${activeListObj.name}"`}
                       </button>
                     )}
                     <button
@@ -4471,10 +4708,12 @@ function PlayStoreIntelligenceView({
                 </button>
                 <button
                   type="button"
+                  disabled={isDeletingPub}
                   onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
-                  className="px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
                 >
-                  Delete Permanently
+                  {isDeletingPub && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
+                  {isDeletingPub ? "Deleting..." : "Delete Permanently"}
                 </button>
               </div>
             </div>

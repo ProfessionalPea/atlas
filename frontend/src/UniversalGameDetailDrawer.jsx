@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import AtlasFeedback from "./AtlasFeedback.jsx";
 import { API_BASE } from "./apiConfig.js";
 import { KeywordPanel } from "./KeywordPanel.jsx";
 
@@ -28,6 +29,8 @@ export default function UniversalGameDetailDrawer({
   const [videosLoading, setVideosLoading] = useState(false);
   const videoCacheRef = useRef(new Map());
 
+  const drawerScrollRef = useRef(null);
+
   // Manual monetization override state
   const [manualOverrideStatus, setManualOverrideStatus] = useState(game?.manual_price_status || "AUTO");
   const [manualOverrideNote, setManualOverrideNote] = useState(game?.manual_price_note || "");
@@ -40,6 +43,7 @@ export default function UniversalGameDetailDrawer({
     setManualOverrideNote(game?.manual_price_note || "");
     setManualMessage(null);
     setShowMonetizationEditor(false);
+    drawerScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
   }, [game?.package_name, game?.manual_price_status, game?.manual_price_note]);
 
   const handleSaveManualPricing = async () => {
@@ -61,6 +65,7 @@ export default function UniversalGameDetailDrawer({
       const data = await res.json();
       if (res.ok) {
         setManualMessage({ type: "success", text: "Monetization override updated successfully." });
+        AtlasFeedback.toast("Monetization override updated.", { tone: "success" });
         if (onRefreshTelemetry) {
           await onRefreshTelemetry(game.package_name);
         }
@@ -190,6 +195,7 @@ export default function UniversalGameDetailDrawer({
           />
 
           <motion.aside
+            ref={drawerScrollRef}
             initial={{ x: "100%" }}
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
@@ -354,11 +360,22 @@ export default function UniversalGameDetailDrawer({
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
               <div className="bg-input-bg rounded-xl p-3">
                 <div className="text-[10px] text-text-muted">Package Name</div>
-                <div
-                  className="text-[11px] font-mono font-semibold text-text-main mt-0.5 truncate"
-                  title={game.package_name}
-                >
-                  {game.package_name}
+                <div className="flex items-center justify-between gap-1.5 mt-0.5">
+                  <div
+                    className="text-[11px] font-mono font-semibold text-text-main truncate"
+                    title={game.package_name}
+                  >
+                    {game.package_name}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => AtlasFeedback.copy(game.package_name, "Package ID")}
+                    title="Copy package ID"
+                    aria-label={`Copy ${game.package_name}`}
+                    className="p-0.5 rounded hover:bg-surface-solid text-text-muted hover:text-electric-blue transition shrink-0"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">content_copy</span>
+                  </button>
                 </div>
               </div>
               <div className="bg-input-bg rounded-xl p-3">

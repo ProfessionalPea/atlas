@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
+import AtlasFeedback from "./AtlasFeedback.jsx";
 
 import { API_BASE } from "./apiConfig.js";
 const AUTH_TOKEN_KEY = "atlas_auth_token";
@@ -184,6 +185,7 @@ function VideoLibrary({ onClose }) {
       await fetchJson(`${API_BASE}/api/video-assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
       setItems(current => current.filter(item => Number(item.id) !== assetId));
       setDeleteTarget(null);
+      AtlasFeedback.toast("Video asset deleted.", { tone: "info" });
     } catch (err) {
       setDeleteError(err.message || "Unable to delete video asset.");
     } finally {
@@ -234,8 +236,15 @@ function VideoLibrary({ onClose }) {
           </div>
           <div className="flex items-center gap-2.5">
             <span className="text-[11px] text-text-muted"><b className="text-text-main font-semibold tabular-nums">{items.length}</b> unique videos</span>
-            <button onClick={load} className="w-9 h-9 rounded-full bg-surface-solid border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main hover:bg-input-bg transition-colors" title="Refresh library" aria-label="Refresh video library">
-              <span className="material-symbols-outlined text-[18px]">refresh</span>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={load}
+              className="w-9 h-9 rounded-full bg-surface-solid border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main hover:bg-input-bg disabled:opacity-50 transition-colors"
+              title="Refresh library"
+              aria-label="Refresh video library"
+            >
+              <span className={`material-symbols-outlined text-[18px] ${loading ? 'animate-spin text-electric-blue' : ''}`}>refresh</span>
             </button>
             <button onClick={onClose} className="w-9 h-9 rounded-full bg-surface-solid border border-border-subtle flex items-center justify-center text-text-muted hover:text-text-main hover:bg-input-bg transition-colors md:hidden" title="Close" aria-label="Close Video Library">
               <span className="material-symbols-outlined text-[18px]">close</span>
@@ -269,7 +278,7 @@ function VideoLibrary({ onClose }) {
           </select>
         </div>
 
-        {loading ? (
+        {loading && items.length === 0 ? (
           <div className="min-h-[360px] flex flex-col items-center justify-center text-text-muted">
             <span className="material-symbols-outlined animate-spin text-[30px] text-electric-blue">progress_activity</span>
             <p className="text-[12px] mt-3">Loading video creatives…</p>
@@ -332,7 +341,23 @@ function VideoLibrary({ onClose }) {
                           <p className="text-[10px] md:text-[11px] leading-4 text-text-muted mt-1.5 truncate">
                             {game.publisherName || 'Publisher unavailable'}{game.competitorName ? ` · ${game.competitorName}` : ''}
                           </p>
-                          <p className="text-[9px] leading-4 text-text-muted/90 font-mono mt-0.5 truncate">{game.packageName || asset.youtubeId || asset.assetKey}</p>
+                          <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                            <p className="text-[9px] leading-4 text-text-muted/90 font-mono truncate">{game.packageName || asset.youtubeId || asset.assetKey}</p>
+                            {(game.packageName || asset.youtubeId || asset.assetKey) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const val = game.packageName || asset.youtubeId || asset.assetKey;
+                                  AtlasFeedback.copy(val, game.packageName ? "Package ID" : "Video ID");
+                                }}
+                                title="Copy ID"
+                                className="p-0.5 rounded hover:bg-input-bg text-text-muted hover:text-electric-blue transition shrink-0"
+                              >
+                                <span className="material-symbols-outlined text-[12px]">content_copy</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className="flex items-center gap-1.5 flex-shrink-0">
                           <span className="px-2.5 py-1 rounded-full bg-input-bg text-[9px] font-medium text-text-muted tabular-nums">{asset.adCount || 0} ads</span>
@@ -512,17 +537,33 @@ export function KeywordPanel({ packageName, title, onClose }) {
                 </div>
               </div>
 
-              <div className="bg-input-bg rounded-full p-1 inline-flex gap-1 self-start lg:self-center flex-shrink-0">
-                {[["phrases", "Top phrases"], ["words", "Single words"]].map(([id, label]) => (
+              <div className="flex items-center gap-2 self-start lg:self-center flex-shrink-0">
+                {rows.length > 0 && (
                   <button
-                    key={id}
                     type="button"
-                    onClick={() => setTab(id)}
-                    className={`h-9 px-4 rounded-full text-[10px] font-medium transition-colors ${tab === id ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main"}`}
+                    onClick={() => {
+                      const topTerms = rows.slice(0, 10).map((r) => r.term).join(", ");
+                      AtlasFeedback.copy(topTerms, "Top 10 keywords");
+                    }}
+                    className="h-9 px-3 rounded-full bg-input-bg hover:bg-surface-glass border border-border-subtle text-[10px] font-semibold text-text-main inline-flex items-center gap-1.5 transition"
+                    title="Copy top 10 ranked keywords"
                   >
-                    {label}
+                    <span className="material-symbols-outlined text-[14px] text-electric-blue">content_copy</span>
+                    Copy Top 10
                   </button>
-                ))}
+                )}
+                <div className="bg-input-bg rounded-full p-1 inline-flex gap-1">
+                  {[["phrases", "Top phrases"], ["words", "Single words"]].map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setTab(id)}
+                      className={`h-9 px-4 rounded-full text-[10px] font-medium transition-colors ${tab === id ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted hover:text-text-main"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -536,10 +577,19 @@ export function KeywordPanel({ packageName, title, onClose }) {
                   {rows.map((row, index) => (
                     <article key={`${row.type}-${row.term}`} className="rounded-2xl border border-border-subtle bg-surface-glass p-4 min-w-0">
                       <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 min-w-0">
                             <span className="text-[10px] text-text-muted font-mono flex-shrink-0">#{index + 1}</span>
                             <h3 className="text-sm font-medium truncate">{row.term}</h3>
+                            <button
+                              type="button"
+                              onClick={() => AtlasFeedback.copy(row.term, "Keyword")}
+                              title={`Copy "${row.term}"`}
+                              aria-label={`Copy keyword ${row.term}`}
+                              className="p-1 rounded-md hover:bg-input-bg text-text-muted hover:text-electric-blue transition shrink-0"
+                            >
+                              <span className="material-symbols-outlined text-[13px]">content_copy</span>
+                            </button>
                           </div>
                           <div className="text-[9px] text-text-muted mt-1">Used by {row.documentShare}% of Atlas games</div>
                         </div>

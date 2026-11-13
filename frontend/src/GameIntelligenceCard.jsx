@@ -1,4 +1,5 @@
 import { memo } from "react";
+import AtlasFeedback from "./AtlasFeedback.jsx";
 import { cn } from "./lib/utils";
 
 export function formatCompact(value) {
@@ -241,10 +242,21 @@ const GameIntelligenceCard = memo(function GameIntelligenceCard({
             <span className="font-semibold text-text-main truncate text-right">{advertiserDisplay}</span>
           </div>
         )}
-        <div className="flex items-baseline justify-between gap-2 min-w-0 text-[10px] text-text-muted font-mono">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            AtlasFeedback.copy(game.package_name, "Package ID");
+          }}
+          title="Click to copy package ID"
+          className="w-full flex items-center justify-between gap-2 min-w-0 text-[10px] text-text-muted font-mono hover:text-electric-blue transition-colors text-left"
+        >
           <span className="shrink-0">Package:</span>
-          <span className="truncate text-right">{game.package_name}</span>
-        </div>
+          <span className="inline-flex items-center gap-1 truncate text-right">
+            <span className="truncate">{game.package_name}</span>
+            <span className="material-symbols-outlined text-[12px] shrink-0 opacity-70">content_copy</span>
+          </span>
+        </button>
       </div>
     </div>
   );

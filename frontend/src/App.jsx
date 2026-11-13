@@ -4,6 +4,7 @@ import { cn } from "./lib/utils";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
+import { AtlasFeedback } from "./AtlasFeedback.jsx";
 
 const AmazonIntelligenceView = lazy(() => import("./AmazonIntelligenceView.jsx"));
 
@@ -58,7 +59,7 @@ function getCountryStateMeta(state) {
 
 function getCountryFlag(code) {
   const normalized = String(code || "").toUpperCase();
-  if (!/^[A-Z]{2}$/.test(normalized)) return "ðŸŒ";
+  if (!/^[A-Z]{2}$/.test(normalized)) return "🌐";
   return String.fromCodePoint(...normalized.split("").map(char => 127397 + char.charCodeAt(0)));
 }
 
@@ -500,6 +501,7 @@ function App() {
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const isAdmin = currentUser?.role === "admin";
 
@@ -519,6 +521,7 @@ function App() {
 
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const deferredGlobalSearchQuery = useDeferredValue(globalSearchQuery);
+  const [globalSearchHighlightIdx, setGlobalSearchHighlightIdx] = useState(-1);
   const [playStoreSearchQuery, setPlayStoreSearchQuery] = useState("");
   const [suspendedGames, setSuspendedGames] = useState([]);
 
@@ -543,8 +546,14 @@ function App() {
   const [settingsStatus, setSettingsStatus] = useState("");
 
   const [isScanning, setIsScanning] = useState(false);
+  const [isStartingScan, setIsStartingScan] = useState(false);
+  const [isSyncingDashboard, setIsSyncingDashboard] = useState(false);
   const [isScanMinimized, setIsScanMinimized] = useState(false);
-  const [isSaving, setIsSaving] = useState(false); 
+  const [savingCompetitor, setSavingCompetitor] = useState(false);
+  const [savingList, setSavingList] = useState(false);
+  const [savingRecipient, setSavingRecipient] = useState(false);
+  const [deletingTargetKey, setDeletingTargetKey] = useState(null);
+  const [viewingCountryPkg, setViewingCountryPkg] = useState(null);
   const [isMaxAds, setIsMaxAds] = useState(false); 
   const [activeDropdown, setActiveDropdown] = useState(null);
   const [sourceSearch, setSourceSearch] = useState("");
@@ -742,6 +751,7 @@ function App() {
   // Parallel data load without blocking on a sequential /api/health call first
   const loadAllData = useCallback(async () => {
     if (!authToken || !currentUser) return;
+    setIsSyncingDashboard(true);
     const freshData = {};
     const requests = [
       fetchJson(`${API_BASE}/api/stats`).then(data => {
@@ -788,14 +798,18 @@ function App() {
         freshData.suspendedGames = val;
       }),
     ];
-    const results = await Promise.allSettled(requests);
-    const anyFulfilled = results.some(result => result.status === "fulfilled");
-    setIsNodeOnline(anyFulfilled);
-    results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
+    try {
+      const results = await Promise.allSettled(requests);
+      const anyFulfilled = results.some(result => result.status === "fulfilled");
+      setIsNodeOnline(anyFulfilled);
+      results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
 
-    if (anyFulfilled) {
-      // Background write to IndexedDB so next tab open or refresh renders instantly with 0ms delay
-      void setCachedCatalogue("atlas_dashboard_meta", freshData);
+      if (anyFulfilled) {
+        // Background write to IndexedDB so next tab open or refresh renders instantly with 0ms delay
+        void setCachedCatalogue("atlas_dashboard_meta", freshData);
+      }
+    } finally {
+      setIsSyncingDashboard(false);
     }
   }, [authToken, currentUser]);
 
@@ -1006,10 +1020,15 @@ function App() {
 
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
+    if (isLoggingIn) return;
     const user = usernameInput.trim();
     const pass = passwordInput.trim();
-    if (!user || !pass) return;
+    if (!user || !pass) {
+      setLoginError("Please enter both username and password.");
+      return;
+    }
 
+    setIsLoggingIn(true);
     try {
       setLoginError("");
       const res = await fetchJson(`${API_BASE}/api/auth/login`, {
@@ -1027,6 +1046,8 @@ function App() {
       setPasswordInput("");
     } catch (err) {
       setLoginError(err.message || "Invalid credentials.");
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -1037,58 +1058,81 @@ function App() {
   const handleNukeCompetitorData = useCallback(async (e, id, name) => {
     e.stopPropagation();
     if (!isAdmin) return;
-    if (window.confirm(`Are you sure you want to permanently delete all data for ${name}, including associated games and publishers? This cannot be undone.`)) {
-      // Optimistic removal for instant UI response
-      setCompetitorTree(prev => prev.filter(comp => String(comp.id) !== String(id)));
-      setSavedCompetitors(prev => prev.filter(comp => String(comp.id) !== String(id)));
-      setTrending(prev => prev.filter(game => String(game.competitor_id) !== String(id)));
-      try {
-        await fetchJson(`${API_BASE}/api/competitors/${id}/data`, { method: "DELETE" });
-        void loadAllData();
-      } catch {
-        alert("Failed to delete competitor.");
-        void loadAllData();
-      }
+    const confirmed = await AtlasFeedback.confirm(
+      `Permanently delete all data for ${name}, including associated games and publishers?`,
+      { title: "Delete Competitor?", confirmLabel: "Delete", destructive: true }
+    );
+    if (!confirmed) return;
+
+    const prevTree = competitorTree;
+    const prevSaved = savedCompetitors;
+    const prevTrending = trending;
+    setCompetitorTree(prev => prev.filter(comp => String(comp.id) !== String(id)));
+    setSavedCompetitors(prev => prev.filter(comp => String(comp.id) !== String(id)));
+    setTrending(prev => prev.filter(game => String(game.competitor_id) !== String(id)));
+    try {
+      await fetchJson(`${API_BASE}/api/competitors/${id}/data`, { method: "DELETE" });
+      AtlasFeedback.toast(`Deleted data for ${name}.`, { tone: "success" });
+      void loadAllData();
+    } catch (err) {
+      setCompetitorTree(prevTree);
+      setSavedCompetitors(prevSaved);
+      setTrending(prevTrending);
+      AtlasFeedback.toast(err?.message || `Failed to delete ${name}.`, { tone: "danger" });
+      void loadAllData();
     }
-  }, [isAdmin, loadAllData]);
+  }, [isAdmin, competitorTree, savedCompetitors, trending, loadAllData]);
 
   const handleNukePublisherData = useCallback(async (e, id, name) => {
     e.stopPropagation();
     if (!isAdmin) return;
-    if (window.confirm(`Are you sure you want to permanently delete all data for publisher ${name}?`)) {
-      // Optimistic removal for instant UI response
-      setCompetitorTree(prev => prev.map(comp => ({
-        ...comp,
-        accounts: (comp.accounts || []).filter(acc => String(acc.id) !== String(id))
-      })));
-      setTrending(prev => prev.filter(game => game.publisher_name !== name));
-      try {
-        await fetchJson(`${API_BASE}/api/publishers/${id}/data`, { method: "DELETE" });
-        void loadAllData();
-      } catch {
-        alert("Failed to delete publisher.");
-        void loadAllData();
-      }
+    const confirmed = await AtlasFeedback.confirm(
+      `Permanently delete all data for publisher ${name}?`,
+      { title: "Delete Publisher?", confirmLabel: "Delete", destructive: true }
+    );
+    if (!confirmed) return;
+
+    const prevTree = competitorTree;
+    const prevTrending = trending;
+    setCompetitorTree(prev => prev.map(comp => ({
+      ...comp,
+      accounts: (comp.accounts || []).filter(acc => String(acc.id) !== String(id))
+    })));
+    setTrending(prev => prev.filter(game => game.publisher_name !== name));
+    try {
+      await fetchJson(`${API_BASE}/api/publishers/${id}/data`, { method: "DELETE" });
+      AtlasFeedback.toast(`Deleted publisher ${name}.`, { tone: "success" });
+      void loadAllData();
+    } catch (err) {
+      setCompetitorTree(prevTree);
+      setTrending(prevTrending);
+      AtlasFeedback.toast(err?.message || `Failed to delete ${name}.`, { tone: "danger" });
+      void loadAllData();
     }
-  }, [isAdmin, loadAllData]);
+  }, [isAdmin, competitorTree, trending, loadAllData]);
 
   const handleDeleteGame = useCallback(async (e, game) => {
     e?.stopPropagation?.();
     if (!isAdmin || !game?.id) return;
 
     if (isScanning) {
-      alert("Wait for the active scan to finish before deleting a game.");
+      await AtlasFeedback.inform("Wait for the active scan to finish before deleting a game.", { title: "Scan in progress" });
       return;
     }
 
     const gameLabel = game.title || game.package_name || "this game";
-    if (!window.confirm(`Permanently delete ${gameLabel} from Atlas?\n\nThis removes the game, its publisher links, and its stored ad history. The publisher and competitor themselves will remain.`)) {
-      return;
-    }
+    const confirmed = await AtlasFeedback.confirm(
+      `Permanently delete ${gameLabel} from Atlas? Removes game, publisher links, and ad history.`,
+      { title: "Delete Game?", confirmLabel: "Delete", destructive: true }
+    );
+    if (!confirmed) return;
 
     const packageName = game.package_name;
+    const prevTrending = trending;
+    const prevTree = competitorTree;
+    const prevSelected = selectedGame;
 
-    // Optimistic state update so the card disappears immediately
+    // Optimistic state update with rollback on error
     setTrending(prev => prev.filter(item => item.id !== game.id && (!packageName || item.package_name !== packageName)));
     setCompetitorTree(prev => prev.map(comp => ({
       ...comp,
@@ -1137,12 +1181,16 @@ function App() {
         });
       }
 
+      AtlasFeedback.toast(`Deleted ${gameLabel}.`, { tone: "success" });
       void loadAllData();
     } catch (err) {
-      alert(err?.message || "Failed to delete game.");
+      setTrending(prevTrending);
+      setCompetitorTree(prevTree);
+      if (prevSelected) setSelectedGame(prevSelected);
+      AtlasFeedback.toast(err?.message || "Failed to delete game.", { tone: "danger" });
       void loadAllData();
     }
-  }, [isAdmin, isScanning, loadAllData]);
+  }, [isAdmin, isScanning, trending, competitorTree, selectedGame, loadAllData]);
 
   const handleSetGameSuspended = useCallback(async (game, suspended, event) => {
     event?.stopPropagation?.();
@@ -1150,12 +1198,22 @@ function App() {
 
     const label = game.title || game.package_name || "this game";
     const message = suspended
-      ? `Mark ${label} as suspended? Atlas will preserve its current stats, assets, publisher link, and latest country status. You can restore it later.`
+      ? `Mark ${label} as suspended? Atlas preserves its stats, assets, and latest country status.`
       : `Restore ${label} from the Suspended tab?`;
 
-    if (!window.confirm(message)) return;
+    const confirmed = await AtlasFeedback.confirm(message, {
+      title: suspended ? "Mark as Suspended?" : "Restore Game?",
+      confirmLabel: suspended ? "Suspend" : "Restore",
+      destructive: suspended
+    });
+    if (!confirmed) return;
 
-    // Optimistic state update
+    const prevTrending = trending;
+    const prevTree = competitorTree;
+    const prevSuspended = suspendedGames;
+    const prevSelected = selectedGame;
+
+    // Optimistic state update with rollback
     setTrending(prev => prev.map(item => item.id === game.id ? { ...item, is_suspended: suspended } : item));
     setCompetitorTree(prev => prev.map(comp => ({
       ...comp,
@@ -1179,19 +1237,24 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ suspended })
       });
+      AtlasFeedback.toast(suspended ? `${label} marked as suspended.` : `Restored ${label}.`, { tone: "success" });
       void loadAllData();
     } catch (error) {
-      alert(error?.message || "Unable to update suspension state.");
+      setTrending(prevTrending);
+      setCompetitorTree(prevTree);
+      setSuspendedGames(prevSuspended);
+      if (prevSelected) setSelectedGame(prevSelected);
+      AtlasFeedback.toast(error?.message || "Unable to update suspension state.", { tone: "danger" });
       void loadAllData();
     }
-  }, [isAdmin, loadAllData, selectedGame]);
+  }, [isAdmin, loadAllData, selectedGame, trending, competitorTree, suspendedGames]);
 
   const handleRestoreSuspendedGame = useCallback(async (item, event) => {
     event?.stopPropagation?.();
     const game = item?.game || {};
     const gameId = item?.gameId || game.id;
     if (!gameId) {
-      alert("This archived suspension no longer has a live Atlas game record to restore.");
+      void AtlasFeedback.inform("This archived suspension no longer has a live Atlas game record to restore.", { title: "Cannot restore" });
       return;
     }
     await handleSetGameSuspended({
@@ -1391,6 +1454,18 @@ function App() {
     globalSearchResults.publishers.length +
     globalSearchResults.competitors.length;
 
+  const flatGlobalResults = useMemo(() => {
+    const items = [];
+    globalSearchResults.games.forEach((item) => items.push({ kind: "game", item }));
+    globalSearchResults.publishers.forEach((item) => items.push({ kind: "publisher", item }));
+    globalSearchResults.competitors.forEach((item) => items.push({ kind: "competitor", item }));
+    return items;
+  }, [globalSearchResults]);
+
+  useEffect(() => {
+    setGlobalSearchHighlightIdx(-1);
+  }, [deferredGlobalSearchQuery, activeDropdown]);
+
   const sortedTrending = useMemo(() => {
     const games = [...visibleTrending];
 
@@ -1423,62 +1498,82 @@ function App() {
 
   const handleCreateList = async (e) => {
     e.preventDefault();
-    if (!isAdmin || !newListName || !newListTargets || isSaving) return;
-    setIsSaving(true);
+    if (!isAdmin || savingList) return;
+    const name = newListName.trim();
     const parsedTargets = newListTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean);
+    if (!name || parsedTargets.length === 0) {
+      AtlasFeedback.toast("Enter a batch list name and at least one target ID.", { tone: "amber" });
+      return;
+    }
+    setSavingList(true);
     try {
       const created = await fetchJson(`${API_BASE}/api/lists`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: newListName,
+          name,
           targets: parsedTargets
         })
       });
       setTargetLists(prev => [created, ...prev]);
       setNewListName("");
       setNewListTargets("");
+      AtlasFeedback.toast(`Saved batch list "${name}".`, { tone: "success" });
     } catch (err) {
       console.error("List creation error:", err);
+      AtlasFeedback.toast(err?.message || "Failed to save batch list.", { tone: "danger" });
     } finally {
-      setIsSaving(false);
+      setSavingList(false);
     }
   };
 
   const handleSaveCompetitor = async (e) => {
     e.preventDefault();
-    if (!isAdmin || !newCompName || !newCompAdsId || isSaving) return;
-    setIsSaving(true);
+    if (!isAdmin || savingCompetitor) return;
+    const name = newCompName.trim();
+    const adsId = newCompAdsId.trim();
+    if (!name || !adsId) {
+      AtlasFeedback.toast("Enter both competitor name and Advertiser ID.", { tone: "amber" });
+      return;
+    }
+    setSavingCompetitor(true);
     try {
       const created = await fetchJson(`${API_BASE}/api/competitors`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newCompName, adsId: newCompAdsId, country: "Any" })
+        body: JSON.stringify({ name, adsId, country: "Any" })
       });
-      const newEntry = { id: created.id, name: newCompName, ads_id: newCompAdsId, country: "Any" };
+      const newEntry = { id: created.id, name, ads_id: adsId, country: "Any" };
       setSavedCompetitors(prev => [newEntry, ...prev]);
       setCompetitorTree(prev => [{ ...newEntry, accounts: [] }, ...prev]);
       setStats(prev => ({ ...prev, competitors: (Number(prev.competitors) || 0) + 1 }));
       setNewCompName("");
       setNewCompAdsId("");
+      AtlasFeedback.toast(`Saved competitor "${name}".`, { tone: "success" });
     } catch (err) {
       console.error("Competitor save error:", err);
+      AtlasFeedback.toast(err?.message || "Failed to save competitor.", { tone: "danger" });
     } finally {
-      setIsSaving(false);
+      setSavingCompetitor(false);
     }
   };
 
   const handleSaveEmailList = async (e) => {
     e.preventDefault();
-    if (!isAdmin || !newEmailName || !newEmailTargets || isSaving) return;
-    setIsSaving(true);
+    if (!isAdmin || savingRecipient) return;
+    const name = newEmailName.trim();
     const parsedEmails = newEmailTargets.split(/[\n,]+/).map(t => t.trim()).filter(Boolean);
+    if (!name || parsedEmails.length === 0) {
+      AtlasFeedback.toast("Enter a contact group name and at least one email.", { tone: "amber" });
+      return;
+    }
+    setSavingRecipient(true);
     try {
       await fetchJson(`${API_BASE}/api/emails`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: newEmailName,
+          name,
           emails: parsedEmails
         })
       });
@@ -1486,72 +1581,122 @@ function App() {
       setNewEmailTargets("");
       const updatedEmails = await fetchJson(`${API_BASE}/api/emails`);
       setEmailLists(Array.isArray(updatedEmails) ? updatedEmails : []);
+      AtlasFeedback.toast(`Saved recipient group "${name}".`, { tone: "success" });
     } catch (err) {
       console.error("Email list save error:", err);
+      AtlasFeedback.toast(err?.message || "Failed to save recipient group.", { tone: "danger" });
     } finally {
-      setIsSaving(false);
+      setSavingRecipient(false);
     }
   };
 
   const handleDeleteList = async (id) => {
-    if (!isAdmin) return;
-    if (window.confirm("Delete this target list?")) {
-      setTargetLists(prev => prev.filter(item => item.id !== id));
-      try {
-        await fetchJson(`${API_BASE}/api/lists/${id}`, { method: "DELETE" });
-      } catch (err) {
-        console.error("List delete error:", err);
-        void loadAllData();
-      }
+    if (!isAdmin || deletingTargetKey) return;
+    const confirmed = await AtlasFeedback.confirm("Delete this target list?", {
+      title: "Delete Batch List?",
+      confirmLabel: "Delete",
+      destructive: true
+    });
+    if (!confirmed) return;
+
+    const prevLists = targetLists;
+    setDeletingTargetKey(`list:${id}`);
+    setTargetLists(prev => prev.filter(item => item.id !== id));
+    try {
+      await fetchJson(`${API_BASE}/api/lists/${id}`, { method: "DELETE" });
+      AtlasFeedback.toast("Deleted target list.", { tone: "success" });
+    } catch (err) {
+      console.error("List delete error:", err);
+      setTargetLists(prevLists);
+      AtlasFeedback.toast(err?.message || "Failed to delete target list.", { tone: "danger" });
+      void loadAllData();
+    } finally {
+      setDeletingTargetKey(null);
     }
   };
 
   const handleDeleteCompetitor = async (id) => {
-    if (!isAdmin) return;
-    if (window.confirm("Delete this saved competitor?")) {
-      setSavedCompetitors(prev => prev.filter(item => item.id !== id));
-      setCompetitorTree(prev => prev.filter(item => item.id !== id));
-      try {
-        await fetchJson(`${API_BASE}/api/saved-competitors/${id}`, { method: "DELETE" });
-        void loadAllData();
-      } catch (err) {
-        console.error("Competitor delete error:", err);
-        void loadAllData();
-      }
+    if (!isAdmin || deletingTargetKey) return;
+    const confirmed = await AtlasFeedback.confirm("Delete this saved competitor?", {
+      title: "Delete Competitor?",
+      confirmLabel: "Delete",
+      destructive: true
+    });
+    if (!confirmed) return;
+
+    const prevSaved = savedCompetitors;
+    const prevTree = competitorTree;
+    setDeletingTargetKey(`comp:${id}`);
+    setSavedCompetitors(prev => prev.filter(item => item.id !== id));
+    setCompetitorTree(prev => prev.filter(item => item.id !== id));
+    try {
+      await fetchJson(`${API_BASE}/api/saved-competitors/${id}`, { method: "DELETE" });
+      AtlasFeedback.toast("Deleted saved competitor.", { tone: "success" });
+      void loadAllData();
+    } catch (err) {
+      console.error("Competitor delete error:", err);
+      setSavedCompetitors(prevSaved);
+      setCompetitorTree(prevTree);
+      AtlasFeedback.toast(err?.message || "Failed to delete competitor.", { tone: "danger" });
+      void loadAllData();
+    } finally {
+      setDeletingTargetKey(null);
     }
   };
 
   const handleDeleteEmail = async (id) => {
-    if (!isAdmin) return;
-    if (window.confirm("Delete this email target?")) {
-      setEmailLists(prev => prev.filter(item => item.id !== id));
-      try {
-        await fetchJson(`${API_BASE}/api/emails/${id}`, { method: "DELETE" });
-      } catch (err) {
-        console.error("Email delete error:", err);
-        void loadAllData();
-      }
+    if (!isAdmin || deletingTargetKey) return;
+    const confirmed = await AtlasFeedback.confirm("Delete this email target?", {
+      title: "Delete Recipient?",
+      confirmLabel: "Delete",
+      destructive: true
+    });
+    if (!confirmed) return;
+
+    const prevEmails = emailLists;
+    setDeletingTargetKey(`email:${id}`);
+    setEmailLists(prev => prev.filter(item => item.id !== id));
+    try {
+      await fetchJson(`${API_BASE}/api/emails/${id}`, { method: "DELETE" });
+      AtlasFeedback.toast("Deleted email recipient.", { tone: "success" });
+    } catch (err) {
+      console.error("Email delete error:", err);
+      setEmailLists(prevEmails);
+      AtlasFeedback.toast(err?.message || "Failed to delete recipient.", { tone: "danger" });
+      void loadAllData();
+    } finally {
+      setDeletingTargetKey(null);
     }
   };
   
   const handleCancelScan = async () => {
     if (!isAdmin) return;
-    if (!window.confirm("Abort the current scan? Any targets already processed will be saved safely.")) return;
+    const confirmed = await AtlasFeedback.confirm("Abort the current scan? Any targets already processed will be saved safely.", {
+      title: "Abort Scan?",
+      confirmLabel: "Abort",
+      destructive: true
+    });
+    if (!confirmed) return;
     try {
       await fetchJson(`${API_BASE}/api/cancel-scan`, { method: "POST" });
       setScanProgress(prev => ({ ...prev, logs: [...prev.logs, "> Sending cancel request to backend..."] }));
+      AtlasFeedback.toast("Cancelling active scan...", { tone: "amber" });
     } catch (err) {
       console.error("Scan cancel error:", err);
+      AtlasFeedback.toast(err?.message || "Failed to cancel scan.", { tone: "danger" });
     }
   };
 
   const handleRunScan = async () => {
-    if (!isAdmin) return alert("Only administrators can initiate scans.");
-    if (selectedSource === "manual" && !scanQuery) return alert("Please enter a competitor name or AR ID!");
+    if (!isAdmin) return AtlasFeedback.inform("Only administrators can initiate scans.", { title: "Admin required" });
+    if (isStartingScan || isScanning) return;
+    if (selectedSource === "manual" && !scanQuery.trim()) {
+      return AtlasFeedback.inform("Please enter a competitor name or AR ID before starting a scan.", { title: "Target required" });
+    }
 
     const directReportEmail = customReportEmail.trim();
     if (selectedEmailList === "custom" && !EMAIL_REGEX.test(directReportEmail)) {
-      return alert("Please enter a valid email address for the report.");
+      return AtlasFeedback.inform("Please enter a valid email address for the report.", { title: "Invalid email" });
     }
 
     let targetCompId = null;
@@ -1581,6 +1726,7 @@ function App() {
     else localStorage.removeItem("atlas_latest_comp_id");
 
     setViewMode("all");
+    setIsStartingScan(true);
     setIsScanning(true);
     setIsScanMinimized(false);
 
@@ -1644,11 +1790,18 @@ function App() {
         timeRemaining: "Stopped",
         logs: [...prev.logs, `> ${err.message || "Unable to start scan."}`].slice(-5)
       }));
+      AtlasFeedback.toast(err?.message || "Unable to start scan.", { tone: "danger" });
+    } finally {
+      setIsStartingScan(false);
     }
   };
 
-  const handleReset = () => {
-    if (!window.confirm("Clear the 'Latest Scan' view? This empties the screen until your next scan. (All-time database records remain safe).")) return;
+  const handleReset = async () => {
+    const confirmed = await AtlasFeedback.confirm(
+      "Clear the 'Latest Scan' view? All-time database records remain safe.",
+      { title: "Clear Latest Scan?", confirmLabel: "Clear", destructive: true }
+    );
+    if (!confirmed) return;
     setLatestScanPackages([]);
     setLatestScanAdCounts({});
     setLatestScanAdCountsByCompetitor({});
@@ -1661,6 +1814,7 @@ function App() {
     localStorage.removeItem("atlas_has_latest_scan");
     localStorage.removeItem("atlas_latest_target_name");
     localStorage.removeItem("atlas_latest_comp_id");
+    AtlasFeedback.toast("Cleared Latest Scan view.", { tone: "info" });
   };
 
   const fetchLatestCountryScan = useCallback(async (packageName) => {
@@ -1725,6 +1879,7 @@ function App() {
 
     setCountryScanData(null);
     setCountryScanLoading(true);
+    setViewingCountryPkg(packageName);
     setCountryScanModalOpen(true);
 
     try {
@@ -1735,6 +1890,7 @@ function App() {
       setCountryScanError(error.message || "No saved country scan was found.");
     } finally {
       setCountryScanLoading(false);
+      setViewingCountryPkg((prev) => (prev === packageName ? null : prev));
     }
   }, [countryPackage, countryScanLibrary, fetchLatestCountryScan, selectedGame?.package_name]);
 
@@ -2009,6 +2165,8 @@ function App() {
           localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
           void refreshCountryScanLibrary();
           void loadAllData();
+          const liveCount = Number(payload?.scan?.counts?.live) || 0;
+          AtlasFeedback.toast(`Country scan finished for ${status.packageName} (${liveCount} live).`, { tone: "success" });
 
           if (selectedGamePackageRef.current === status.packageName) {
             setSelectedGameCountryScan(payload);
@@ -2022,6 +2180,7 @@ function App() {
           setCountryScanError(status.error || "Country scan failed.");
           setCountryScanModalOpen(true);
           localStorage.removeItem(COUNTRY_SCAN_JOB_KEY);
+          AtlasFeedback.toast(status.error || "Country scan failed.", { tone: "danger" });
         } else {
           setCountryScanJob(status);
         }
@@ -2255,9 +2414,10 @@ function App() {
                 type="text"
                 autoFocus
                 autoComplete="username"
+                disabled={isLoggingIn}
                 value={usernameInput}
                 onChange={(e) => { setUsernameInput(e.target.value); setLoginError(""); }}
-                className="w-full h-12 bg-transparent border border-[#c7cacf] dark:border-[#5f6368] rounded-xl px-3.5 text-sm outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition-colors"
+                className="w-full h-12 bg-transparent border border-[#c7cacf] dark:border-[#5f6368] rounded-xl px-3.5 text-sm outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition-colors disabled:opacity-60"
               />
             </div>
             <div className="space-y-1.5">
@@ -2265,9 +2425,10 @@ function App() {
               <input
                 type="password"
                 autoComplete="current-password"
+                disabled={isLoggingIn}
                 value={passwordInput}
                 onChange={(e) => { setPasswordInput(e.target.value); setLoginError(""); }}
-                className="w-full h-12 bg-transparent border border-[#c7cacf] dark:border-[#5f6368] rounded-xl px-3.5 text-sm outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition-colors"
+                className="w-full h-12 bg-transparent border border-[#c7cacf] dark:border-[#5f6368] rounded-xl px-3.5 text-sm outline-none focus:border-[#1a73e8] focus:ring-1 focus:ring-[#1a73e8] transition-colors disabled:opacity-60"
               />
             </div>
 
@@ -2281,9 +2442,13 @@ function App() {
             <div className="pt-2 flex justify-end">
               <button
                 type="submit"
-                className="h-10 px-6 rounded-full bg-[#1a73e8] hover:bg-[#1765cc] text-white text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]/40"
+                disabled={isLoggingIn}
+                className="h-10 px-6 rounded-full bg-[#1a73e8] hover:bg-[#1765cc] disabled:opacity-60 text-white text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1a73e8]/40 inline-flex items-center gap-2"
               >
-                Sign in
+                {isLoggingIn && (
+                  <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+                )}
+                <span>{isLoggingIn ? "Signing in..." : "Sign in"}</span>
               </button>
             </div>
           </form>
@@ -2352,10 +2517,29 @@ function App() {
                   setActiveDropdown(value.trim().length >= 2 ? "globalSearch" : null);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
+                  if (e.key === "ArrowDown" && activeDropdown === "globalSearch" && flatGlobalResults.length > 0) {
+                    e.preventDefault();
+                    setGlobalSearchHighlightIdx((prev) => (prev + 1) % flatGlobalResults.length);
+                    return;
+                  }
+                  if (e.key === "ArrowUp" && activeDropdown === "globalSearch" && flatGlobalResults.length > 0) {
+                    e.preventDefault();
+                    setGlobalSearchHighlightIdx((prev) => (prev <= 0 ? flatGlobalResults.length - 1 : prev - 1));
+                    return;
+                  }
+                  if (e.key === "Enter") {
+                    if (activeDropdown === "globalSearch" && globalSearchHighlightIdx >= 0 && flatGlobalResults[globalSearchHighlightIdx]) {
+                      e.preventDefault();
+                      const hit = flatGlobalResults[globalSearchHighlightIdx];
+                      setActiveDropdown(null);
+                      if (hit.kind === "game") handleGameClick(hit.item);
+                      else if (hit.kind === "publisher") openPlayStoreFromSearch(hit.item.publisher_name);
+                      else if (hit.kind === "competitor") openPlayStoreFromSearch(hit.item.name);
+                      return;
+                    }
                     openPlayStoreFromSearch(globalSearchQuery.trim());
                   }
-                  if (e.key === 'Escape') setActiveDropdown(null);
+                  if (e.key === "Escape") setActiveDropdown(null);
                 }}
                 placeholder="Search games, publishers, competitors, packages..."
                 className="flex-1 min-w-0 bg-transparent outline-none text-sm text-text-main placeholder:text-text-muted/80"
@@ -2385,12 +2569,16 @@ function App() {
                       {globalSearchResults.games.length > 0 && (
                         <div className="py-1">
                           <div className="px-4 py-1.5 text-[10px] font-medium text-text-muted">Games</div>
-                          {globalSearchResults.games.map((game) => (
+                          {globalSearchResults.games.map((game, idx) => (
                             <button
                               type="button"
                               key={`search-game-${getGameIdentity(game)}`}
+                              onMouseEnter={() => setGlobalSearchHighlightIdx(idx)}
                               onClick={() => { setActiveDropdown(null); handleGameClick(game); }}
-                              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
+                              className={cn(
+                                "w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors",
+                                globalSearchHighlightIdx === idx && "bg-input-bg"
+                              )}
                             >
                               <div className="w-9 h-9 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex-shrink-0 flex items-center justify-center">
                                 {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt="" className="w-full h-full object-cover" /> : <span className="material-symbols-outlined text-text-muted text-[18px]">sports_esports</span>}
@@ -2408,40 +2596,54 @@ function App() {
                       {globalSearchResults.publishers.length > 0 && (
                         <div className="py-1 border-t border-border-subtle">
                           <div className="px-4 py-1.5 text-[10px] font-medium text-text-muted">Publishers</div>
-                          {globalSearchResults.publishers.map((publisher, index) => (
-                            <button
-                              type="button"
-                              key={`search-pub-${publisher.competitorId}-${publisher.id ?? publisher.publisher_name}-${index}`}
-                              onClick={() => openPlayStoreFromSearch(publisher.publisher_name)}
-                              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
-                            >
-                              <span className="material-symbols-outlined text-text-muted text-[20px]">business</span>
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-medium text-text-main truncate">{publisher.publisher_name}</div>
-                                <div className="text-[10px] text-text-muted truncate">{publisher.competitorName || "Publisher"}</div>
-                              </div>
-                            </button>
-                          ))}
+                          {globalSearchResults.publishers.map((publisher, index) => {
+                            const flatIdx = globalSearchResults.games.length + index;
+                            return (
+                              <button
+                                type="button"
+                                key={`search-pub-${publisher.competitorId}-${publisher.id ?? publisher.publisher_name}-${index}`}
+                                onMouseEnter={() => setGlobalSearchHighlightIdx(flatIdx)}
+                                onClick={() => openPlayStoreFromSearch(publisher.publisher_name)}
+                                className={cn(
+                                  "w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors",
+                                  globalSearchHighlightIdx === flatIdx && "bg-input-bg"
+                                )}
+                              >
+                                <span className="material-symbols-outlined text-text-muted text-[20px]">business</span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-medium text-text-main truncate">{publisher.publisher_name}</div>
+                                  <div className="text-[10px] text-text-muted truncate">{publisher.competitorName || "Publisher"}</div>
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
 
                       {globalSearchResults.competitors.length > 0 && (
                         <div className="py-1 border-t border-border-subtle">
                           <div className="px-4 py-1.5 text-[10px] font-medium text-text-muted">Competitors</div>
-                          {globalSearchResults.competitors.map((competitor) => (
-                            <button
-                              type="button"
-                              key={`search-comp-${competitor.id ?? competitor.name}`}
-                              onClick={() => openPlayStoreFromSearch(competitor.name)}
-                              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors"
-                            >
-                              <span className="material-symbols-outlined text-text-muted text-[20px]">domain</span>
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm font-medium text-text-main truncate">{competitor.name}</div>
-                                <div className="text-[10px] text-text-muted truncate">{competitor.ads_id || "Competitor"}</div>
-                              </div>
-                            </button>
-                          ))}
+                          {globalSearchResults.competitors.map((competitor, index) => {
+                            const flatIdx = globalSearchResults.games.length + globalSearchResults.publishers.length + index;
+                            return (
+                              <button
+                                type="button"
+                                key={`search-comp-${competitor.id ?? competitor.name}`}
+                                onMouseEnter={() => setGlobalSearchHighlightIdx(flatIdx)}
+                                onClick={() => openPlayStoreFromSearch(competitor.name)}
+                                className={cn(
+                                  "w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-input-bg transition-colors",
+                                  globalSearchHighlightIdx === flatIdx && "bg-input-bg"
+                                )}
+                              >
+                                <span className="material-symbols-outlined text-text-muted text-[20px]">domain</span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-medium text-text-main truncate">{competitor.name}</div>
+                                  <div className="text-[10px] text-text-muted truncate">{competitor.ads_id || "Competitor"}</div>
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
 
@@ -2579,7 +2781,15 @@ function App() {
             <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-5 md:gap-6">
               <motion.div variants={FADE_UP} className="flex items-end justify-between gap-4 px-1">
                 <div>
-                  <h1 className="text-xl md:text-2xl font-medium text-text-main tracking-tight">Dashboard</h1>
+                  <div className="flex items-center gap-2.5">
+                    <h1 className="text-xl md:text-2xl font-medium text-text-main tracking-tight">Dashboard</h1>
+                    {isSyncingDashboard && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-solid border border-border-subtle text-[10px] text-text-muted font-medium">
+                        <span className="material-symbols-outlined text-[12px] animate-spin text-electric-blue">progress_activity</span>
+                        Syncing
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs md:text-sm text-text-muted mt-1">Competitive game intelligence at a glance.</p>
                 </div>
                 {isAdmin && (
@@ -2850,8 +3060,9 @@ function App() {
                           <span className="material-symbols-outlined text-[20px]">cancel</span> Cancel
                         </button>
                       ) : (
-                        <button onClick={handleRunScan} className="h-[48px] flex-1 md:flex-none bg-[#8ab4f8] text-[#202124] font-medium px-7 rounded-full shadow-sm hover:shadow-md transition-all flex justify-center items-center gap-2 active:scale-[0.98]">
-                          <span className="material-symbols-outlined text-[20px]">data_usage</span> Scan
+                        <button onClick={handleRunScan} disabled={isStartingScan} className="h-[48px] flex-1 md:flex-none bg-[#8ab4f8] text-[#202124] font-medium px-7 rounded-full shadow-sm hover:shadow-md transition-all flex justify-center items-center gap-2 active:scale-[0.98] disabled:opacity-60">
+                          <span className={cn("material-symbols-outlined text-[20px]", isStartingScan && "animate-spin")}>{isStartingScan ? "progress_activity" : "data_usage"}</span>
+                          {isStartingScan ? "Starting..." : "Scan"}
                         </button>
                       )}
 
@@ -2925,27 +3136,41 @@ function App() {
                   { id: "competitors", label: "Competitors", value: displayStats.competitors, icon: "groups", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Tracked groups" },
                   { id: "publishers", label: "Publishers", value: displayStats.accounts, icon: "business_center", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Discovered accounts" },
                   { id: "games", label: "Games", value: displayStats.games, icon: "sports_esports", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Unique titles" }
-                ].map((stat) => (
-                  <motion.div
-                    key={stat.label}
-                    variants={FADE_UP}
-                    className="bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", stat.iconBg, stat.tone)}>
-                        <span className="material-symbols-outlined text-[20px]">{stat.icon}</span>
+                ].map((stat) => {
+                  const isClickable = Boolean(stat.id);
+                  const CardTag = isClickable ? motion.button : motion.div;
+                  return (
+                    <CardTag
+                      key={stat.label}
+                      type={isClickable ? "button" : undefined}
+                      variants={FADE_UP}
+                      onClick={isClickable ? () => openStatPanel(stat.id) : undefined}
+                      className={cn(
+                        "bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between transition-all",
+                        isClickable && "group cursor-pointer hover:-translate-y-0.5 hover:border-electric-blue/40 hover:shadow-md"
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3 w-full">
+                        <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", stat.iconBg, stat.tone)}>
+                          <span className="material-symbols-outlined text-[20px]">{stat.icon}</span>
+                        </div>
+                        {isClickable && (
+                          <span className="text-[10px] font-medium text-electric-blue opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity flex items-center gap-0.5">
+                            View all <span className="material-symbols-outlined text-[13px]">arrow_forward</span>
+                          </span>
+                        )}
                       </div>
-                    </div>
 
-                    <div className="mt-5">
-                      <p className="text-[10px] md:text-[11px] text-text-muted font-medium">{stat.label}</p>
-                      <div className="flex items-end justify-between gap-2 mt-1">
-                        <span className="text-2xl md:text-3xl font-medium text-text-main tracking-tight">{stat.value}</span>
-                        <span className="text-[9px] md:text-[10px] text-text-muted text-right hidden sm:block">{stat.note}</span>
+                      <div className="mt-5 w-full">
+                        <p className="text-[10px] md:text-[11px] text-text-muted font-medium">{stat.label}</p>
+                        <div className="flex items-end justify-between gap-2 mt-1">
+                          <span className="text-2xl md:text-3xl font-medium text-text-main tracking-tight">{stat.value}</span>
+                          <span className="text-[9px] md:text-[10px] text-text-muted text-right hidden sm:block">{stat.note}</span>
+                        </div>
                       </div>
-                    </div>
-                  </motion.div>
-                ))}
+                    </CardTag>
+                  );
+                })}
               </div>
 
               <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-5">
@@ -3117,7 +3342,15 @@ function App() {
                                     ))}
                                   </div>
                                 )}
-                                <p className="text-[9px] md:text-[10px] text-text-muted font-mono mt-1 truncate">{item.packageName}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => void AtlasFeedback.copy(item.packageName, "Copied package ID")}
+                                  title="Copy package ID"
+                                  className="text-[9px] md:text-[10px] text-text-muted hover:text-electric-blue font-mono mt-1 truncate inline-flex items-center gap-1 max-w-full transition-colors"
+                                >
+                                  <span className="truncate">{item.packageName}</span>
+                                  <span className="material-symbols-outlined text-[12px] shrink-0 opacity-70">content_copy</span>
+                                </button>
                               </div>
 
                               {runningThisPackage && (
@@ -3170,11 +3403,14 @@ function App() {
                                 </a>
                                 <button
                                   type="button"
+                                  disabled={viewingCountryPkg === item.packageName}
                                   onClick={() => handleViewSavedCountryScan(item.packageName)}
-                                  className="h-9 px-3 rounded-full border border-border-subtle bg-input-bg text-text-main text-[10px] font-medium hover:bg-surface-glass flex items-center gap-1.5"
+                                  className="h-9 px-3 rounded-full border border-border-subtle bg-input-bg text-text-main text-[10px] font-medium hover:bg-surface-glass disabled:opacity-60 flex items-center gap-1.5"
                                 >
-                                  <span className="material-symbols-outlined text-[16px]">visibility</span>
-                                  View
+                                  <span className={cn("material-symbols-outlined text-[16px]", viewingCountryPkg === item.packageName && "animate-spin")}>
+                                    {viewingCountryPkg === item.packageName ? "progress_activity" : "visibility"}
+                                  </span>
+                                  {viewingCountryPkg === item.packageName ? "Loading" : "View"}
                                 </button>
                                 {isAdmin && (
                                   <button
@@ -3217,27 +3453,36 @@ function App() {
                     <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm">
                       <h2 className="text-base font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-electric-blue text-[22px]">person_add</span> Save Competitor</h2>
                       <form onSubmit={handleSaveCompetitor} className="space-y-4">
-                        <input value={newCompName} onChange={(e) => setNewCompName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Playmax" type="text" />
-                        <input value={newCompAdsId} onChange={(e) => setNewCompAdsId(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="AR123456789012345" type="text" />
-                        <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-electric-blue/40 hover:text-electric-blue font-medium py-3.5 px-6 rounded-xl transition-all disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save Entity"}</button>
+                        <input value={newCompName} disabled={savingCompetitor} onChange={(e) => setNewCompName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm disabled:opacity-60" placeholder="e.g. Playmax" type="text" />
+                        <input value={newCompAdsId} disabled={savingCompetitor} onChange={(e) => setNewCompAdsId(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm disabled:opacity-60" placeholder="AR123456789012345" type="text" />
+                        <button type="submit" disabled={savingCompetitor} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-electric-blue/40 hover:text-electric-blue font-medium py-3.5 px-6 rounded-xl transition-all disabled:opacity-50 text-xs inline-flex items-center justify-center gap-2">
+                          {savingCompetitor && <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>}
+                          <span>{savingCompetitor ? "Saving..." : "Save Entity"}</span>
+                        </button>
                       </form>
                     </div>
                     
                     <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm">
                       <h2 className="text-base font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-electric-blue text-[22px]">format_list_bulleted_add</span> Create Batch List</h2>
                       <form onSubmit={handleCreateList} className="space-y-4">
-                        <input value={newListName} onChange={(e) => setNewListName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Tier 1 Tracking" type="text" />
-                        <textarea value={newListTargets} onChange={(e) => setNewListTargets(e.target.value)} className="w-full h-24 bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none" placeholder="AR123...&#10;AR456..." />
-                        <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-electric-blue/40 hover:text-electric-blue font-medium py-3.5 px-6 rounded-xl transition-all disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save List"}</button>
+                        <input value={newListName} disabled={savingList} onChange={(e) => setNewListName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm disabled:opacity-60" placeholder="e.g. Tier 1 Tracking" type="text" />
+                        <textarea value={newListTargets} disabled={savingList} onChange={(e) => setNewListTargets(e.target.value)} className="w-full h-24 bg-input-bg text-text-main border border-border-subtle font-mono text-xs md:text-sm rounded-xl py-3 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none disabled:opacity-60" placeholder="AR123...&#10;AR456..." />
+                        <button type="submit" disabled={savingList} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-electric-blue/40 hover:text-electric-blue font-medium py-3.5 px-6 rounded-xl transition-all disabled:opacity-50 text-xs inline-flex items-center justify-center gap-2">
+                          {savingList && <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>}
+                          <span>{savingList ? "Saving..." : "Save List"}</span>
+                        </button>
                       </form>
                     </div>
 
                     <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm">
                       <h2 className="text-base font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-electric-blue text-[22px]">contact_mail</span> Add Recipient</h2>
                       <form onSubmit={handleSaveEmailList} className="space-y-4">
-                        <input value={newEmailName} onChange={(e) => setNewEmailName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-body-sm md:font-body-md rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm" placeholder="e.g. Marketing Team" type="text" />
-                        <textarea value={newEmailTargets} onChange={(e) => setNewEmailTargets(e.target.value)} className="w-full h-16 md:h-20 bg-input-bg text-text-main border border-border-subtle text-xs md:text-sm rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none" placeholder="hello@gmail.com, team@..." />
-                        <button type="submit" disabled={isSaving} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-electric-blue/40 hover:text-electric-blue font-medium py-2.5 px-6 rounded-xl transition-all disabled:opacity-50 text-xs">{isSaving ? "Saving..." : "Save Contact"}</button>
+                        <input value={newEmailName} disabled={savingRecipient} onChange={(e) => setNewEmailName(e.target.value)} className="w-full bg-input-bg text-text-main border border-border-subtle font-body-sm md:font-body-md rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm disabled:opacity-60" placeholder="e.g. Marketing Team" type="text" />
+                        <textarea value={newEmailTargets} disabled={savingRecipient} onChange={(e) => setNewEmailTargets(e.target.value)} className="w-full h-16 md:h-20 bg-input-bg text-text-main border border-border-subtle text-xs md:text-sm rounded-xl py-2.5 px-4 outline-none focus:ring-1 focus:ring-electric-blue/50 transition-all shadow-sm resize-none disabled:opacity-60" placeholder="hello@gmail.com, team@..." />
+                        <button type="submit" disabled={savingRecipient} className="w-full bg-surface-solid border border-border-subtle text-text-main hover:border-electric-blue/40 hover:text-electric-blue font-medium py-2.5 px-6 rounded-xl transition-all disabled:opacity-50 text-xs inline-flex items-center justify-center gap-2">
+                          {savingRecipient && <span className="material-symbols-outlined text-[15px] animate-spin">progress_activity</span>}
+                          <span>{savingRecipient ? "Saving..." : "Save Contact"}</span>
+                        </button>
                       </form>
                     </div>
                   </motion.div>
@@ -3249,9 +3494,29 @@ function App() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {savedCompetitors.map((comp) => (
                         <motion.div whileHover={{ y: -2 }} key={comp.id} className="bg-surface-solid border border-border-subtle rounded-xl p-4 flex items-center justify-between transition-all group shadow-sm">
-                          <div className="min-w-0 pr-4"><h3 className="text-sm font-semibold text-text-main truncate">{comp.name}</h3><p className="font-mono text-xs text-text-muted mt-1 truncate">{comp.ads_id}</p></div>
+                          <div className="min-w-0 pr-4">
+                            <h3 className="text-sm font-semibold text-text-main truncate">{comp.name}</h3>
+                            <button
+                              type="button"
+                              onClick={() => void AtlasFeedback.copy(comp.ads_id, "Copied Advertiser ID")}
+                              title="Copy Advertiser ID"
+                              className="font-mono text-xs text-text-muted hover:text-electric-blue mt-1 truncate inline-flex items-center gap-1 max-w-full transition-colors"
+                            >
+                              <span className="truncate">{comp.ads_id}</span>
+                              <span className="material-symbols-outlined text-[13px] shrink-0 opacity-70">content_copy</span>
+                            </button>
+                          </div>
                           {isAdmin && (
-                            <button onClick={() => handleDeleteCompetitor(comp.id)} className="bg-surface-glass text-urgent-red border border-border-subtle p-2.5 rounded-lg hover:bg-urgent-red hover:text-white shadow-sm transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"><span className="material-symbols-outlined text-[20px]">delete</span></button>
+                            <button
+                              type="button"
+                              disabled={deletingTargetKey === `comp:${comp.id}`}
+                              onClick={() => handleDeleteCompetitor(comp.id)}
+                              className="bg-surface-glass text-urgent-red border border-border-subtle p-2.5 rounded-lg hover:bg-urgent-red hover:text-white shadow-sm transition-colors opacity-60 group-hover:opacity-100 focus:opacity-100 flex-shrink-0 disabled:opacity-50"
+                            >
+                              <span className={cn("material-symbols-outlined text-[20px]", deletingTargetKey === `comp:${comp.id}` && "animate-spin")}>
+                                {deletingTargetKey === `comp:${comp.id}` ? "progress_activity" : "delete"}
+                              </span>
+                            </button>
                           )}
                         </motion.div>
                       ))}
@@ -3284,12 +3549,16 @@ function App() {
 
                             {isAdmin && (
                               <button
+                                type="button"
+                                disabled={deletingTargetKey === `list:${list.id}`}
                                 onClick={() => handleDeleteList(list.id)}
-                                className="w-8 h-8 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-60 group-hover:opacity-100 focus:opacity-100 transition-all flex-shrink-0"
+                                className="w-8 h-8 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-60 group-hover:opacity-100 focus:opacity-100 transition-all flex-shrink-0 disabled:opacity-50"
                                 title="Delete batch list"
                                 aria-label={`Delete ${list.name}`}
                               >
-                                <span className="material-symbols-outlined text-[17px]">delete</span>
+                                <span className={cn("material-symbols-outlined text-[17px]", deletingTargetKey === `list:${list.id}` && "animate-spin")}>
+                                  {deletingTargetKey === `list:${list.id}` ? "progress_activity" : "delete"}
+                                </span>
                               </button>
                             )}
                           </div>
@@ -3327,7 +3596,17 @@ function App() {
                             {parseJsonArray(list.emails).map((e, i) => <div key={i} className="truncate mb-1">{e}</div>)}
                           </div>
                           {isAdmin && (
-                            <button onClick={() => handleDeleteEmail(list.id)} className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle text-xs font-medium py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-0 group-hover:opacity-100"><span className="material-symbols-outlined text-[18px]">delete</span> Delete recipient</button>
+                            <button
+                              type="button"
+                              disabled={deletingTargetKey === `email:${list.id}`}
+                              onClick={() => handleDeleteEmail(list.id)}
+                              className="mt-auto bg-surface-glass text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 border border-border-subtle text-xs font-medium py-2.5 px-4 rounded-lg shadow-sm transition-all flex justify-center items-center gap-2 opacity-60 group-hover:opacity-100 focus:opacity-100 disabled:opacity-50"
+                            >
+                              <span className={cn("material-symbols-outlined text-[18px]", deletingTargetKey === `email:${list.id}` && "animate-spin")}>
+                                {deletingTargetKey === `email:${list.id}` ? "progress_activity" : "delete"}
+                              </span>
+                              {deletingTargetKey === `email:${list.id}` ? "Deleting..." : "Delete recipient"}
+                            </button>
                           )}
                         </motion.div>
                       ))}
@@ -3993,7 +4272,7 @@ function App() {
                                   <div className="text-[9px] text-text-muted mt-0.5">{item.countryCode} · {item.confidence || "unknown"} confidence</div>
                                   {change && (
                                     <div className="text-[9px] text-amber-500 mt-1">
-                                      {getCountryStateMeta(change.from).label} â†’ {getCountryStateMeta(change.to).label}
+                                      {getCountryStateMeta(change.from).label} → {getCountryStateMeta(change.to).label}
                                     </div>
                                   )}
                                 </div>

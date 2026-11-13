@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import AtlasFeedback from './AtlasFeedback.jsx';
 
 import { API_BASE } from './apiConfig.js';
 const AUTH_TOKEN_KEY = 'atlas_auth_token';
@@ -537,6 +538,7 @@ export default function VideoLibraryEditor() {
 
     // 1. Close modal and update local state immediately (0ms perceived latency)
     setEditingId(null);
+    AtlasFeedback.toast("Video metadata saved.", { tone: "success" });
     setAssets(prev => prev.map(item => {
       if (Number(item.id) !== Number(assetId)) return item;
       const linkedPackageCount = Number(item.linkedPackageCount) || 0;

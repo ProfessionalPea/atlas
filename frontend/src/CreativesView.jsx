@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "./apiConfig.js";
+import AtlasFeedback from "./AtlasFeedback.jsx";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
 
@@ -34,22 +35,30 @@ function formatDuration(sec) {
 export default memo(function CreativesView({ isAdmin = false, onGameClick = null }) {
   const [creatives, setCreatives] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [visibleCount, setVisibleCount] = useState(36);
+  const hasLoadedRef = useRef(false);
 
-  const loadCreatives = useCallback(async () => {
+  const loadCreatives = useCallback(async ({ manual = false } = {}) => {
+    const keepVisible = hasLoadedRef.current;
+    if (keepVisible) setIsRefreshing(true);
+    else setLoading(true);
     try {
-      setLoading(true);
       setError(null);
       const data = await fetchJson(`${API_BASE}/api/video-assets`);
+      hasLoadedRef.current = true;
       setCreatives(Array.isArray(data) ? data : []);
+      if (manual) AtlasFeedback.toast("Creatives library synced.", { tone: "success" });
     } catch (err) {
       console.error("Failed to load creatives:", err);
       setError(err.message || "Failed to load creatives");
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   }, []);
 
@@ -75,12 +84,21 @@ export default memo(function CreativesView({ isAdmin = false, onGameClick = null
   }, [filteredCreatives, visibleCount]);
 
   const handleDeleteCreative = async (assetId) => {
-    if (!window.confirm("Are you sure you want to permanently delete this creative asset?")) return;
+    if (deletingId) return;
+    const ok = await AtlasFeedback.confirm(
+      "Are you sure you want to permanently delete this creative asset?",
+      { title: "Delete Creative Asset", confirmLabel: "Delete Asset", destructive: true }
+    );
+    if (!ok) return;
+    setDeletingId(assetId);
     try {
       await fetchJson(`${API_BASE}/api/video-assets/${assetId}`, { method: "DELETE" });
       setCreatives(prev => prev.filter(c => c.id !== assetId));
+      AtlasFeedback.toast("Creative asset deleted.", { tone: "info" });
     } catch (err) {
-      alert("Failed to delete creative: " + err.message);
+      AtlasFeedback.toast("Failed to delete creative: " + (err?.message || "Unknown error"), { tone: "danger" });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -119,12 +137,13 @@ export default memo(function CreativesView({ isAdmin = false, onGameClick = null
           </div>
           <button
             type="button"
-            onClick={loadCreatives}
-            className="h-10 px-3.5 rounded-xl bg-surface-solid border border-border-subtle hover:bg-input-bg text-text-main text-xs font-semibold flex items-center gap-1.5 transition"
+            disabled={isRefreshing || loading}
+            onClick={() => loadCreatives({ manual: true })}
+            className="h-10 px-3.5 rounded-xl bg-surface-solid border border-border-subtle hover:bg-input-bg text-text-main text-xs font-semibold flex items-center gap-1.5 transition disabled:opacity-50"
             title="Refresh Creatives"
           >
-            <span className="material-symbols-outlined text-[16px]">refresh</span>
-            Refresh
+            <span className={`material-symbols-outlined text-[16px] ${isRefreshing ? "animate-spin text-electric-blue" : ""}`}>refresh</span>
+            {isRefreshing ? "Syncing..." : "Refresh"}
           </button>
         </div>
       </div>
@@ -256,11 +275,14 @@ export default memo(function CreativesView({ isAdmin = false, onGameClick = null
                     {isAdmin && (
                       <button
                         type="button"
+                        disabled={deletingId === creative.id}
                         onClick={() => handleDeleteCreative(creative.id)}
-                        className="text-text-muted hover:text-urgent-red p-1 rounded-lg transition"
+                        className="text-text-muted hover:text-urgent-red p-1 rounded-lg transition disabled:opacity-40"
                         title="Delete Creative"
                       >
-                        <span className="material-symbols-outlined text-[16px]">delete</span>
+                        <span className={`material-symbols-outlined text-[16px] ${deletingId === creative.id ? "animate-spin text-urgent-red" : ""}`}>
+                          {deletingId === creative.id ? "progress_activity" : "delete"}
+                        </span>
                       </button>
                     )}
                   </div>

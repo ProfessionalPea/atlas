@@ -17,8 +17,12 @@ export default function AtlasSelect({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [resolvedAlign, setResolvedAlign] = useState(align);
   const rootRef = useRef(null);
+  const listRef = useRef(null);
   const searchInputRef = useRef(null);
+  const triggerRef = useRef(null);
 
   // Normalize all options into a flat array for quick lookup
   const flatOptions = useMemo(() => {
@@ -47,16 +51,18 @@ export default function AtlasSelect({
     return flatOptions.length > 8;
   }, [searchable, flatOptions.length]);
 
-  // Filtered list
+  // Filtered list with flat keyboard index
   const filteredOptions = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return flatOptions;
-    return flatOptions.filter(
-      (opt) =>
-        String(opt.label || "").toLowerCase().includes(q) ||
-        String(opt.subtext || "").toLowerCase().includes(q) ||
-        String(opt.group || "").toLowerCase().includes(q)
-    );
+    const list = !q
+      ? flatOptions
+      : flatOptions.filter(
+          (opt) =>
+            String(opt.label || "").toLowerCase().includes(q) ||
+            String(opt.subtext || "").toLowerCase().includes(q) ||
+            String(opt.group || "").toLowerCase().includes(q)
+        );
+    return list.map((opt, idx) => ({ ...opt, _flatIdx: idx }));
   }, [flatOptions, query]);
 
   // Grouped structure for rendering
@@ -70,17 +76,95 @@ export default function AtlasSelect({
     return Array.from(map.entries()).map(([group, items]) => ({ group, items }));
   }, [filteredOptions]);
 
-  // Focus search input when opening
+  // Focus search input and compute viewport-safe alignment when opening
   useEffect(() => {
-    if (open && shouldSearch) {
-      setTimeout(() => {
-        searchInputRef.current?.focus();
-      }, 50);
-    }
-    if (!open) {
+    if (open) {
+      const activeIdx = filteredOptions.findIndex((opt) => String(opt.value) === String(value));
+      setHighlightedIndex(activeIdx >= 0 ? activeIdx : filteredOptions.length > 0 ? 0 : -1);
+
+      if (typeof window !== "undefined" && rootRef.current) {
+        const rect = rootRef.current.getBoundingClientRect();
+        const estimatedWidth = 280;
+        if (align === "right") {
+          setResolvedAlign(rect.right - estimatedWidth < 12 ? "left" : "right");
+        } else {
+          setResolvedAlign(rect.left + estimatedWidth > window.innerWidth - 12 ? "right" : "left");
+        }
+      } else {
+        setResolvedAlign(align);
+      }
+
+      if (shouldSearch) {
+        setTimeout(() => {
+          searchInputRef.current?.focus();
+        }, 40);
+      }
+    } else {
       setQuery("");
+      setHighlightedIndex(-1);
     }
-  }, [open, shouldSearch]);
+  }, [open, shouldSearch, align]);
+
+  // Keep highlighted option within bounds as query changes
+  useEffect(() => {
+    if (!open) return;
+    setHighlightedIndex((prev) => {
+      if (filteredOptions.length === 0) return -1;
+      if (prev >= 0 && prev < filteredOptions.length) return prev;
+      return 0;
+    });
+  }, [filteredOptions.length, open]);
+
+  // Scroll highlighted option into view
+  useEffect(() => {
+    if (!open || highlightedIndex < 0 || !listRef.current) return;
+    const el = listRef.current.querySelector(`[data-atlas-option-idx="${highlightedIndex}"]`);
+    if (el && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlightedIndex, open]);
+
+  const handleMenuKeyDown = (event) => {
+    if (!open) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setOpen(true);
+      }
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus({ preventScroll: true });
+      return;
+    }
+
+    if (filteredOptions.length === 0) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlightedIndex((prev) => (prev + 1) % filteredOptions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlightedIndex((prev) => (prev <= 0 ? filteredOptions.length - 1 : prev - 1));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setHighlightedIndex(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setHighlightedIndex(filteredOptions.length - 1);
+    } else if (event.key === "Enter") {
+      const idx = highlightedIndex >= 0 && highlightedIndex < filteredOptions.length ? highlightedIndex : 0;
+      const chosen = filteredOptions[idx];
+      if (chosen) {
+        event.preventDefault();
+        onChange?.(chosen.value);
+        setOpen(false);
+        triggerRef.current?.focus({ preventScroll: true });
+      }
+    }
+  };
 
   // Dismiss listeners
   useEffect(() => {
@@ -93,6 +177,7 @@ export default function AtlasSelect({
       if (event.key === "Escape") {
         event.preventDefault();
         setOpen(false);
+        triggerRef.current?.focus({ preventScroll: true });
       }
     };
 
@@ -108,11 +193,13 @@ export default function AtlasSelect({
     <div ref={rootRef} className={`relative inline-block text-left ${className}`}>
       {/* Trigger Button */}
       <button
+        ref={triggerRef}
         type="button"
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
+        onKeyDown={handleMenuKeyDown}
         className={`h-9 px-3 rounded-xl bg-input-bg border border-border-subtle hover:border-electric-blue/40 text-text-main text-xs font-semibold shadow-xs transition flex items-center justify-between gap-2 cursor-pointer select-none ${buttonClassName} ${
           open ? "border-electric-blue ring-1 ring-electric-blue/20" : ""
         }`}
@@ -150,11 +237,12 @@ export default function AtlasSelect({
       {/* Dropdown Menu */}
       {open && (
         <div
+          ref={listRef}
           role="listbox"
           aria-label={ariaLabel}
           className={`absolute ${
-            align === "right" ? "right-0" : "left-0"
-          } top-full mt-1.5 z-[100] min-w-[220px] max-w-[340px] max-h-80 overflow-y-auto bg-surface-solid border border-border-subtle rounded-2xl shadow-2xl p-1.5 flex flex-col gap-1 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 ${menuClassName}`}
+            resolvedAlign === "right" ? "right-0" : "left-0"
+          } top-full mt-1.5 z-[100] min-w-[220px] max-w-[min(340px,calc(100vw-24px))] max-h-80 overflow-y-auto bg-surface-solid border border-border-subtle rounded-2xl shadow-2xl p-1.5 flex flex-col gap-1 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 ${menuClassName}`}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Quick Search */}
@@ -169,14 +257,19 @@ export default function AtlasSelect({
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={handleMenuKeyDown}
                   placeholder={searchPlaceholder}
                   className="w-full h-8 pl-8 pr-7 rounded-xl bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:border-electric-blue"
                 />
                 {query && (
                   <button
                     type="button"
-                    onClick={() => setQuery("")}
+                    onClick={() => {
+                      setQuery("");
+                      searchInputRef.current?.focus();
+                    }}
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main p-0.5"
+                    aria-label="Clear search"
                   >
                     <span className="material-symbols-outlined text-[14px]">close</span>
                   </button>
@@ -201,20 +294,26 @@ export default function AtlasSelect({
                 )}
                 {items.map((opt) => {
                   const active = String(opt.value) === String(value);
+                  const isHighlighted = opt._flatIdx === highlightedIndex;
                   return (
                     <button
                       key={String(opt.value)}
                       type="button"
                       role="option"
+                      data-atlas-option-idx={opt._flatIdx}
                       aria-selected={active}
+                      onMouseEnter={() => setHighlightedIndex(opt._flatIdx)}
                       onClick={() => {
                         onChange?.(opt.value);
                         setOpen(false);
+                        triggerRef.current?.focus({ preventScroll: true });
                       }}
                       className={`w-full rounded-xl px-2.5 py-1.5 text-left text-xs font-medium transition flex items-center justify-between gap-2 cursor-pointer ${
                         active
                           ? "bg-electric-blue/15 text-electric-blue font-semibold"
-                          : "text-text-main hover:bg-surface-glass"
+                          : isHighlighted
+                            ? "bg-surface-glass text-text-main ring-1 ring-electric-blue/30"
+                            : "text-text-main hover:bg-surface-glass"
                       }`}
                     >
                       <div className="flex items-center gap-2 truncate">
