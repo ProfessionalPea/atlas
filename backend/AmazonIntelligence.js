@@ -564,11 +564,12 @@ function registerAmazonRoutes({ app, pool }) {
 
       const games = gamesRes.rows.map((g) => {
         const sharedPubs = publishersByAsin.get(g.asin) || [g.publisher_name];
-        return {
-          ...g,
-          shared_publisher_count: sharedPubs.length,
-          shared_publishers: sharedPubs
-        };
+        const row = { ...g };
+        if (sharedPubs.length > 1) {
+          row.shared_publisher_count = sharedPubs.length;
+          row.shared_publishers = sharedPubs;
+        }
+        return row;
       });
 
       const lists = [...listsById.values()].map((l) => {

@@ -348,7 +348,8 @@ const corsOptions = {
   origin: true,
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  exposedHeaders: ["ETag"],
+  exposedHeaders: ["ETag", "Cache-Control"],
+  maxAge: 86400,
   allowedHeaders: [
     "Origin",
     "X-Requested-With",
@@ -379,9 +380,14 @@ if (fs.existsSync(frontendDist)) {
       if (/\/assets\/[^/]+\.(js|css)$/.test(normalized)) {
         // Vite content-hashed bundles: safe to cache for a year
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      } else if (normalized.includes("/assets/") || normalized.includes("/fonts/")) {
-        // Stable-URL public files (logos, icon font): always revalidate via ETag
-        res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+      } else if (
+        normalized.includes("/assets/") ||
+        normalized.includes("/fonts/") ||
+        /\/(?:atlas-logo\.png|favicon\.svg|icons\.svg)$/i.test(normalized) ||
+        /\.(png|svg|jpg|webp|woff2)$/i.test(normalized)
+      ) {
+        // Stable-URL public files (logos, icons, fonts): cache for 24h and revalidate via ETag
+        res.setHeader("Cache-Control", "public, max-age=86400, must-revalidate");
       } else {
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0");
         res.setHeader("Pragma", "no-cache");

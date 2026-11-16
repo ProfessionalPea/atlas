@@ -54,18 +54,22 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
 
   // Shared in-memory cache + coalesced fetcher for /api/trending, /api/competitors, and /api/stats
   // so initial parallel page loads and tab switches run a single slim query and return in <5ms.
+  let directoryVersion = Date.now();
   const directoryCache = {
     stats: null,
     trending: null,
     competitors: null,
+    etag: null,
     expiresAt: 0,
     inflight: null
   };
 
   function invalidateDirectoryCache() {
+    directoryVersion = Date.now();
     directoryCache.stats = null;
     directoryCache.trending = null;
     directoryCache.competitors = null;
+    directoryCache.etag = null;
     directoryCache.expiresAt = 0;
   }
 
@@ -81,7 +85,7 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
       try {
         const [compRes, accRes, gamesRes, totalGamesRes] = await Promise.all([
           extensionPool.query('SELECT * FROM competitors ORDER BY id DESC'),
-          extensionPool.query('SELECT * FROM accounts'),
+          extensionPool.query('SELECT * FROM accounts ORDER BY id ASC'),
           extensionPool.query(`
             WITH creative_meta AS (
               SELECT
@@ -110,15 +114,6 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
               g.min_installs,
               g.real_installs,
               g.installs_delta_1d,
-              g.installs_avg_daily_7d,
-              g.installs_total_7d,
-              g.estimated_dau,
-              g.retention_d1,
-              g.retention_d7,
-              g.avg_session_minutes,
-              g.rev_monthly_min,
-              g.rev_monthly_max,
-              g.rev_confidence,
               g.released,
               g.release_date::text AS release_date,
               g.updated,
@@ -130,23 +125,12 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
               g.is_suspended,
               g.suspended_at,
               g.developer_id,
-              g.developer_url,
               g.developer_name,
-              g.ad_networks,
               g.store_scanned_at,
-              g.installs_scanned_at,
               g.first_seen_at,
               g.last_seen_at,
-              g.discovery_source,
               cm.latest_creative_seen,
               cm.total_creatives,
-              g.card_presentation_code,
-              g.card_status_source,
-              g.card_status_evidence,
-              g.card_closed_at,
-              g.card_opened_at,
-              g.card_status_changed_at,
-              g.card_scanned_at,
               CASE
                 WHEN g.card_status IN ('open', 'active') THEN 'open'
                 WHEN g.card_status = 'closed' THEN 'closed'
@@ -157,7 +141,7 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
             LEFT JOIN accounts a ON ag.account_id = a.id
             LEFT JOIN competitors c ON a.competitor_id = c.id
             LEFT JOIN creative_meta cm ON cm.package_name = g.package_name
-            ORDER BY g.ad_count DESC
+            ORDER BY g.ad_count DESC, g.id ASC
           `),
           extensionPool.query('SELECT COUNT(*)::int AS count FROM games')
         ]);
@@ -195,6 +179,7 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
         };
         directoryCache.trending = gameRows;
         directoryCache.competitors = tree;
+        directoryCache.etag = `W/"dir-${directoryVersion}"`;
         directoryCache.expiresAt = Date.now() + 90000;
         return directoryCache;
       } finally {
@@ -205,8 +190,15 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
     return directoryCache.inflight;
   }
 
-  function sendGzippedJson(req, res, body) {
+  function sendGzippedJson(req, res, body, customEtag = null) {
     try {
+      if (customEtag) {
+        res.setHeader('ETag', customEtag);
+        res.setHeader('Cache-Control', 'private, no-cache');
+        if (req.headers['if-none-match'] === customEtag) {
+          return res.status(304).end();
+        }
+      }
       const acceptEncoding = String(req.headers['accept-encoding'] || '');
       if (acceptEncoding.includes('gzip')) {
         const jsonStr = JSON.stringify(body);
@@ -230,6 +222,15 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
       const req = this.req;
       if (req && req.method !== 'GET' && req.method !== 'OPTIONS') {
         invalidateDirectoryCache();
+      }
+      const existingEtag = this.getHeader('ETag');
+      if (
+        existingEtag &&
+        req?.method === 'GET' &&
+        req?.headers?.['if-none-match'] === existingEtag &&
+        !this.headersSent
+      ) {
+        return this.status(304).end();
       }
       const acceptEncoding = String(req?.headers?.['accept-encoding'] || '');
       if (acceptEncoding.includes('gzip') && !this.headersSent && !this.getHeader('Content-Encoding')) {
@@ -294,8 +295,14 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
     } else if (path === '/api/trending') {
       return originalGet.call(this, path, async (req, res) => {
         try {
+          const expectedEtag = `W/"dir-${directoryVersion}"`;
+          if (req.headers['if-none-match'] === expectedEtag && directoryCache.trending && directoryCache.expiresAt > Date.now()) {
+            res.setHeader('ETag', expectedEtag);
+            res.setHeader('Cache-Control', 'private, no-cache');
+            return res.status(304).end();
+          }
           const data = await ensureDirectoryDataLoaded();
-          return sendGzippedJson(req, res, data.trending);
+          return sendGzippedJson(req, res, data.trending, data.etag);
         } catch (err) {
           console.error('[Fast Trending Error]:', err.message);
           return res.status(500).json({ error: 'Fail' });
@@ -304,8 +311,14 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
     } else if (path === '/api/competitors') {
       return originalGet.call(this, path, async (req, res) => {
         try {
+          const expectedEtag = `W/"dir-${directoryVersion}"`;
+          if (req.headers['if-none-match'] === expectedEtag && directoryCache.competitors && directoryCache.expiresAt > Date.now()) {
+            res.setHeader('ETag', expectedEtag);
+            res.setHeader('Cache-Control', 'private, no-cache');
+            return res.status(304).end();
+          }
           const data = await ensureDirectoryDataLoaded();
-          return sendGzippedJson(req, res, data.competitors);
+          return sendGzippedJson(req, res, data.competitors, data.etag);
         } catch (err) {
           console.error('[Fast Competitors Error]:', err.message);
           return res.status(500).json({ error: 'Fail' });

@@ -115,7 +115,7 @@ function PlayStoreIntelligenceView({
     return fetch(url, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
         "ngrok-skip-browser-warning": "true",
         ...(token ? { "x-atlas-token": token } : {}),
         ...(options.headers || {})
@@ -264,17 +264,16 @@ function PlayStoreIntelligenceView({
     }
   }, []);
 
-  const loadOverview = useCallback(async (options = {}) => {
+  const loadOverview = useCallback(async (_options = {}) => {
     const hasExistingData = overviewLengthRef.current > 0;
     if (hasExistingData) setIsRefreshingOverview(true);
     try {
       const headers = {};
-      const forceFresh = options?.fresh === true;
-      if (!forceFresh && cachedEtagRef.current) {
+      if (cachedEtagRef.current) {
         headers["If-None-Match"] = cachedEtagRef.current;
       }
 
-      const res = await fetcher(`${API_BASE}/api/play/overview${forceFresh ? "?fresh=1" : ""}`, {
+      const res = await fetcher(`${API_BASE}/api/play/overview`, {
         headers
       });
 
@@ -363,58 +362,86 @@ function PlayStoreIntelligenceView({
 
   const lastCompletedPublishersRef = useRef(0);
   const lastCompletedCountriesRef = useRef(0);
+  const lastMidScanRefreshAtRef = useRef(0);
+  const consecutivePollErrorsRef = useRef(0);
 
-  // Adaptive scan status polling: 1.5s while actively scanning, 8s while idle, paused when tab is hidden
+  // Adaptive scan status polling: 1.5s while actively scanning, 20s while idle, paused when tab is hidden
   useEffect(() => {
     let disposed = false;
     let timerId = null;
 
     const checkStatuses = async () => {
       if (disposed) return;
-      if (document.hidden && !scanStatus.running && !countryQueueStatus.running) {
+      if (document.hidden) {
         return;
       }
 
       let isActive = false;
+      let hadError = false;
       try {
         const [scanRes, cqRes] = await Promise.all([
           fetcher(`${API_BASE}/api/play/scan-status`),
           fetcher(`${API_BASE}/api/play/country-queue/status`)
         ]);
+        let refreshedThisTick = false;
         if (scanRes.ok) {
           const st = await scanRes.json();
           if (st.running) isActive = true;
           const completedNow = Number(st.completedPublishers || 0);
-          if (
-            (scanStatus.running && !st.running) ||
-            (st.running && completedNow > lastCompletedPublishersRef.current)
-          ) {
+          const scanJustFinished = scanStatus.running && !st.running;
+          const midScanReady =
+            st.running &&
+            completedNow > lastCompletedPublishersRef.current &&
+            Date.now() - lastMidScanRefreshAtRef.current >= 30000;
+          if (scanJustFinished || midScanReady) {
             lastCompletedPublishersRef.current = completedNow;
-            loadOverview({ fresh: true });
+            lastMidScanRefreshAtRef.current = Date.now();
+            refreshedThisTick = true;
+            loadOverview();
+          } else if (st.running && completedNow > lastCompletedPublishersRef.current) {
+            lastCompletedPublishersRef.current = completedNow;
           } else if (!st.running) {
             lastCompletedPublishersRef.current = 0;
           }
           setScanStatus(st);
+        } else {
+          hadError = true;
         }
         if (cqRes.ok) {
           const cq = await cqRes.json();
           if (cq.running) isActive = true;
           const completedCountriesNow = Number(cq.completedPackages || 0);
-          if (
-            (countryQueueStatus.running && !cq.running) ||
-            (cq.running && completedCountriesNow > lastCompletedCountriesRef.current)
-          ) {
+          const queueJustFinished = countryQueueStatus.running && !cq.running;
+          const midQueueReady =
+            !refreshedThisTick &&
+            cq.running &&
+            completedCountriesNow > lastCompletedCountriesRef.current &&
+            Date.now() - lastMidScanRefreshAtRef.current >= 30000;
+          if (queueJustFinished || midQueueReady) {
             lastCompletedCountriesRef.current = completedCountriesNow;
-            loadOverview({ fresh: true });
+            lastMidScanRefreshAtRef.current = Date.now();
+            loadOverview();
+          } else if (cq.running && completedCountriesNow > lastCompletedCountriesRef.current) {
+            lastCompletedCountriesRef.current = completedCountriesNow;
           } else if (!cq.running) {
             lastCompletedCountriesRef.current = 0;
           }
           setCountryQueueStatus(cq);
+        } else {
+          hadError = true;
         }
-      } catch {}
+        consecutivePollErrorsRef.current = hadError ? consecutivePollErrorsRef.current + 1 : 0;
+      } catch {
+        consecutivePollErrorsRef.current += 1;
+        hadError = true;
+      }
 
-      if (!disposed) {
-        const nextDelay = isActive ? 1500 : 8000;
+      if (!disposed && !document.hidden) {
+        const nextDelay = isActive
+          ? 1500
+          : hadError
+            ? Math.min(60000, 10000 * Math.pow(2, Math.max(0, consecutivePollErrorsRef.current - 1)))
+            : 20000;
         timerId = setTimeout(checkStatuses, nextDelay);
       }
     };
@@ -1319,7 +1346,7 @@ function PlayStoreIntelligenceView({
     }
   };
 
-  // Single Game 1-Click Refresh
+  // Single Game 1-Click Refresh (patches local state & IndexedDB in-place without re-downloading 3,500+ games)
   const handleRefreshSingleGame = async (pkgOrGame, e) => {
     if (e) e.stopPropagation();
     const pkg = typeof pkgOrGame === "string" ? pkgOrGame : pkgOrGame?.package_name;
@@ -1331,9 +1358,39 @@ function PlayStoreIntelligenceView({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        await loadOverview({ fresh: true });
-        if (activeGameDrawer && activeGameDrawer.package_name === pkg && data?.game) {
-          setActiveGameDrawer((prev) => (prev ? { ...prev, ...data.game } : null));
+        if (data?.game) {
+          const freshGame = data.game;
+          setOverview((prev) => {
+            const nextGames = (prev.games || []).map((g) => {
+              if (g.package_name !== pkg) return g;
+              const nextPricing =
+                freshGame.manual_price_status === "PAID" || freshGame.is_paid === true
+                  ? "paid"
+                  : freshGame.manual_price_status === "FREE" || freshGame.price_status === "FREE"
+                    ? "free"
+                    : freshGame.price_status === "PRICE_TBA"
+                      ? "tba"
+                      : g.pricing;
+              return {
+                ...g,
+                ...freshGame,
+                pricing: nextPricing,
+                rating: freshGame.rating != null ? Number(freshGame.rating) : g.rating,
+                review_count: Number(freshGame.ratings_count ?? g.review_count) || 0,
+                real_installs: freshGame.real_installs != null ? Number(freshGame.real_installs) : g.real_installs,
+                min_installs: Number(freshGame.min_installs ?? g.min_installs) || 0,
+                installs_delta_1d: Number(freshGame.installs_delta_1d ?? g.installs_delta_1d) || 0,
+                release_date: freshGame.release_date || g.release_date,
+                is_suspended: Boolean(freshGame.is_suspended) || freshGame.release_status === "SUSPENDED"
+              };
+            });
+            const nextOverview = { ...prev, games: nextGames };
+            void setCachedCatalogue("play_overview", nextOverview, cachedEtagRef.current);
+            return nextOverview;
+          });
+          setActiveGameDrawer((prev) => (prev && prev.package_name === pkg ? { ...prev, ...freshGame } : prev));
+        } else {
+          await loadOverview();
         }
         AtlasFeedback.toast(`Refreshed ${data?.game?.title || pkg}.`, { tone: "success" });
       } else {
@@ -1684,7 +1741,7 @@ function PlayStoreIntelligenceView({
       g.country_scan ? g.country_scan.liveCount : "",
       g.release_date ? String(g.release_date).slice(0, 10) : "",
       g.first_seen_at ? String(g.first_seen_at).slice(0, 10) : "",
-      g.url
+      g.url || `https://play.google.com/store/apps/details?id=${encodeURIComponent(g.package_name)}`
     ]);
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });

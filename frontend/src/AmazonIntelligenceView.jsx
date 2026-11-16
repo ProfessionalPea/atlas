@@ -121,7 +121,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     return fetch(url, {
       ...options,
       headers: {
-        "Content-Type": "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
         "ngrok-skip-browser-warning": "true",
         ...(token ? { "x-atlas-token": token } : {}),
         ...(options.headers || {})
@@ -234,17 +234,16 @@ function AmazonIntelligenceView({ isAdmin = false }) {
     }
   }, []);
 
-  const loadOverview = useCallback(async (options = {}) => {
+  const loadOverview = useCallback(async (_options = {}) => {
     const hasExistingData = overviewLengthRef.current > 0;
     if (hasExistingData) setIsRefreshingOverview(true);
     try {
       const headers = {};
-      const forceFresh = options?.fresh === true;
-      if (!forceFresh && cachedEtagRef.current) {
+      if (cachedEtagRef.current) {
         headers["If-None-Match"] = cachedEtagRef.current;
       }
 
-      const res = await fetcher(`${API_BASE}/api/amazon/overview${forceFresh ? "?fresh=1" : ""}`, {
+      const res = await fetcher(`${API_BASE}/api/amazon/overview`, {
         headers
       });
 
@@ -322,38 +321,57 @@ function AmazonIntelligenceView({ isAdmin = false }) {
   }, [loadOverview]);
 
   const lastCompletedPublishersRef = useRef(0);
+  const lastMidScanRefreshAtRef = useRef(0);
+  const consecutivePollErrorsRef = useRef(0);
 
-  // Adaptive scan status polling: 1.5s while actively scanning, 8s while idle, paused when tab is hidden
+  // Adaptive scan status polling: 1.5s while actively scanning, 20s while idle, paused when tab is hidden
   useEffect(() => {
     let disposed = false;
     let timerId = null;
 
     const checkStatus = async () => {
       if (disposed) return;
-      if (document.hidden && !scanStatus.running) return;
+      if (document.hidden) return;
 
       let isActive = false;
+      let hadError = false;
       try {
         const res = await fetcher(`${API_BASE}/api/amazon/scan-status`);
         if (res.ok) {
           const st = await res.json();
           if (st.running) isActive = true;
           const completedNow = Number(st.completedPublishers || 0);
-          if (
-            (scanStatus.running && !st.running) ||
-            (st.running && completedNow > lastCompletedPublishersRef.current)
-          ) {
+          const scanJustFinished = scanStatus.running && !st.running;
+          const midScanReady =
+            st.running &&
+            completedNow > lastCompletedPublishersRef.current &&
+            Date.now() - lastMidScanRefreshAtRef.current >= 30000;
+          if (scanJustFinished || midScanReady) {
             lastCompletedPublishersRef.current = completedNow;
-            loadOverview({ fresh: true });
+            lastMidScanRefreshAtRef.current = Date.now();
+            loadOverview();
+          } else if (st.running && completedNow > lastCompletedPublishersRef.current) {
+            lastCompletedPublishersRef.current = completedNow;
           } else if (!st.running) {
             lastCompletedPublishersRef.current = 0;
           }
           setScanStatus(st);
+          consecutivePollErrorsRef.current = 0;
+        } else {
+          hadError = true;
+          consecutivePollErrorsRef.current += 1;
         }
-      } catch {}
+      } catch {
+        hadError = true;
+        consecutivePollErrorsRef.current += 1;
+      }
 
-      if (!disposed) {
-        const nextDelay = isActive ? 1500 : 8000;
+      if (!disposed && !document.hidden) {
+        const nextDelay = isActive
+          ? 1500
+          : hadError
+            ? Math.min(60000, 10000 * Math.pow(2, Math.max(0, consecutivePollErrorsRef.current - 1)))
+            : 20000;
         timerId = setTimeout(checkStatus, nextDelay);
       }
     };
@@ -1271,7 +1289,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       g.review_count ?? 0,
       g.release_date ? String(g.release_date).slice(0, 10) : "",
       g.first_seen_at ? String(g.first_seen_at).slice(0, 10) : "",
-      g.url
+      g.url || `https://www.amazon.com/dp/${encodeURIComponent(g.asin)}`
     ]);
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -3067,7 +3085,10 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               </div>
 
               <a
-                href={activeGameDrawer.url}
+                href={
+                  activeGameDrawer.url ||
+                  `https://www.amazon.com/dp/${encodeURIComponent(activeGameDrawer.asin)}`
+                }
                 target="_blank"
                 rel="noreferrer"
                 className="w-full py-2.5 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-2"

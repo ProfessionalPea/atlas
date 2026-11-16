@@ -11,7 +11,7 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
       "ngrok-skip-browser-warning": "69420",
       ...(token ? { "x-atlas-token": token } : {}),
       ...options.headers

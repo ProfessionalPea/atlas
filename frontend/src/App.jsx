@@ -103,19 +103,28 @@ function parseInstalls(installStr) {
   return parseInt(installStr.replace(/[^0-9]/g, '')) || 0;
 }
 
-// Every API request supplies the session auth token
+const responseEtagCache = new Map();
+
 // Every API request supplies the session auth token
 async function fetchJson(url, options = {}) {
   const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  const method = String(options.method || "GET").toUpperCase();
+  const isGet = method === "GET" && !options.body;
+  const cachedEtagEntry = isGet ? responseEtagCache.get(url) : null;
 
   const headers = {
-    "Content-Type": "application/json",
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
     "ngrok-skip-browser-warning": "true",
     ...(token ? { "x-atlas-token": token } : {}),
+    ...(cachedEtagEntry?.etag ? { "If-None-Match": cachedEtagEntry.etag } : {}),
     ...options.headers,
   };
 
   const response = await fetch(url, { ...options, headers });
+
+  if (response.status === 304 && cachedEtagEntry) {
+    return cachedEtagEntry.data;
+  }
 
   if (response.status === 401) {
     localStorage.removeItem(AUTH_TOKEN_KEY);
@@ -128,6 +137,14 @@ async function fetchJson(url, options = {}) {
   let data;
   try { data = text ? JSON.parse(text) : null; } catch { throw new Error("Invalid server response."); }
   if (!response.ok) throw new Error(data?.error || `Error ${response.status}`);
+  if (isGet) {
+    const respEtag = response.headers.get("ETag");
+    if (respEtag) {
+      responseEtagCache.set(url, { etag: respEtag, data });
+    }
+  } else {
+    responseEtagCache.clear();
+  }
   return data;
 }
 
@@ -764,11 +781,28 @@ function App() {
         const val = Array.isArray(data) ? data : [];
         setCompetitorTree(val);
         freshData.competitorTree = val;
-      }),
-      fetchJson(`${API_BASE}/api/trending`).then(data => {
-        const val = Array.isArray(data) ? data : [];
-        setTrending(val);
-        freshData.trending = val;
+
+        const seenGames = new Map();
+        for (const comp of val) {
+          for (const acc of comp.accounts || []) {
+            for (const g of acc.games || []) {
+              const key = g.id || g.package_name;
+              if (!seenGames.has(key)) {
+                seenGames.set(key, {
+                  ...g,
+                  publisher_name: g.publisher_name || acc.publisher_name,
+                  competitor_id: g.competitor_id ?? comp.id,
+                  competitor_name: g.competitor_name || comp.name
+                });
+              }
+            }
+          }
+        }
+        const derivedTrending = [...seenGames.values()].sort(
+          (a, b) => (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0)
+        );
+        setTrending(derivedTrending);
+        freshData.trending = derivedTrending;
       }),
       fetchJson(`${API_BASE}/api/lists`).then(data => {
         const val = Array.isArray(data) ? data : [];
@@ -830,15 +864,9 @@ function App() {
     }
   }, [authToken, currentUser]);
 
-  useEffect(() => { 
+  useEffect(() => {
     if (authToken && currentUser) {
-      loadAllData(); 
-      const heartbeat = setInterval(async () => {
-        if (document.hidden) return;
-        try { await fetchJson(`${API_BASE}/api/health`); setIsNodeOnline(true); } 
-        catch { setIsNodeOnline(false); }
-      }, 30000);
-      return () => clearInterval(heartbeat);
+      loadAllData();
     }
   }, [authToken, currentUser, loadAllData]);
 
@@ -972,49 +1000,63 @@ function App() {
     isScanningRef.current = isScanning;
   }, [isScanning]);
 
-  // Adaptive scan polling: 1.5s while scanning, 8s while idle, paused when tab is hidden
+  // Adaptive scan polling: 1.5s while scanning, 20s while idle, paused when tab is hidden, backoff on offline/502
   useEffect(() => {
     if (!authToken || !currentUser) return;
 
     let disposed = false;
     let requestInFlight = false;
     let timerId = null;
+    let consecutiveErrors = 0;
 
     const pollScanStatus = async () => {
       if (disposed) return;
       if (document.hidden && !isScanningRef.current && !scanLaunchPendingRef.current) {
-        timerId = window.setTimeout(pollScanStatus, 8000);
         return;
       }
       if (requestInFlight) return;
       requestInFlight = true;
 
-      let nextInterval = isScanningRef.current || scanLaunchPendingRef.current ? 1500 : 8000;
+      let nextInterval = isScanningRef.current || scanLaunchPendingRef.current ? 1500 : 20000;
 
       try {
         const status = await fetchJson(`${API_BASE}/api/scan-status`);
         if (!disposed) {
+          consecutiveErrors = 0;
+          setIsNodeOnline(true);
           applyScanStatusRef.current(status);
           const active = status?.running || ["starting", "running", "cancelling"].includes(status?.state);
-          nextInterval = active || scanLaunchPendingRef.current ? 1500 : 8000;
+          nextInterval = active || scanLaunchPendingRef.current ? 1500 : 20000;
         }
       } catch (err) {
+        consecutiveErrors += 1;
+        setIsNodeOnline(false);
+        nextInterval = Math.min(60000, 15000 * Math.pow(2, Math.max(0, consecutiveErrors - 1)));
         if (!disposed && err?.message && !err.message.includes("Unauthorized")) {
           console.warn("Scan status poll failed:", err.message);
         }
       } finally {
         requestInFlight = false;
-        if (!disposed) {
+        if (!disposed && !(document.hidden && !isScanningRef.current && !scanLaunchPendingRef.current)) {
           timerId = window.setTimeout(pollScanStatus, nextInterval);
         }
       }
     };
+
+    const handleVisibility = () => {
+      if (!document.hidden && !disposed) {
+        if (timerId) window.clearTimeout(timerId);
+        void pollScanStatus();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
 
     void pollScanStatus();
 
     return () => {
       disposed = true;
       if (timerId) window.clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [authToken, currentUser]);
 

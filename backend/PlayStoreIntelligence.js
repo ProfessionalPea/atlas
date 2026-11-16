@@ -1822,7 +1822,9 @@ async function processCountryBatchLoop(pool) {
           countryBatchQueue.currentCountryCode = p.currentCountry || null;
         });
         countryBatchQueue.completedPackages += 1;
-        invalidatePlayOverviewCache();
+        if (countryBatchQueue.completedPackages % 10 === 0) {
+          invalidatePlayOverviewCache();
+        }
         countryBatchQueue.log = `> ✔ [${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title}: Live in ${res.counts.live}/${COUNTRY_CODES.length} countries.`;
       } catch (err) {
         countryBatchQueue.completedPackages += 1;
@@ -1840,11 +1842,13 @@ async function processCountryBatchLoop(pool) {
     countryBatchQueue.currentAppTitle = null;
     countryBatchQueue.state = 'complete';
     countryBatchQueue.finishedAt = new Date().toISOString();
+    invalidatePlayOverviewCache();
     countryBatchQueue.log = `> 🎉 Batch country scan complete! Scanned ${countryBatchQueue.completedPackages} games (${countryBatchQueue.skippedPackages} skipped as fresh, ${countryBatchQueue.failedPackages.length} failed).`;
   } catch (err) {
     countryBatchQueue.running = false;
     countryBatchQueue.state = 'error';
     countryBatchQueue.finishedAt = new Date().toISOString();
+    invalidatePlayOverviewCache();
     countryBatchQueue.log = `> ❌ Batch country scan error: ${err.message}`;
   }
 }
@@ -1935,8 +1939,6 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.min_installs,
             g.real_installs,
             g.installs_delta_1d,
-            g.installs_avg_daily_7d,
-            g.installs_total_7d,
             g.released,
             g.release_date::text AS release_date,
             g.updated,
@@ -1946,35 +1948,19 @@ function registerPlayStoreRoutes({ app, pool }) {
             g.price_text,
             g.ad_count,
             g.card_status,
-            g.card_presentation_code,
-            g.card_status_source,
-            g.card_status_evidence,
-            g.card_closed_at,
-            g.card_opened_at,
-            g.card_status_changed_at,
-            g.card_scanned_at,
-            g.ad_networks,
             g.developer_id,
-            g.developer_url,
             g.developer_name,
             g.first_seen_at,
             g.last_seen_at,
-            g.store_scanned_at,
-            g.installs_scanned_at,
-            g.discovery_source,
             COALESCE(g.campaign_active, false) AS campaign_active,
-            g.first_campaign_seen_at,
-            g.last_campaign_seen_at,
             g.campaign_source,
             g.release_status,
             g.price_status,
-            g.price_source,
             g.monetization_hint,
             g.monetization_hint_evidence,
             g.manual_price_status,
             g.manual_price_note,
             g.manual_price_by,
-            g.manual_price_at,
             COALESCE(g.is_suspended, false) AS is_suspended,
             g.suspended_at
           FROM account_games ag
@@ -2075,30 +2061,18 @@ function registerPlayStoreRoutes({ app, pool }) {
           : (g.release_status || (countrySummary?.preRegisterCount > 0 && countrySummary?.liveCount === 0 ? 'PRE_REGISTERED' : 'LIVE'));
         const pubEntry = pubById.get(g.publisher_id);
         const compNames = pubEntry?.competitor_names || [];
-        return {
+        const item = {
           ...g,
           is_suspended: isSuspended,
           card_status: normalizeCardStatusValue(g.card_status),
-          competitor_names: compNames,
           competitor_name: compNames[0] || null,
-          has_competitor_conflict: compNames.length > 1,
-          conflict_competitor_names: compNames.length > 1 ? compNames : [],
           has_campaign: isSuspended ? false : (Boolean(g.campaign_active) || Number(g.ad_count) > 0),
           campaign_active: isSuspended ? false : Boolean(g.campaign_active),
           campaign_source: isSuspended ? null : (g.campaign_source || (Number(g.ad_count) > 0 ? 'transparency_center' : null)),
-          first_campaign_seen_at: g.first_campaign_seen_at || null,
-          last_campaign_seen_at: g.last_campaign_seen_at || null,
           pricing: effective.pricing, // 'paid' | 'free' | 'tba' | 'unknown'
-          effective_price_status: effective.effective_price_status,
           is_manual_price: effective.is_manual,
           release_status: relStatus,
           price_status: g.price_status || (effective.pricing === 'paid' ? 'PAID' : effective.pricing === 'free' ? 'FREE' : 'UNKNOWN'),
-          monetization_hint: g.monetization_hint || 'NONE',
-          monetization_hint_evidence: g.monetization_hint_evidence || null,
-          manual_price_status: g.manual_price_status || null,
-          manual_price_note: g.manual_price_note || null,
-          manual_price_by: g.manual_price_by || null,
-          manual_price_at: g.manual_price_at || null,
           price: g.price != null ? Number(g.price) : null,
           rating: g.rating != null ? Number(g.rating) : null,
           review_count: Number(g.ratings_count) || 0,
@@ -2106,11 +2080,28 @@ function registerPlayStoreRoutes({ app, pool }) {
           min_installs: Number(g.min_installs) || 0,
           installs_delta_1d: Number(g.installs_delta_1d) || 0,
           release_date: parsedRel,
-          url: `https://play.google.com/store/apps/details?id=${encodeURIComponent(g.package_name)}`,
-          country_scan: countrySummary,
-          shared_publisher_count: sharedPubs.length,
-          shared_publishers: sharedPubs
+          country_scan: countrySummary
         };
+
+        if (compNames.length > 1) {
+          item.competitor_names = compNames;
+          item.has_competitor_conflict = true;
+        }
+        if (sharedPubs.length > 1) {
+          item.shared_publisher_count = sharedPubs.length;
+          item.shared_publishers = sharedPubs;
+        }
+        if (!effective.is_manual && !g.manual_price_status) {
+          delete item.manual_price_status;
+          delete item.manual_price_note;
+          delete item.manual_price_by;
+        }
+        if (!g.monetization_hint || g.monetization_hint === 'NONE') {
+          delete item.monetization_hint;
+          delete item.monetization_hint_evidence;
+        }
+
+        return item;
       });
 
       const lists = [...listsById.values()].map((l) => {
@@ -2707,9 +2698,12 @@ function registerPlayStoreRoutes({ app, pool }) {
             failedLinks: [...failedLinks],
             log: `> ${result.status === 'complete' ? '✔' : '⚠'} [${doneCount}/${validTargets.length}] ${result.publisher}: ${gamesCount} games (${newCount} newly discovered).`
           };
-          invalidatePlayOverviewCache();
+          if (doneCount % 10 === 0) {
+            invalidatePlayOverviewCache();
+          }
         }
 
+        invalidatePlayOverviewCache();
         if (activePlayScanCancelled) {
           playScanStatus = {
             ...playScanStatus,
@@ -2738,6 +2732,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         }
       } catch (err) {
         console.error('[Play Batch Scan Error]:', err);
+        invalidatePlayOverviewCache();
         playScanStatus = {
           ...playScanStatus,
           running: false,

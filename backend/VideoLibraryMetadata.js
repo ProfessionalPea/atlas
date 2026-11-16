@@ -1,12 +1,14 @@
 let videoMetadataInitPromise = null;
 
 // Short-lived in-memory caches to eliminate repetitive remote Supabase round-trips
-const VIDEO_ASSETS_CACHE_TTL_MS = 15000;
+const VIDEO_ASSETS_CACHE_TTL_MS = 90000;
 const PACKAGE_OPTIONS_CACHE_TTL_MS = 30000;
 const videoAssetsCache = new Map(); // key: packageName || '__ALL__' -> { expiresAt, data }
 const packageOptionsCache = new Map(); // key: normalized query -> { expiresAt, data }
+let videoAssetsVersion = Date.now();
 
 function invalidateVideoMetadataCaches() {
+  videoAssetsVersion = Date.now();
   videoAssetsCache.clear();
   packageOptionsCache.clear();
 }
@@ -206,7 +208,7 @@ function buildVideoAssetDisplayFields(item, manualGameMap = new Map()) {
       : hasManualMetadata
         ? 'manually_organized'
         : 'unassigned',
-    manualGames,
+    automaticGames: automaticGame ? [{ title: automaticGame.title || automaticGame.packageName, packageName: automaticGame.packageName }] : [],
     games: displayGames
   };
 }
@@ -312,6 +314,7 @@ function registerVideoMetadataRoutes({ app, pool }) {
         }
       }
 
+      videoAssetsVersion = Date.now();
       for (const [cacheKey, entry] of videoAssetsCache.entries()) {
         if (!entry || !Array.isArray(entry.data)) continue;
         if (cacheKey !== '__ALL__') {
@@ -356,9 +359,15 @@ function registerVideoMetadataRoutes({ app, pool }) {
       const cacheKey = packageName ? packageName.toLowerCase() : '__ALL__';
       const forceRefresh = req.query.refresh === '1' || req.query.force === 'true';
 
+      const currentEtag = `W/"videos-${cacheKey}-${videoAssetsVersion}"`;
+      res.set('ETag', currentEtag);
+      res.set('Cache-Control', 'private, no-cache');
+      if (!forceRefresh && req.get('if-none-match') === currentEtag) {
+        return res.status(304).end();
+      }
+
       const cached = !forceRefresh ? videoAssetsCache.get(cacheKey) : null;
       if (cached && cached.expiresAt > Date.now()) {
-        res.set('Cache-Control', 'no-store');
         return res.json(cached.data);
       }
 
@@ -396,10 +405,6 @@ function registerVideoMetadataRoutes({ app, pool }) {
           SELECT
             al.asset_id,
             COUNT(DISTINCT al.creative_id)::int AS ad_count,
-            ARRAY_AGG(DISTINCT al.creative_id ORDER BY al.creative_id)
-              FILTER (WHERE al.creative_id IS NOT NULL) AS creative_ids,
-            ARRAY_AGG(DISTINCT al.creative_url)
-              FILTER (WHERE al.creative_url IS NOT NULL) AS creative_urls,
             COUNT(DISTINCT al.frame_package)::int AS strict_package_count
           FROM asset_links al
           GROUP BY al.asset_id
@@ -456,8 +461,6 @@ function registerVideoMetadataRoutes({ app, pool }) {
           resolution.strict_package_count,
           resolution.resolved_package,
           stats.ad_count,
-          stats.creative_ids,
-          stats.creative_urls,
           CASE
             WHEN resolution.linked_package_count = 1 THEN
               JSONB_BUILD_ARRAY(JSONB_BUILD_OBJECT(
@@ -582,8 +585,6 @@ function registerVideoMetadataRoutes({ app, pool }) {
           firstSeenAt: row.first_seen_at,
           lastSeenAt: row.last_seen_at,
           adCount: Number(row.ad_count) || 0,
-          creativeIds: Array.isArray(row.creative_ids) ? row.creative_ids : [],
-          creativeUrls: Array.isArray(row.creative_urls) ? row.creative_urls.filter(Boolean) : [],
           linkedPackageCount,
           associationState,
           associationSource: linkedPackageCount === 1
@@ -602,7 +603,6 @@ function registerVideoMetadataRoutes({ app, pool }) {
         data: result
       });
 
-      res.set('Cache-Control', 'no-store');
       return res.json(result);
     } catch (error) {
       console.error('Video library metadata fetch failed:', error);
