@@ -21,6 +21,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 require("./AtlasExtensions");
+const { invalidatePlayOverviewCache } = require("./PlayStoreIntelligence");
 const cors = require("cors");
 const crypto = require("crypto");
 
@@ -1124,6 +1125,7 @@ app.post("/api/country-scans", async (req, res) => {
           completedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
+        invalidatePlayOverviewCache();
       } catch (error) {
         console.error("Country availability scan failed:", error);
         try {
@@ -1142,6 +1144,7 @@ app.post("/api/country-scans", async (req, res) => {
           error: String(error?.message || error),
           updatedAt: new Date().toISOString()
         };
+        invalidatePlayOverviewCache();
       }
     })();
   } catch (error) {
@@ -2292,6 +2295,7 @@ app.post("/api/scan", async (req, res) => {
           ? `> 🎉 Ingest complete. Synchronized ${totalPackages} unique games (${allResults.length} total creative hits).`
           : `> ℹ️ Scan finished. No mobile game ad campaigns found for this target.`
       });
+      invalidatePlayOverviewCache();
 
     } catch (error) {
       console.error("Scan Execution Error:", error);
@@ -2305,6 +2309,7 @@ app.post("/api/scan", async (req, res) => {
         finishedAt: new Date().toISOString(),
         log: `> ❌ Scan failed: ${error.message}`
       });
+      invalidatePlayOverviewCache();
     }
   })();
 });

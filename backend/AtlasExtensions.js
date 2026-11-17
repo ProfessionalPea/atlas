@@ -21,7 +21,8 @@ const {
 } = require('./ScanDiscoveryRegistry');
 const {
   initializePlayTelemetryStorage,
-  registerPlayTelemetryRoutes
+  registerPlayTelemetryRoutes,
+  registerTelemetryCacheInvalidator
 } = require('./PlayStoreTelemetry');
 const {
   initializeAmazonStorage,
@@ -30,7 +31,9 @@ const {
 const {
   initializePlayStoreStorage,
   registerPlayStoreRoutes,
-  syncLegacyAccountsAndCompetitors
+  syncLegacyAccountsAndCompetitors,
+  invalidatePlayOverviewCache,
+  registerPlayCacheInvalidator
 } = require('./PlayStoreIntelligence');
 const {
   initializeCompetitorGroupsStorage,
@@ -64,14 +67,25 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
     inflight: null
   };
 
-  function invalidateDirectoryCache() {
+  function invalidateDirectoryCache(options = {}) {
     directoryVersion = Date.now();
     directoryCache.stats = null;
     directoryCache.trending = null;
     directoryCache.competitors = null;
     directoryCache.etag = null;
     directoryCache.expiresAt = 0;
+    if (options?.cascade !== false && typeof invalidatePlayOverviewCache === 'function') {
+      invalidatePlayOverviewCache({ cascade: false });
+    }
   }
+
+  if (typeof registerPlayCacheInvalidator === 'function') {
+    registerPlayCacheInvalidator(() => invalidateDirectoryCache({ cascade: false }));
+  }
+  if (typeof registerTelemetryCacheInvalidator === 'function') {
+    registerTelemetryCacheInvalidator(() => invalidateDirectoryCache());
+  }
+  express.application[Symbol.for('atlas.invalidateDirectoryCache')] = invalidateDirectoryCache;
 
   async function ensureDirectoryDataLoaded() {
     if (directoryCache.trending && directoryCache.competitors && directoryCache.expiresAt > Date.now()) {
@@ -158,19 +172,47 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
           }
         }
 
+        const compIdSet = new Set(competitors.map(c => c.id));
         const accountsByCompetitor = {};
+        const unassignedAccounts = [];
         for (const acc of accounts) {
-          if (!accountsByCompetitor[acc.competitor_id]) accountsByCompetitor[acc.competitor_id] = [];
-          accountsByCompetitor[acc.competitor_id].push({
+          const enrichedAcc = {
             ...acc,
             games: gamesByAccount[acc.id] || []
-          });
+          };
+          if (acc.competitor_id && compIdSet.has(acc.competitor_id)) {
+            if (!accountsByCompetitor[acc.competitor_id]) accountsByCompetitor[acc.competitor_id] = [];
+            accountsByCompetitor[acc.competitor_id].push(enrichedAcc);
+          } else {
+            unassignedAccounts.push(enrichedAcc);
+          }
         }
 
         const tree = competitors.map(comp => ({
           ...comp,
           accounts: accountsByCompetitor[comp.id] || []
         }));
+
+        const unlinkedGames = gameRows.filter(g => !g.account_id);
+        if (unassignedAccounts.length > 0 || unlinkedGames.length > 0) {
+          tree.push({
+            id: 0,
+            name: 'Direct / Unassigned Publishers',
+            is_unassigned: true,
+            accounts: [
+              ...unassignedAccounts,
+              ...(unlinkedGames.length > 0
+                ? [{
+                    id: 0,
+                    competitor_id: 0,
+                    publisher_name: 'Unlinked Games',
+                    is_unassigned: true,
+                    games: unlinkedGames
+                  }]
+                : [])
+            ]
+          });
+        }
 
         directoryCache.stats = {
           competitors: competitors.length,
@@ -389,6 +431,12 @@ express.application.listen = function atlasExtensionListen(...args) {
 
 void initialize();
 
+function invalidateDirectoryCache(options = {}) {
+  const fn = express.application[Symbol.for('atlas.invalidateDirectoryCache')];
+  if (typeof fn === 'function') fn(options);
+}
+
 module.exports = {
-  extensionPool
+  extensionPool,
+  invalidateDirectoryCache
 };

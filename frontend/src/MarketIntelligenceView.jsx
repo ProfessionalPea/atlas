@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "./apiConfig.js";
 import AtlasFeedback from "./AtlasFeedback.jsx";
-import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
+import { getCachedCatalogue, getMemoryCatalogue, markCatalogueValidated, setCachedCatalogue } from "./lib/atlasCache.js";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
 
 const AUTH_TOKEN_KEY = "atlas_auth_token";
@@ -36,8 +36,11 @@ function formatCompactNumber(num) {
 }
 
 export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCountryScan = null }) {
-  const [playData, setPlayData] = useState({ publishers: [], games: [], lists: [], competitorGroups: [] });
-  const [loading, setLoading] = useState(true);
+  const initialMemCache = getMemoryCatalogue("play_overview");
+  const [playData, setPlayData] = useState(
+    () => initialMemCache?.data || { publishers: [], games: [], lists: [], competitorGroups: [] }
+  );
+  const [loading, setLoading] = useState(() => !initialMemCache?.data);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingPkg, setRefreshingPkg] = useState(null);
   const [search, setSearch] = useState("");
@@ -46,7 +49,8 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
   const [sortBy, setSortBy] = useState("installs");
   const [visibleCount, setVisibleCount] = useState(100);
   const [activeGameDrawer, setActiveGameDrawer] = useState(null);
-  const hasHydratedRef = useRef(false);
+  const hasHydratedRef = useRef(Boolean(initialMemCache?.data));
+  const cachedEtagRef = useRef(initialMemCache?.etag || null);
 
   useEffect(() => {
     setVisibleCount(100);
@@ -57,11 +61,31 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
     if (keepVisible) setIsRefreshing(true);
     else setLoading(true);
     try {
-      const res = await fetchJson(`${API_BASE}/api/play/overview${fresh ? "?fresh=1" : ""}`);
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      const response = await fetch(`${API_BASE}/api/play/overview${fresh ? "?fresh=1" : ""}`, {
+        headers: {
+          "ngrok-skip-browser-warning": "69420",
+          ...(token ? { "x-atlas-token": token } : {}),
+          ...(!fresh && cachedEtagRef.current ? { "If-None-Match": cachedEtagRef.current } : {})
+        }
+      });
+      if (response.status === 304) {
+        markCatalogueValidated("play_overview");
+        return;
+      }
+      if (!response.ok) {
+        const text = await response.text();
+        let msg = `HTTP ${response.status}`;
+        try { msg = JSON.parse(text)?.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      const nextEtag = response.headers.get("ETag") || cachedEtagRef.current || null;
+      const res = await response.json();
       if (res) {
         hasHydratedRef.current = true;
+        cachedEtagRef.current = nextEtag;
         setPlayData(res);
-        void setCachedCatalogue("play_overview", res);
+        void setCachedCatalogue("play_overview", res, nextEtag);
       }
     } catch (err) {
       console.error("Market Intelligence fetch error:", err);
@@ -76,14 +100,28 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
 
   useEffect(() => {
     let mounted = true;
-    getCachedCatalogue("play_overview").then((cached) => {
+    (async () => {
+      const mem = getMemoryCatalogue("play_overview");
+      if (mem?.data) {
+        if (!mounted) return;
+        hasHydratedRef.current = true;
+        cachedEtagRef.current = mem.etag || cachedEtagRef.current;
+        if (Date.now() - (mem.lastValidatedAt || 0) >= 15000) {
+          void loadData();
+        }
+        return;
+      }
+      const cached = await getCachedCatalogue("play_overview");
       if (mounted && cached?.data) {
         hasHydratedRef.current = true;
+        cachedEtagRef.current = cached.etag || null;
         setPlayData(cached.data);
         setLoading(false);
       }
-    });
-    void loadData();
+      if (mounted) {
+        void loadData();
+      }
+    })();
     return () => {
       mounted = false;
     };
@@ -155,7 +193,7 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
   }, [filteredGames]);
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full px-2 sm:px-4 py-4">
+    <div className="atlas-page-enter flex flex-col gap-6 max-w-7xl mx-auto w-full px-2 sm:px-4 py-4">
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -230,23 +268,23 @@ export default memo(function MarketIntelligenceView({ isAdmin = false, onOpenCou
       )}
 
       {/* METRICS ROW */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
+      <div className="atlas-stagger-grid grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="atlas-interactive-card atlas-card-rise p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
           <div className="text-xs text-text-muted font-medium">Unique Titles</div>
           <div className="text-2xl font-bold text-text-main mt-1">{filteredGames.length.toLocaleString()}</div>
           <div className="text-[10px] text-text-muted mt-0.5">Across tracked publishers</div>
         </div>
-        <div className="p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
+        <div className="atlas-interactive-card atlas-card-rise p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
           <div className="text-xs text-text-muted font-medium">Verified Installs</div>
           <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-400 mt-1">{formatCompactNumber(totalInstalls)}</div>
           <div className="text-[10px] text-text-muted mt-0.5">Total market reach</div>
         </div>
-        <div className="p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
+        <div className="atlas-interactive-card atlas-card-rise p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
           <div className="text-xs text-text-muted font-medium">Daily Velocity</div>
           <div className="text-2xl font-bold text-electric-blue mt-1">+{formatCompactNumber(totalVelocity)}/d</div>
           <div className="text-[10px] text-text-muted mt-0.5">Daily install movement</div>
         </div>
-        <div className="p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
+        <div className="atlas-interactive-card atlas-card-rise p-4 rounded-2xl bg-surface-solid border border-border-subtle shadow-sm">
           <div className="text-xs text-text-muted font-medium">Tracked Publishers</div>
           <div className="text-2xl font-bold text-text-main mt-1">
             {activeGroup ? (activeGroup.account_count || 0) : (playData.publishers?.length || 0)}

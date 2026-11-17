@@ -1,7 +1,31 @@
-// Lightweight, zero-dependency IndexedDB + BroadcastChannel caching layer
+// Lightweight, zero-dependency L1 memory + IndexedDB + BroadcastChannel caching layer
 const DB_NAME = "atlas_intelligence_cache";
 const DB_VERSION = 1;
 const STORE_NAME = "catalogues";
+
+const memoryCatalogueCache = new Map();
+const viewUiStateCache = new Map();
+
+export function getMemoryCatalogue(key) {
+  return memoryCatalogueCache.get(key) || null;
+}
+
+export function markCatalogueValidated(key) {
+  const existing = memoryCatalogueCache.get(key);
+  if (existing) {
+    existing.lastValidatedAt = Date.now();
+  }
+}
+
+export function getViewUiState(key, defaults = {}) {
+  const saved = viewUiStateCache.get(key);
+  return saved ? { ...defaults, ...saved } : { ...defaults };
+}
+
+export function setViewUiState(key, partial) {
+  const prev = viewUiStateCache.get(key) || {};
+  viewUiStateCache.set(key, { ...prev, ...partial });
+}
 
 let dbPromise = null;
 
@@ -33,6 +57,8 @@ function getDB() {
 }
 
 export async function getCachedCatalogue(key) {
+  const mem = memoryCatalogueCache.get(key);
+  if (mem) return mem;
   try {
     const db = await getDB();
     if (!db) return null;
@@ -40,7 +66,13 @@ export async function getCachedCatalogue(key) {
       const tx = db.transaction(STORE_NAME, "readonly");
       const store = tx.objectStore(STORE_NAME);
       const req = store.get(key);
-      req.onsuccess = () => resolve(req.result || null);
+      req.onsuccess = () => {
+        const res = req.result || null;
+        if (res && !memoryCatalogueCache.has(key)) {
+          memoryCatalogueCache.set(key, { ...res, lastValidatedAt: 0 });
+        }
+        resolve(res);
+      };
       req.onerror = () => resolve(null);
     });
   } catch (err) {
@@ -50,13 +82,21 @@ export async function getCachedCatalogue(key) {
 }
 
 export async function setCachedCatalogue(key, data, etag) {
+  const entry = {
+    key,
+    data,
+    etag: etag ?? memoryCatalogueCache.get(key)?.etag ?? null,
+    updatedAt: Date.now(),
+    lastValidatedAt: Date.now()
+  };
+  memoryCatalogueCache.set(key, entry);
   try {
     const db = await getDB();
     if (!db) return false;
     return new Promise((resolve) => {
       const tx = db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
-      const req = store.put({ key, data, etag, updatedAt: Date.now() });
+      const req = store.put({ key, data, etag: entry.etag, updatedAt: entry.updatedAt });
       req.onsuccess = () => resolve(true);
       req.onerror = () => resolve(false);
     });

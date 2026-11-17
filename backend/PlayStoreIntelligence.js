@@ -197,6 +197,25 @@ function doesAppMatchPublisher(appItem, { queriedDevId, targetPublisher, existin
  */
 async function linkGameToCanonicalPublisher(pool, { publisherId, gameId, packageName, reason = 'publisher_scan' }) {
   if (!publisherId || !gameId) return;
+
+  // Ensure a matching `accounts` row exists for `publisherId` so `account_games_account_id_fkey` is always satisfied.
+  await pool.query(
+    `INSERT INTO accounts (id, competitor_id, publisher_name, normalized_name)
+     SELECT p.id,
+            (SELECT pl.competitor_id
+             FROM play_list_publishers plp
+             JOIN play_lists pl ON pl.id = plp.list_id
+             WHERE plp.publisher_id = p.id AND pl.competitor_id IS NOT NULL
+             ORDER BY pl.id ASC LIMIT 1),
+            p.publisher_name,
+            LOWER(REGEXP_REPLACE(p.publisher_name, '[^a-zA-Z0-9]', '', 'g'))
+     FROM play_publishers p
+     WHERE p.id = $1
+       AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.id)
+     ON CONFLICT (id) DO NOTHING`,
+    [publisherId]
+  );
+
   const existingLinks = await pool.query(
     `SELECT account_id FROM account_games WHERE game_id = $1`,
     [gameId]
@@ -625,16 +644,20 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
     validated.normalizedUrl ||
     `https://play.google.com/store/apps/developer?id=${encodeURIComponent(pubName).replace(/%20/g, '+')}`;
 
-  // Look up existing publisher record
+  // Lookup existing publisher record
   const existingPubRes = await pool.query(
     `SELECT * FROM play_publishers WHERE normalized_name = $1 OR normalized_name = $2 ORDER BY id ASC LIMIT 1`,
     [normKey, validated.normalizedKey]
   );
   let pubRecord = existingPubRes.rows[0] || null;
 
-  // If 0 apps returned and an error occurred, preserve existing data without overwriting counts
-  if (rawApps.length === 0 && !devResult.anySucceeded) {
-    const errDetail = devResult.lastError?.message || 'Google Play developer page returned 0 apps or 404';
+  const errDetail = devResult.lastError?.message || 'Google Play developer page returned 0 apps or 404';
+  const isNotFound404 = /404|not found/i.test(String(errDetail));
+
+  // If 0 apps returned and a transient error occurred (network/rate-limit/timeout), preserve existing data and mark error.
+  // If Google Play returned a confirmed 404 on an existing publisher, continue below so linked games are checked for suspension.
+  if (rawApps.length === 0 && !devResult.anySucceeded && (!isNotFound404 || !pubRecord)) {
+    const nonError404 = isNotFound404 && !pubRecord;
     if (pubRecord) {
       await pool.query(
         `UPDATE play_publishers
@@ -662,12 +685,17 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       publisherId: pubRecord?.id || null,
       publisher: pubRecord?.publisher_name || pubName,
       sourceUrl,
-      status: 'error',
-      statusDetail: errDetail,
+      status: nonError404 ? 'warning' : 'error',
+      statusDetail: nonError404 ? 'Developer page not found on Google Play (404)' : errDetail,
       games: [],
       addedPackages: []
     };
   }
+
+  const effectivePubName =
+    rawApps.length === 0 && !devResult.resolvedPublisherName && pubRecord?.publisher_name
+      ? pubRecord.publisher_name
+      : pubName;
 
   // Ensure publisher exists in play_publishers (and keep legacy accounts table in sync)
   if (!pubRecord) {
@@ -688,16 +716,16 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
 
     const insPub = await pool.query(
       `INSERT INTO play_publishers (
-         publisher_name, normalized_name, developer_id, source_url,
+         id, publisher_name, normalized_name, developer_id, source_url,
          last_scan_status, last_scanned_at
-       ) VALUES ($1, $2, $3, $4, 'scanning', now())
+       ) VALUES ($1, $2, $3, $4, $5, 'scanning', now())
        ON CONFLICT (normalized_name) DO UPDATE SET
          publisher_name = EXCLUDED.publisher_name,
          developer_id = COALESCE(EXCLUDED.developer_id, play_publishers.developer_id),
          source_url = COALESCE(EXCLUDED.source_url, play_publishers.source_url),
          last_scanned_at = now()
        RETURNING *`,
-      [pubName, normKey, devId, sourceUrl]
+      [accountId, pubName, normKey, devId, sourceUrl]
     );
     pubRecord = insPub.rows[0];
   }
@@ -904,21 +932,27 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
     );
   }
 
-  // Check previously linked games missing from the current live catalogue to see if they were unpublished/suspended
-  if (devResult.anySucceeded && rawApps.length > 0 && prevLinkedSet.size > 0 && !isCancelled()) {
+  let suspendedNowCount = 0;
+  let rescuedLiveCount = 0;
+
+  // Check previously linked games missing from the current live catalogue to see if they were unpublished/suspended.
+  // Also runs when the developer page itself returned 404 so terminated publisher accounts mark their 404 games SUSPENDED.
+  if ((devResult.anySucceeded || isNotFound404) && (rawApps.length > 0 || isNotFound404) && prevLinkedSet.size > 0 && !isCancelled()) {
     const liveSet = new Set(pkgList);
     const missingPkgs = [...prevLinkedSet].filter((p) => !liveSet.has(p));
     if (missingPkgs.length > 0) {
       await mapWithConcurrency(
         missingPkgs,
-        3,
+        4,
         async (missingPkg) => {
           if (isCancelled()) return;
+          let isNotFound = false;
           try {
             await fetchPlayStoreDs5(missingPkg, { timeoutMs: 8000 });
+            rescuedLiveCount += 1;
           } catch (dsErr) {
             const msg = String(dsErr?.message || '');
-            let isNotFound = /HTTP 404|not found/i.test(msg);
+            isNotFound = /HTTP 404|404|not found/i.test(msg);
             if (!isNotFound) {
               try {
                 await runWithTimeout(
@@ -926,23 +960,25 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
                   7000,
                   `gplay.app(${missingPkg})`
                 );
+                rescuedLiveCount += 1;
               } catch (gpErr) {
                 if (/404|not found/i.test(String(gpErr?.message || ''))) {
                   isNotFound = true;
                 }
               }
             }
-            if (isNotFound) {
-              await pool.query(
-                `UPDATE games
-                 SET is_suspended = true,
-                     suspended_at = COALESCE(suspended_at, now()),
-                     release_status = 'SUSPENDED',
-                     campaign_active = false
-                 WHERE package_name = $1`,
-                [missingPkg]
-              );
-            }
+          }
+          if (isNotFound) {
+            await pool.query(
+              `UPDATE games
+               SET is_suspended = true,
+                   suspended_at = COALESCE(suspended_at, now()),
+                   release_status = 'SUSPENDED',
+                   campaign_active = false
+               WHERE package_name = $1`,
+              [missingPkg]
+            );
+            suspendedNowCount += 1;
           }
         },
         isCancelled
@@ -976,6 +1012,13 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
   const totalInstalls = Number(agg.total_installs) || 0;
   const dailyDelta = Number(agg.daily_installs_delta) || 0;
 
+  const finalScanDetail =
+    rawApps.length === 0 && isNotFound404
+      ? prevLinkedSet.size > 0
+        ? `Developer page 404 on Google Play — checked ${prevLinkedSet.size} linked game(s) (${suspendedNowCount} suspended, ${rescuedLiveCount} live)`
+        : 'Developer page not found on Google Play (404)'
+      : null;
+
   await pool.query(
     `UPDATE play_publishers
      SET publisher_name = $2,
@@ -989,13 +1032,13 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
          total_installs = $10,
          daily_installs_delta = $11,
          last_scan_status = 'complete',
-         last_scan_detail = NULL,
+         last_scan_detail = $12,
          last_scanned_at = now(),
          last_successful_scan_at = now()
      WHERE id = $1`,
     [
       publisherId,
-      pubName,
+      effectivePubName,
       devId,
       sourceUrl,
       totalGames,
@@ -1004,7 +1047,8 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
       avgRating,
       totalReviews,
       totalInstalls,
-      dailyDelta
+      dailyDelta,
+      finalScanDetail
     ]
   );
 
@@ -1012,10 +1056,11 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
     `INSERT INTO play_scan_snapshots (
        publisher_id, publisher_name, status, status_detail,
        total_games, free_games, paid_games, new_games_count, added_packages
-     ) VALUES ($1, $2, 'complete', NULL, $3, $4, $5, $6, $7::jsonb)`,
+     ) VALUES ($1, $2, 'complete', $3, $4, $5, $6, $7, $8::jsonb)`,
     [
       publisherId,
-      pubName,
+      effectivePubName,
+      finalScanDetail,
       totalGames,
       freeGames,
       paidGames,
@@ -1026,13 +1071,14 @@ async function scanAndSavePlayPublisher(pool, targetInput, options = {}) {
 
   return {
     publisherId,
-    publisher: pubName,
+    publisher: effectivePubName,
     sourceUrl,
     status: 'complete',
-    statusDetail: null,
+    statusDetail: finalScanDetail,
     totalGames,
     freeGames,
     paidGames,
+    suspendedCount: suspendedNowCount,
     addedPackages
   };
 }
@@ -1056,25 +1102,38 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
       `gplay.app(${pkg})`
     );
   } catch (err) {
-    const ds5 = await fetchPlayStoreDs5(pkg, { timeoutMs: 8000 });
-    if (ds5 && (ds5.title || ds5.realInstalls > 0)) {
-      appData = {
-        title: ds5.title,
-        developer: ds5.developerName,
-        developerId: ds5.developerId,
-        score: ds5.rating,
-        ratings: ds5.ratingsCount,
-        installs: ds5.installsTier,
-        minInstalls: ds5.realInstalls,
-        released: ds5.releaseDate,
-        genre: ds5.category || 'Game',
-        free: true,
-        price: 0
-      };
-    }
+    try {
+      const ds5 = await fetchPlayStoreDs5(pkg, { timeoutMs: 8000 });
+      if (ds5 && (ds5.title || ds5.realInstalls > 0)) {
+        appData = {
+          title: ds5.title,
+          developer: ds5.developerName,
+          developerId: ds5.developerId,
+          score: ds5.rating,
+          ratings: ds5.ratingsCount,
+          installs: ds5.installsTier,
+          minInstalls: ds5.realInstalls,
+          released: ds5.releaseDate,
+          genre: ds5.category || 'Game',
+          free: true,
+          price: 0
+        };
+      }
+    } catch {}
   }
 
   if (!appData) {
+    try {
+      await pool.query(
+        `UPDATE games
+         SET is_suspended = true,
+             suspended_at = COALESCE(suspended_at, now()),
+             release_status = 'SUSPENDED',
+             campaign_active = false
+         WHERE package_name = $1`,
+        [pkg]
+      );
+    } catch {}
     return {
       success: false,
       packageName: pkg,
@@ -1118,11 +1177,11 @@ async function scanAndSavePlayGame(pool, targetInput, options = {}) {
     }
 
     const insPub = await pool.query(
-      `INSERT INTO play_publishers (publisher_name, normalized_name, developer_id, source_url, last_scan_status)
-       VALUES ($1, $2, $3, $4, 'complete')
+      `INSERT INTO play_publishers (id, publisher_name, normalized_name, developer_id, source_url, last_scan_status)
+       VALUES ($1, $2, $3, $4, $5, 'complete')
        ON CONFLICT (normalized_name) DO UPDATE SET developer_id = COALESCE(play_publishers.developer_id, EXCLUDED.developer_id)
        RETURNING id`,
-      [pubName, normalizedPub, devId, developerUrl]
+      [accId, pubName, normalizedPub, devId, developerUrl]
     );
     pubId = insPub.rows[0].id;
   }
@@ -1367,6 +1426,51 @@ async function initializePlayStoreStorage(pool) {
   `);
 
   await syncLegacyAccountsAndCompetitors(pool);
+  scheduleStartup404Reconciliation(pool);
+}
+
+let startup404ReconcileScheduled = false;
+function scheduleStartup404Reconciliation(pool) {
+  if (startup404ReconcileScheduled) return;
+  startup404ReconcileScheduled = true;
+  setImmediate(() => {
+    reconcileStuck404Publishers(pool).catch((err) => {
+      console.warn('[PlayStoreStartup404Reconcile]:', err?.message || err);
+    });
+  });
+}
+
+/**
+ * Reconcile any play_publishers currently stuck in last_scan_status = 'error' due to 404/not found
+ * by checking all linked games on Google Play, marking 404 games SUSPENDED (removing campaign_active),
+ * recomputing counts, and updating publisher status to 'complete'.
+ */
+async function reconcileStuck404Publishers(pool) {
+  const stuckRes = await pool.query(
+    `SELECT id, publisher_name, source_url, developer_id
+     FROM play_publishers
+     WHERE last_scan_status = 'error'
+       AND (last_scan_detail ILIKE '%404%' OR last_scan_detail ILIKE '%not found%')
+     ORDER BY id ASC`
+  );
+  const rows = stuckRes.rows || [];
+  if (rows.length === 0) return { processed: 0, suspendedGames: 0 };
+
+  let processed = 0;
+  let suspendedGames = 0;
+  await mapWithConcurrency(rows, 3, async (pub) => {
+    const validated = validatePlayStoreUrl(pub.source_url || pub.publisher_name);
+    if (!validated.valid) return;
+    if (!validated.developerId && pub.developer_id) validated.developerId = pub.developer_id;
+    const res = await scanAndSavePlayPublisher(pool, validated);
+    processed += 1;
+    suspendedGames += Number(res?.suspendedCount) || 0;
+  });
+
+  if (processed > 0) {
+    invalidatePlayOverviewCache();
+  }
+  return { processed, suspendedGames };
 }
 
 /**
@@ -1416,6 +1520,36 @@ async function syncLegacyAccountsAndCompetitors(pool) {
       )
     GROUP BY LOWER(TRIM(a.publisher_name))
     ON CONFLICT DO NOTHING;
+  `);
+
+  // Ensure every `play_publishers` row has a matching `accounts` row with the same `id`
+  // so `account_games_account_id_fkey` (`REFERENCES accounts(id)`) never fails for newer publishers.
+  await pool.query(`
+    INSERT INTO accounts (id, competitor_id, publisher_name, normalized_name)
+    SELECT p.id,
+           (SELECT pl.competitor_id
+            FROM play_list_publishers plp
+            JOIN play_lists pl ON pl.id = plp.list_id
+            WHERE plp.publisher_id = p.id AND pl.competitor_id IS NOT NULL
+            ORDER BY pl.id ASC LIMIT 1),
+           p.publisher_name,
+           LOWER(REGEXP_REPLACE(p.publisher_name, '[^a-zA-Z0-9]', '', 'g'))
+    FROM play_publishers p
+    LEFT JOIN accounts a ON a.id = p.id
+    WHERE a.id IS NULL
+    ON CONFLICT (id) DO NOTHING;
+  `);
+
+  // Keep both `play_publishers` and `accounts` sequences synchronized past max(id)
+  await pool.query(`
+    SELECT setval(
+      pg_get_serial_sequence('accounts', 'id'),
+      GREATEST(COALESCE((SELECT MAX(id) FROM play_publishers), 1), COALESCE((SELECT MAX(id) FROM accounts), 1))
+    );
+    SELECT setval(
+      pg_get_serial_sequence('play_publishers', 'id'),
+      GREATEST(COALESCE((SELECT MAX(id) FROM play_publishers), 1), COALESCE((SELECT MAX(id) FROM accounts), 1))
+    );
   `);
 
   // Copy any `account_games` links from secondary duplicate account rows onto their canonical `play_publishers.id`
@@ -1822,9 +1956,7 @@ async function processCountryBatchLoop(pool) {
           countryBatchQueue.currentCountryCode = p.currentCountry || null;
         });
         countryBatchQueue.completedPackages += 1;
-        if (countryBatchQueue.completedPackages % 10 === 0) {
-          invalidatePlayOverviewCache();
-        }
+        invalidatePlayOverviewCache();
         countryBatchQueue.log = `> ✔ [${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title}: Live in ${res.counts.live}/${COUNTRY_CODES.length} countries.`;
       } catch (err) {
         countryBatchQueue.completedPackages += 1;
@@ -1856,9 +1988,20 @@ async function processCountryBatchLoop(pool) {
 // In-memory TTL cache for /api/play/overview so repeated tab switches and page reloads respond in <5ms
 let playOverviewCache = { payload: null, expiresAt: 0 };
 let playCatalogueVersion = Date.now();
-function invalidatePlayOverviewCache() {
+const playCacheInvalidators = new Set();
+function registerPlayCacheInvalidator(fn) {
+  if (typeof fn === 'function') playCacheInvalidators.add(fn);
+}
+function invalidatePlayOverviewCache(options = {}) {
   playOverviewCache = { payload: null, expiresAt: 0 };
   playCatalogueVersion = Date.now();
+  if (options?.cascade !== false) {
+    for (const fn of playCacheInvalidators) {
+      try {
+        fn({ cascade: false });
+      } catch {}
+    }
+  }
 }
 
 function registerPlayStoreRoutes({ app, pool }) {
@@ -2504,7 +2647,14 @@ function registerPlayStoreRoutes({ app, pool }) {
          ORDER BY COALESCE(last_successful_scan_at, '1970-01-01'::timestamptz) ASC, id ASC`
       );
       validTargets = pubsRes.rows
-        .map((p) => validatePlayStoreUrl(p.source_url || p.publisher_name))
+        .map((p) => {
+          const v = validatePlayStoreUrl(p.source_url || p.publisher_name);
+          if (v.valid) {
+            v.publisherId = p.id;
+            if (!v.developerId && p.developer_id) v.developerId = p.developer_id;
+          }
+          return v;
+        })
         .filter((v) => v.valid);
     } else {
       const links = parseInputLinks(req.body?.links || req.body?.urls || '');
@@ -2596,109 +2746,133 @@ function registerPlayStoreRoutes({ app, pool }) {
             log: `> [${i + 1}/${validTargets.length}] Scanning Google Play catalogue for "${target.publisher}"...`
           };
 
-          let result;
-          if (target.type === 'game') {
-            playScanStatus = {
-              ...playScanStatus,
-              phase: 'enriching_games',
-              currentPublisher: target.packageName,
-              publisherIndex: i + 1,
-              gamesFoundInCurrent: 1,
-              log: `> [${i + 1}/${validTargets.length}] Fetching Play Store telemetry & metadata for "${target.packageName}"...`
-            };
-            const gameRes = await scanAndSavePlayGame(pool, target, { forceTelemetry });
-            doneCount += 1;
-            if (gameRes.success) {
-              savedGamesTotal += 1;
-              newGamesTotal += 1;
-              resultsSummary.push({
-                type: 'game',
-                publisher: gameRes.publisher,
-                packageName: gameRes.packageName,
-                title: gameRes.title,
-                status: 'complete',
-                gamesFound: 1,
-                newGames: 1,
-                freeGames: gameRes.isPaid ? 0 : 1,
-                paidGames: gameRes.isPaid ? 1 : 0
-              });
-            } else {
-              failedLinks.push(target.raw);
-              resultsSummary.push({
-                type: 'game',
-                publisher: target.packageName,
-                packageName: target.packageName,
-                status: 'error',
-                statusDetail: gameRes.error,
-                gamesFound: 0,
-                newGames: 0
-              });
-            }
-            continue;
-          }
-
-          result = await scanAndSavePlayPublisher(pool, target, {
-            forceTelemetry,
-            isCancelled: () => activePlayScanCancelled,
-            onProgress: (p) => {
+          try {
+            let result;
+            if (target.type === 'game') {
               playScanStatus = {
                 ...playScanStatus,
-                phase: p.phase || 'scanning',
-                currentPublisher: p.publisher || target.publisher,
-                gamesFoundInCurrent: p.found || 0,
-                log:
-                  p.phase === 'enriching_games'
-                    ? `> [${p.publisher}] Enriching Play Store telemetry & release dates (${p.enriched}/${p.totalToEnrich})...`
-                    : `> [${p.publisher}] Fetching developer catalogue...`
+                phase: 'enriching_games',
+                currentPublisher: target.packageName,
+                publisherIndex: i + 1,
+                gamesFoundInCurrent: 1,
+                log: `> [${i + 1}/${validTargets.length}] Fetching Play Store telemetry & metadata for "${target.packageName}"...`
               };
+              const gameRes = await scanAndSavePlayGame(pool, target, { forceTelemetry });
+              doneCount += 1;
+              if (gameRes.success) {
+                savedGamesTotal += 1;
+                newGamesTotal += 1;
+                resultsSummary.push({
+                  type: 'game',
+                  publisher: gameRes.publisher,
+                  packageName: gameRes.packageName,
+                  title: gameRes.title,
+                  status: 'complete',
+                  gamesFound: 1,
+                  newGames: 1,
+                  freeGames: gameRes.isPaid ? 0 : 1,
+                  paidGames: gameRes.isPaid ? 1 : 0
+                });
+              } else {
+                failedLinks.push(target.raw);
+                resultsSummary.push({
+                  type: 'game',
+                  publisher: target.packageName,
+                  packageName: target.packageName,
+                  status: 'error',
+                  statusDetail: gameRes.error,
+                  gamesFound: 0,
+                  newGames: 0
+                });
+              }
+              invalidatePlayOverviewCache();
+              continue;
             }
-          });
 
-          doneCount += 1;
-          const gamesCount = result.totalGames || 0;
-          const newCount = result.addedPackages?.length || 0;
-          savedGamesTotal += gamesCount;
-          newGamesTotal += newCount;
+            result = await scanAndSavePlayPublisher(pool, target, {
+              forceTelemetry,
+              isCancelled: () => activePlayScanCancelled,
+              onProgress: (p) => {
+                playScanStatus = {
+                  ...playScanStatus,
+                  phase: p.phase || 'scanning',
+                  currentPublisher: p.publisher || target.publisher,
+                  gamesFoundInCurrent: p.found || 0,
+                  log:
+                    p.phase === 'enriching_games'
+                      ? `> [${p.publisher}] Enriching Play Store telemetry & release dates (${p.enriched}/${p.totalToEnrich})...`
+                      : `> [${p.publisher}] Fetching developer catalogue...`
+                };
+              }
+            });
 
-          resultsSummary.push({
-            type: 'publisher',
-            publisher: result.publisher,
-            sourceUrl: result.sourceUrl,
-            status: result.status,
-            statusDetail: result.statusDetail || null,
-            gamesFound: gamesCount,
-            newGames: newCount,
-            freeGames: result.freeGames || 0,
-            paidGames: result.paidGames || 0
-          });
+            doneCount += 1;
+            const gamesCount = result.totalGames || 0;
+            const newCount = result.addedPackages?.length || 0;
+            savedGamesTotal += gamesCount;
+            newGamesTotal += newCount;
 
-          if (result.status === 'error' && gamesCount === 0 && result.sourceUrl) {
-            failedLinks.push(result.sourceUrl);
-          }
+            resultsSummary.push({
+              type: 'publisher',
+              publisher: result.publisher,
+              sourceUrl: result.sourceUrl,
+              status: result.status,
+              statusDetail: result.statusDetail || null,
+              gamesFound: gamesCount,
+              newGames: newCount,
+              freeGames: result.freeGames || 0,
+              paidGames: result.paidGames || 0
+            });
 
-          if (result.publisherId && targetListIds.size > 0) {
-            for (const listId of targetListIds) {
-              await pool
-                .query(
-                  `INSERT INTO play_list_publishers (list_id, publisher_id)
-                   VALUES ($1, $2)
-                   ON CONFLICT DO NOTHING`,
-                  [listId, result.publisherId]
-                )
-                .catch(() => {});
+            if (result.status === 'error' && gamesCount === 0 && result.sourceUrl) {
+              failedLinks.push(result.sourceUrl);
             }
-          }
 
-          playScanStatus = {
-            ...playScanStatus,
-            completedPublishers: doneCount,
-            totalGamesSaved: savedGamesTotal,
-            newGamesDiscovered: newGamesTotal,
-            resultsSummary: [...resultsSummary].slice(-100),
-            failedLinks: [...failedLinks],
-            log: `> ${result.status === 'complete' ? '✔' : '⚠'} [${doneCount}/${validTargets.length}] ${result.publisher}: ${gamesCount} games (${newCount} newly discovered).`
-          };
-          if (doneCount % 10 === 0) {
+            if (result.publisherId && targetListIds.size > 0) {
+              for (const listId of targetListIds) {
+                await pool
+                  .query(
+                    `INSERT INTO play_list_publishers (list_id, publisher_id)
+                     VALUES ($1, $2)
+                     ON CONFLICT DO NOTHING`,
+                    [listId, result.publisherId]
+                  )
+                  .catch(() => {});
+              }
+            }
+
+            playScanStatus = {
+              ...playScanStatus,
+              completedPublishers: doneCount,
+              totalGamesSaved: savedGamesTotal,
+              newGamesDiscovered: newGamesTotal,
+              resultsSummary: [...resultsSummary].slice(-100),
+              failedLinks: [...failedLinks],
+              log: `> ${result.status === 'complete' ? '✔' : '⚠'} [${doneCount}/${validTargets.length}] ${result.publisher}: ${gamesCount} games (${newCount} newly discovered).`
+            };
+            invalidatePlayOverviewCache();
+          } catch (itemErr) {
+            console.error(`[Play Scan Target Error] ${target.publisher || target.raw}:`, itemErr);
+            doneCount += 1;
+            if (target.normalizedUrl || target.raw) {
+              failedLinks.push(target.normalizedUrl || target.raw);
+            }
+            resultsSummary.push({
+              type: target.type || 'publisher',
+              publisher: target.publisher || target.packageName || target.raw,
+              sourceUrl: target.normalizedUrl || target.raw,
+              status: 'error',
+              statusDetail: itemErr?.message || 'Unexpected error during publisher scan',
+              gamesFound: 0,
+              newGames: 0
+            });
+            playScanStatus = {
+              ...playScanStatus,
+              completedPublishers: doneCount,
+              resultsSummary: [...resultsSummary].slice(-100),
+              failedLinks: [...failedLinks],
+              log: `> ⚠ [${doneCount}/${validTargets.length}] ${target.publisher || target.raw} error: ${itemErr?.message || 'Scan failed'}`
+            };
             invalidatePlayOverviewCache();
           }
         }
@@ -3424,9 +3598,7 @@ function registerPlayStoreRoutes({ app, pool }) {
                 cardBatchQueue.failedCount += 1;
               } finally {
                 cardBatchQueue.completedPackages += 1;
-                if (cardBatchQueue.completedPackages % 10 === 0) {
-                  invalidatePlayOverviewCache();
-                }
+                invalidatePlayOverviewCache();
                 await new Promise((r) => setTimeout(r, 200));
               }
             },
@@ -3459,6 +3631,8 @@ module.exports = {
   syncLegacyAccountsAndCompetitors,
   registerPlayStoreRoutes,
   invalidatePlayOverviewCache,
+  registerPlayCacheInvalidator,
+  reconcileStuck404Publishers,
   validatePlayStoreUrl,
   validatePlayBatch,
   doesAppMatchPublisher,

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 
 export default function AtlasSelect({
   value,
@@ -235,16 +236,21 @@ export default function AtlasSelect({
       </button>
 
       {/* Dropdown Menu */}
-      {open && (
-        <div
-          ref={listRef}
-          role="listbox"
-          aria-label={ariaLabel}
-          className={`absolute ${
-            resolvedAlign === "right" ? "right-0" : "left-0"
-          } top-full mt-1.5 z-[100] min-w-[220px] max-w-[min(340px,calc(100vw-24px))] max-h-80 overflow-y-auto bg-surface-solid border border-border-subtle rounded-2xl shadow-2xl p-1.5 flex flex-col gap-1 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 ${menuClassName}`}
-          onClick={(e) => e.stopPropagation()}
-        >
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            ref={listRef}
+            role="listbox"
+            aria-label={ariaLabel}
+            initial={{ opacity: 0, y: 4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.98 }}
+            transition={{ duration: 0.13, ease: [0.16, 1, 0.3, 1] }}
+            className={`absolute ${
+              resolvedAlign === "right" ? "right-0" : "left-0"
+            } top-full mt-1.5 z-[100] min-w-[220px] max-w-[min(340px,calc(100vw-24px))] max-h-80 overflow-y-auto bg-surface-solid border border-border-subtle rounded-2xl shadow-2xl p-1.5 flex flex-col gap-1 backdrop-blur-md ${menuClassName}`}
+            onClick={(e) => e.stopPropagation()}
+          >
           {/* Quick Search */}
           {shouldSearch && (
             <div className="p-1 pb-1.5 border-b border-border-subtle sticky top-0 bg-surface-solid z-10">
@@ -349,8 +355,9 @@ export default function AtlasSelect({
               </div>
             ))
           )}
-        </div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

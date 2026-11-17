@@ -76,7 +76,7 @@ function atlasProductPolishBridge() {
         next = replaceRequired(
           next,
           helpButton,
-          `<button\n            type="button"\n            onClick={toggleTheme}\n            className="w-10 h-10 rounded-full hover:bg-input-bg flex items-center justify-center text-text-muted hover:text-text-main transition-colors"\n            title={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}\n            aria-label={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}\n          >\n            <span className="material-symbols-outlined text-[20px]">{isDarkMode ? "light_mode" : "dark_mode"}</span>\n          </button>\n\n          ${helpButton}`,
+          `<button\n            type="button"\n            onClick={toggleTheme}\n            className="w-10 h-10 rounded-full hover:bg-input-bg flex items-center justify-center text-text-muted hover:text-text-main transition-colors"\n            title={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}\n            aria-label={isDarkMode ? "Switch to light theme" : "Switch to dark theme"}\n          >\n            <span className="material-symbols-outlined text-[20px] atlas-theme-toggle-icon">{isDarkMode ? "light_mode" : "dark_mode"}</span>\n          </button>\n\n          ${helpButton}`,
           'pin theme toggle in header'
         )
         next = replaceRequired(

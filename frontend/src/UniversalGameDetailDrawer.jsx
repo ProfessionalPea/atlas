@@ -201,8 +201,9 @@ export default function UniversalGameDetailDrawer({
             exit={{ x: "100%" }}
             transition={{ type: "tween", duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             onClick={(e) => e.stopPropagation()}
-            className="atlas-google-shell relative z-10 w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 flex flex-col gap-5 shadow-2xl custom-scrollbar"
+            className="atlas-google-shell relative z-10 w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 shadow-2xl custom-scrollbar"
           >
+            <div key={game.package_name} className="atlas-tab-swap flex flex-col gap-5">
             {/* Header: Icon, Badge, Title, Publisher, Close */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3.5 min-w-0">
@@ -602,6 +603,7 @@ export default function UniversalGameDetailDrawer({
                 </div>
               </div>
             )}
+            </div>
           </motion.aside>
         </div>,
         document.body

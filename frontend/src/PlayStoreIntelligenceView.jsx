@@ -1,11 +1,20 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { API_BASE } from "./apiConfig";
 import AtlasSelect from "./AtlasSelect";
 import { KeywordPanel } from "./KeywordPanel.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
-import { getCachedCatalogue, setCachedCatalogue, broadcastCatalogueUpdate, onCatalogueUpdate } from "./lib/atlasCache.js";
+import {
+  getCachedCatalogue,
+  getMemoryCatalogue,
+  getViewUiState,
+  markCatalogueValidated,
+  setCachedCatalogue,
+  setViewUiState,
+  broadcastCatalogueUpdate,
+  onCatalogueUpdate
+} from "./lib/atlasCache.js";
 import { AtlasFeedback } from "./AtlasFeedback.jsx";
 
 const SAMPLE_PLAY_LINKS = [
@@ -74,8 +83,8 @@ function getPublisherSyncState(pub) {
   if (hasGames) {
     return {
       dataLabel: "Synced",
-      dataTone: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
-      dotTone: "bg-emerald-400",
+      dataTone: "bg-emerald-500/15 text-emerald-800 dark:text-emerald-400 border-emerald-600/30 dark:border-emerald-500/30",
+      dotTone: "bg-emerald-600 dark:bg-emerald-400",
       lastSyncedText: formatRelativeTime(lastSuccess),
       hasRefreshWarning: latestAttemptFailed,
       warningText: latestAttemptFailed
@@ -87,11 +96,22 @@ function getPublisherSyncState(pub) {
   if (latestStatus === "error") {
     return {
       dataLabel: "Retry Needed",
-      dataTone: "bg-amber-500/15 text-amber-400 border-amber-500/30",
-      dotTone: "bg-amber-400",
+      dataTone: "bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-600/35 dark:border-amber-500/30",
+      dotTone: "bg-amber-600 dark:bg-amber-400",
       lastSyncedText: formatRelativeTime(pub.last_scanned_at),
       hasRefreshWarning: true,
       warningText: pub.last_scan_detail || "Developer page scan did not return apps."
+    };
+  }
+
+  if (latestStatus === "complete") {
+    return {
+      dataLabel: "Synced",
+      dataTone: "bg-emerald-500/15 text-emerald-800 dark:text-emerald-400 border-emerald-600/30 dark:border-emerald-500/30",
+      dotTone: "bg-emerald-600 dark:bg-emerald-400",
+      lastSyncedText: formatRelativeTime(lastSuccess || pub.last_scanned_at),
+      hasRefreshWarning: false,
+      warningText: pub.last_scan_detail || null
     };
   }
 
@@ -123,38 +143,44 @@ function PlayStoreIntelligenceView({
     });
   }, []);
 
-  const [overview, setOverview] = useState({
-    summary: {
-      publisherCount: 0,
-      listCount: 0,
-      uniqueGames: 0,
-      totalListings: 0,
-      totalGames: 0,
-      freeGames: 0,
-      paidGames: 0,
-      freeShare: 0,
-      totalInstalls: 0,
-      totalReviews: 0,
-      countryScannedGames: 0
-    },
-    lists: [],
-    publishers: [],
-    games: [],
-    snapshots: [],
-    competitorGroups: []
-  });
-  const [loading, setLoading] = useState(true);
+  const initialMem = getMemoryCatalogue("play_overview");
+  const initialUi = getViewUiState("play_view", {});
+
+  const [overview, setOverview] = useState(
+    () =>
+      initialMem?.data || {
+        summary: {
+          publisherCount: 0,
+          listCount: 0,
+          uniqueGames: 0,
+          totalListings: 0,
+          totalGames: 0,
+          freeGames: 0,
+          paidGames: 0,
+          freeShare: 0,
+          totalInstalls: 0,
+          totalReviews: 0,
+          countryScannedGames: 0
+        },
+        lists: [],
+        publishers: [],
+        games: [],
+        snapshots: [],
+        competitorGroups: []
+      }
+  );
+  const [loading, setLoading] = useState(() => !initialMem?.data);
 
   // App vs Game Top-Level Category Filter state
-  const [appTypeFilter, setAppTypeFilter] = useState("all"); // "all" | "game" | "app"
+  const [appTypeFilter, setAppTypeFilter] = useState(() => initialUi.appTypeFilter || "all"); // "all" | "game" | "app"
 
   // Competitor List & Account Filter state
-  const [selectedListId, setSelectedListId] = useState("all"); // "all" | "ungrouped" | number | "group_<id>"
-  const [selectedPublisher, setSelectedPublisher] = useState("all");
-  const [selectedPricing, setSelectedPricing] = useState("all"); // all | free | paid | tba
-  const [selectedStatus, setSelectedStatus] = useState("all"); // all | prereg | live | early_access
-  const [searchQuery, setSearchQuery] = useState(initialSearchQuery || "");
-  const [sortBy, setSortBy] = useState("installs"); // installs | delta | release | first_seen | reviews | rating
+  const [selectedListId, setSelectedListId] = useState(() => initialUi.selectedListId ?? "all"); // "all" | "ungrouped" | number | "group_<id>"
+  const [selectedPublisher, setSelectedPublisher] = useState(() => initialUi.selectedPublisher || "all");
+  const [selectedPricing, setSelectedPricing] = useState(() => initialUi.selectedPricing || "all"); // all | free | paid | tba
+  const [selectedStatus, setSelectedStatus] = useState(() => initialUi.selectedStatus || "all"); // all | prereg | live | early_access
+  const [searchQuery, setSearchQuery] = useState(() => initialSearchQuery || initialUi.searchQuery || "");
+  const [sortBy, setSortBy] = useState(() => initialUi.sortBy || "installs"); // installs | delta | release | first_seen | reviews | rating
 
   useEffect(() => {
     if (initialSearchQuery) {
@@ -163,8 +189,8 @@ function PlayStoreIntelligenceView({
   }, [initialSearchQuery]);
 
   // Launch Duration / Date Filter state (separating Play Store Launch Date vs. First Discovered in Atlas)
-  const [dateBasis, setDateBasis] = useState("release_date"); // "release_date" | "first_seen_at"
-  const [durationPreset, setDurationPreset] = useState("all"); // "all" | "today" | "7d" | "14d" | "30d" | "90d" | "6m" | "1y" | "custom"
+  const [dateBasis, setDateBasis] = useState(() => initialUi.dateBasis || "release_date"); // "release_date" | "first_seen_at"
+  const [durationPreset, setDurationPreset] = useState(() => initialUi.durationPreset || "all"); // "all" | "today" | "7d" | "14d" | "30d" | "90d" | "6m" | "1y" | "custom"
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
   const [includeUnknownDates, setIncludeUnknownDates] = useState(false);
@@ -226,7 +252,33 @@ function PlayStoreIntelligenceView({
 
   // Progressive table & publisher rendering state for instant UI responsiveness
   const [visibleRowCount, setVisibleRowCount] = useState(100);
-  const [showAllPublishers, setShowAllPublishers] = useState(false);
+  const [showAllPublishers, setShowAllPublishers] = useState(() => Boolean(initialUi.showAllPublishers));
+
+  useEffect(() => {
+    setViewUiState("play_view", {
+      appTypeFilter,
+      selectedListId,
+      selectedPublisher,
+      selectedPricing,
+      selectedStatus,
+      searchQuery,
+      sortBy,
+      dateBasis,
+      durationPreset,
+      showAllPublishers
+    });
+  }, [
+    appTypeFilter,
+    selectedListId,
+    selectedPublisher,
+    selectedPricing,
+    selectedStatus,
+    searchQuery,
+    sortBy,
+    dateBasis,
+    durationPreset,
+    showAllPublishers
+  ]);
 
   // Single-game refresh state + Keyword Intelligence + tactile action states
   const [refreshingPkg, setRefreshingPkg] = useState(null);
@@ -239,10 +291,10 @@ function PlayStoreIntelligenceView({
   const [keywordTarget, setKeywordTarget] = useState(null);
   const [isSavingList, setIsSavingList] = useState(false);
   const [isSavingPublisher, setIsSavingPublisher] = useState(false);
-  const cachedEtagRef = useRef(null);
+  const cachedEtagRef = useRef(initialMem?.etag || null);
   const catalogSectionRef = useRef(null);
   const overviewLengthRef = useRef(0);
-  overviewLengthRef.current = overview.games.length;
+  overviewLengthRef.current = (overview?.games || []).length;
 
   const scrollToCatalogIfBelowFold = useCallback(() => {
     if (typeof window === "undefined" || !catalogSectionRef.current) return;
@@ -279,6 +331,7 @@ function PlayStoreIntelligenceView({
 
       // 304 Not Modified: Cache is 100% up to date! 0 byte body transferred
       if (res.status === 304) {
+        markCatalogueValidated("play_overview");
         setLoading(false);
         return;
       }
@@ -326,23 +379,33 @@ function PlayStoreIntelligenceView({
     }
   }, [fetcher]);
 
-  // Instant render from IndexedDB + Stale-While-Revalidate + Multi-tab sync
+  // Instant render from L1 Memory / IndexedDB + Stale-While-Revalidate + Multi-tab sync
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Instantly populate UI from local IndexedDB cache (0ms render time)
-    getCachedCatalogue("play_overview").then((cached) => {
+    (async () => {
+      const mem = getMemoryCatalogue("play_overview");
+      if (mem?.data) {
+        if (mem.etag && !cachedEtagRef.current) cachedEtagRef.current = mem.etag;
+        if (Date.now() - (mem.lastValidatedAt || 0) >= 15000) {
+          void loadOverview();
+        }
+        return;
+      }
+
+      // Cold start: hydrate from IndexedDB BEFORE firing network request so ETag is included
+      const cached = await getCachedCatalogue("play_overview");
       if (isMounted && cached?.data) {
         setOverview(cached.data);
         if (cached.etag) cachedEtagRef.current = cached.etag;
         setLoading(false);
       }
-    });
+      if (isMounted) {
+        void loadOverview();
+      }
+    })();
 
-    // 2. Background revalidation over network (returns 304 if data has not mutated)
-    loadOverview();
-
-    // 3. Multi-tab synchronization: if another tab updates the data, refresh silently
+    // Multi-tab synchronization: if another tab updates the data, refresh silently
     const unsubscribe = onCatalogueUpdate((msg) => {
       if (msg.platform === "play") {
         getCachedCatalogue("play_overview").then((fresh) => {
@@ -364,6 +427,9 @@ function PlayStoreIntelligenceView({
   const lastCompletedCountriesRef = useRef(0);
   const lastMidScanRefreshAtRef = useRef(0);
   const consecutivePollErrorsRef = useRef(0);
+  const wasScanRunningRef = useRef(false);
+  const wasQueueRunningRef = useRef(false);
+  const pollInFlightRef = useRef(false);
 
   // Adaptive scan status polling: 1.5s while actively scanning, 20s while idle, paused when tab is hidden
   useEffect(() => {
@@ -371,10 +437,8 @@ function PlayStoreIntelligenceView({
     let timerId = null;
 
     const checkStatuses = async () => {
-      if (disposed) return;
-      if (document.hidden) {
-        return;
-      }
+      if (disposed || document.hidden || pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
 
       let isActive = false;
       let hadError = false;
@@ -388,7 +452,8 @@ function PlayStoreIntelligenceView({
           const st = await scanRes.json();
           if (st.running) isActive = true;
           const completedNow = Number(st.completedPublishers || 0);
-          const scanJustFinished = scanStatus.running && !st.running;
+          const scanJustFinished = wasScanRunningRef.current && !st.running;
+          wasScanRunningRef.current = Boolean(st.running);
           const midScanReady =
             st.running &&
             completedNow > lastCompletedPublishersRef.current &&
@@ -411,7 +476,8 @@ function PlayStoreIntelligenceView({
           const cq = await cqRes.json();
           if (cq.running) isActive = true;
           const completedCountriesNow = Number(cq.completedPackages || 0);
-          const queueJustFinished = countryQueueStatus.running && !cq.running;
+          const queueJustFinished = wasQueueRunningRef.current && !cq.running;
+          wasQueueRunningRef.current = Boolean(cq.running);
           const midQueueReady =
             !refreshedThisTick &&
             cq.running &&
@@ -434,6 +500,8 @@ function PlayStoreIntelligenceView({
       } catch {
         consecutivePollErrorsRef.current += 1;
         hadError = true;
+      } finally {
+        pollInFlightRef.current = false;
       }
 
       if (!disposed && !document.hidden) {
@@ -442,6 +510,7 @@ function PlayStoreIntelligenceView({
           : hadError
             ? Math.min(60000, 10000 * Math.pow(2, Math.max(0, consecutivePollErrorsRef.current - 1)))
             : 20000;
+        clearTimeout(timerId);
         timerId = setTimeout(checkStatuses, nextDelay);
       }
     };
@@ -462,7 +531,7 @@ function PlayStoreIntelligenceView({
       clearTimeout(timerId);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [fetcher, loadOverview, scanStatus.running, countryQueueStatus.running]);
+  }, [fetcher, loadOverview]);
 
   // Live elapsed timer during active publisher scan
   useEffect(() => {
@@ -1364,17 +1433,20 @@ function PlayStoreIntelligenceView({
             const nextGames = (prev.games || []).map((g) => {
               if (g.package_name !== pkg) return g;
               const nextPricing =
-                freshGame.manual_price_status === "PAID" || freshGame.is_paid === true
-                  ? "paid"
-                  : freshGame.manual_price_status === "FREE" || freshGame.price_status === "FREE"
-                    ? "free"
-                    : freshGame.price_status === "PRICE_TBA"
-                      ? "tba"
-                      : g.pricing;
+                freshGame.manual_price_status === "FREE"
+                  ? "free"
+                  : freshGame.manual_price_status === "PAID" || freshGame.is_paid === true
+                    ? "paid"
+                    : freshGame.price_status === "FREE"
+                      ? "free"
+                      : freshGame.price_status === "PRICE_TBA"
+                        ? "tba"
+                        : g.pricing;
               return {
                 ...g,
                 ...freshGame,
                 pricing: nextPricing,
+                is_manual_price: Boolean(freshGame.manual_price_status || g.is_manual_price),
                 rating: freshGame.rating != null ? Number(freshGame.rating) : g.rating,
                 review_count: Number(freshGame.ratings_count ?? g.review_count) || 0,
                 real_installs: freshGame.real_installs != null ? Number(freshGame.real_installs) : g.real_installs,
@@ -1389,6 +1461,7 @@ function PlayStoreIntelligenceView({
             return nextOverview;
           });
           setActiveGameDrawer((prev) => (prev && prev.package_name === pkg ? { ...prev, ...freshGame } : prev));
+          await loadOverview();
         } else {
           await loadOverview();
         }
@@ -1776,7 +1849,7 @@ function PlayStoreIntelligenceView({
   }, [countryQueueStatus]);
 
   return (
-    <div className="flex flex-col w-full gap-5">
+    <div className="flex flex-col w-full gap-5 atlas-page-enter">
       {/* GOOGLE PLAY STYLE ALL / GAMES / APPS SEGMENT SWITCHER */}
       <div className="flex items-center gap-1 border-b border-border-subtle pb-1 -mt-1 px-1">
         <button
@@ -1970,7 +2043,7 @@ function PlayStoreIntelligenceView({
                     <button
                       type="button"
                       onClick={() => handleStartScan({ mode: "batch", links: scanStatus.failedLinks })}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1"
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-600/35 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1"
                     >
                       <span className="material-symbols-outlined text-[14px]">refresh</span>
                       Retry Failed ({scanStatus.failedLinks.length})
@@ -2055,7 +2128,7 @@ function PlayStoreIntelligenceView({
                     <button
                       type="button"
                       onClick={() => handleControlCountryQueue("pause")}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition"
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-600/35 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-semibold hover:bg-amber-500/25 transition"
                     >
                       Pause
                     </button>
@@ -2064,7 +2137,7 @@ function PlayStoreIntelligenceView({
                     <button
                       type="button"
                       onClick={() => handleControlCountryQueue("resume")}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold hover:bg-emerald-500/25 transition"
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-600/35 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs font-semibold hover:bg-emerald-500/25 transition"
                     >
                       Resume ({countryQueueStatus.remainingPackages} left)
                     </button>
@@ -2073,7 +2146,7 @@ function PlayStoreIntelligenceView({
                     <button
                       type="button"
                       onClick={() => handleStartCountryQueue({ scope: "retry_failed", skipDays: 0 })}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-xs font-semibold hover:bg-amber-500/25 transition"
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-600/35 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-semibold hover:bg-amber-500/25 transition"
                     >
                       Retry Failed ({countryQueueStatus.failedCount})
                     </button>
@@ -2167,11 +2240,16 @@ function PlayStoreIntelligenceView({
                 </span>
               </button>
 
-              {showDateFilterPopover && (
-                <div
-                  className="absolute left-0 top-full mt-1.5 z-50 w-80 sm:w-96 bg-surface-solid border border-border-subtle rounded-2xl p-4 shadow-2xl flex flex-col gap-3"
-                  onClick={(e) => e.stopPropagation()}
-                >
+              <AnimatePresence>
+                {showDateFilterPopover && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 4, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 4, scale: 0.98 }}
+                    transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                    className="absolute left-0 top-full mt-1.5 z-50 w-80 sm:w-96 bg-surface-solid border border-border-subtle rounded-2xl p-4 shadow-2xl flex flex-col gap-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                   <div className="flex items-center justify-between border-b border-border-subtle pb-2">
                     <span className="text-xs font-bold text-text-main flex items-center gap-1.5">
                       <span className="material-symbols-outlined text-[16px] text-electric-blue">calendar_today</span>
@@ -2280,8 +2358,9 @@ function PlayStoreIntelligenceView({
                       Reset to All Time
                     </button>
                   </div>
-                </div>
-              )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Reset Filters button if any filter active */}
@@ -2434,8 +2513,8 @@ function PlayStoreIntelligenceView({
       </div>
 
       {/* 4 CLEAN KPI CARDS (Scoped to active list + account + date filter) */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 atlas-stagger-grid">
+        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 atlas-interactive-card atlas-card-rise">
           <div className="text-[11px] text-text-muted">
             {selectedPublisher !== "all"
               ? `Total Games (${getDisplayName(selectedPublisher)})`
@@ -2450,7 +2529,7 @@ function PlayStoreIntelligenceView({
           </div>
         </div>
 
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
+        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 atlas-interactive-card atlas-card-rise">
           <div className="text-[11px] text-electric-blue font-medium">
             {dateWindow.active
               ? `${dateBasis === "first_seen_at" ? "Discovered" : "Launched"} (${dateWindow.label})`
@@ -2462,7 +2541,7 @@ function PlayStoreIntelligenceView({
           </div>
         </div>
 
-        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4">
+        <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 atlas-interactive-card atlas-card-rise">
           <div className="text-[11px] text-emerald-700 dark:text-emerald-400 font-semibold">
             Total Real Installs {dateWindow.active ? `(${dateWindow.label})` : ""}
           </div>
@@ -2476,7 +2555,7 @@ function PlayStoreIntelligenceView({
 
         <div
           onClick={() => setShowCountryBatchModal(true)}
-          className="cursor-pointer bg-surface-solid border border-border-subtle hover:border-electric-blue/50 rounded-2xl p-4 transition"
+          className="cursor-pointer bg-surface-solid border border-border-subtle hover:border-electric-blue/50 rounded-2xl p-4 atlas-interactive-card atlas-card-rise"
         >
           <div className="text-[11px] text-amber-800 dark:text-amber-400 font-semibold">Country Availability Coverage</div>
           <div className="text-2xl font-semibold text-text-main mt-1">
@@ -3270,19 +3349,28 @@ function PlayStoreIntelligenceView({
       {/* ===================================================================== */}
       {/* PORTAL MODALS & DRAWERS (Rendered at document.body above header z-50) */}
       {/* ===================================================================== */}
-
-      {/* MODAL 1: MANAGE COMPETITOR LISTS (z-[100]) */}
-      {listModal &&
-        createPortal(
-          <div
-            onClick={() => setListModal(null)}
-            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <form
-              onClick={(e) => e.stopPropagation()}
-              onSubmit={(e) => handleSaveListModal(e, false)}
-              className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+      {createPortal(
+        <AnimatePresence>
+          {/* MODAL 1: MANAGE COMPETITOR LISTS (z-[100]) */}
+          {listModal && (
+            <motion.div
+              key="play-list-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onClick={() => setListModal(null)}
+              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
+              <motion.form
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                onSubmit={(e) => handleSaveListModal(e, false)}
+                className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+              >
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold text-text-main">Manage Play Store Competitor Lists</h3>
                 <button
@@ -3449,22 +3537,29 @@ function PlayStoreIntelligenceView({
                   </button>
                 </div>
               </div>
-            </form>
-          </div>,
-          document.body
-        )}
+              </motion.form>
+            </motion.div>
+          )}
 
-      {/* MODAL 2: IMPORT & SCAN PLAY STORE (4-IN-1 MULTI-SCOPE SCANNER) (z-[100]) */}
-      {isAdmin && showScannerModal &&
-        createPortal(
-          <div
-            onClick={() => setShowScannerModal(false)}
-            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-2xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[92vh] overflow-y-auto"
+          {/* MODAL 2: IMPORT & SCAN PLAY STORE (4-IN-1 MULTI-SCOPE SCANNER) (z-[100]) */}
+          {isAdmin && showScannerModal && (
+            <motion.div
+              key="play-scanner-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onClick={() => setShowScannerModal(false)}
+              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-2xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-5 shadow-2xl max-h-[92vh] overflow-y-auto"
+              >
               {/* Header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -3541,7 +3636,7 @@ function PlayStoreIntelligenceView({
 
               {/* TAB 1: BY LINK OR PACKAGE ID */}
               {scanModalTab === "links" && (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 atlas-tab-swap">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium text-text-muted">
                       Paste Play Store URLs, Package IDs, or Developer Links (one per line):
@@ -3696,7 +3791,7 @@ function PlayStoreIntelligenceView({
 
               {/* TAB 2: INDIVIDUAL GAME */}
               {scanModalTab === "single_game" && (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 atlas-tab-swap">
                   <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/25 flex items-start gap-3">
                     <span className="material-symbols-outlined text-sky-400 text-[20px] shrink-0 mt-0.5">
                       info
@@ -3791,7 +3886,7 @@ function PlayStoreIntelligenceView({
 
               {/* TAB 3: BY COMPETITOR */}
               {scanModalTab === "competitor" && (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 atlas-tab-swap">
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-semibold text-text-main">Select Competitor:</label>
                     <select
@@ -3940,7 +4035,7 @@ function PlayStoreIntelligenceView({
 
               {/* TAB 4: INDIVIDUAL PUBLISHER ACCOUNT */}
               {scanModalTab === "publisher" && (
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-4 atlas-tab-swap">
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-semibold text-text-main">
                       Select Publisher Account ({searchablePublishers.length} accounts):
@@ -4037,22 +4132,29 @@ function PlayStoreIntelligenceView({
                   </div>
                 </div>
               )}
-            </div>
-          </div>,
-          document.body
-        )}
+              </motion.div>
+            </motion.div>
+          )}
 
-      {/* MODAL 3: ONE-WAY GOOGLE SHEET IMPORTER (z-[100]) */}
-      {showSheetModal &&
-        createPortal(
-          <div
-            onClick={() => setShowSheetModal(false)}
-            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+          {/* MODAL 3: ONE-WAY GOOGLE SHEET IMPORTER (z-[100]) */}
+          {showSheetModal && (
+            <motion.div
+              key="play-sheet-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onClick={() => setShowSheetModal(false)}
+              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+              >
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-semibold text-text-main">
@@ -4198,22 +4300,29 @@ function PlayStoreIntelligenceView({
                   Could not load Google Sheet preview. Check credentials.
                 </div>
               )}
-            </div>
-          </div>,
-          document.body
-        )}
+              </motion.div>
+            </motion.div>
+          )}
 
-      {/* MODAL 4: BATCH COUNTRY AVAILABILITY SCANNER (z-[100]) */}
-      {showCountryBatchModal &&
-        createPortal(
-          <div
-            onClick={() => setShowCountryBatchModal(false)}
-            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+          {/* MODAL 4: BATCH COUNTRY AVAILABILITY SCANNER (z-[100]) */}
+          {showCountryBatchModal && (
+            <motion.div
+              key="play-country-batch-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onClick={() => setShowCountryBatchModal(false)}
+              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+              >
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-semibold text-text-main">Resumable Batch Country Scanner</h3>
@@ -4316,23 +4425,30 @@ function PlayStoreIntelligenceView({
                   {countryQueueStatus.running ? "Queue Running..." : "Start Country Batch Queue"}
                 </button>
               </div>
-            </div>
-          </div>,
-          document.body
-        )}
+              </motion.div>
+            </motion.div>
+          )}
 
-      {/* MODAL 5: RENAME ACCOUNT & ASSIGN LISTS (z-[100]) */}
-      {editingPublisher &&
-        createPortal(
-          <div
-            onClick={() => setEditingPublisher(null)}
-            className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <form
-              onClick={(e) => e.stopPropagation()}
-              onSubmit={handleSavePublisherModal}
-              className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+          {/* MODAL 5: RENAME ACCOUNT & ASSIGN LISTS (z-[100]) */}
+          {editingPublisher && (
+            <motion.div
+              key="play-rename-publisher-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onClick={() => setEditingPublisher(null)}
+              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
+              <motion.form
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                onSubmit={handleSavePublisherModal}
+                className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+              >
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-semibold text-text-main">Rename Account &amp; Lists</h3>
@@ -4447,22 +4563,29 @@ function PlayStoreIntelligenceView({
                   </div>
                 </div>
               </div>
-            </form>
-          </div>,
-          document.body
-        )}
+              </motion.form>
+            </motion.div>
+          )}
 
-      {/* MODAL: MANAGE COMPETITOR BATCHES (GROUPS) (z-[100]) */}
-      {groupModal &&
-        createPortal(
-          <div
-            onClick={() => setGroupModal(null)}
-            className="atlas-google-shell fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="bg-surface-solid border border-border-subtle rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+          {/* MODAL: MANAGE COMPETITOR BATCHES (GROUPS) (z-[100]) */}
+          {groupModal && (
+            <motion.div
+              key="play-group-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              onClick={() => setGroupModal(null)}
+              className="atlas-google-shell fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
             >
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.985 }}
+                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                className="bg-surface-solid border border-border-subtle rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+              >
               <div className="p-5 border-b border-border-subtle flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-semibold text-text-main flex items-center gap-2">
@@ -4733,50 +4856,64 @@ function PlayStoreIntelligenceView({
                   </div>
                 </div>
               </form>
-            </div>
-          </div>,
-          document.body
-        )}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
 
       {/* CONFIRMATION DIALOG (z-[110] — sits above all modals & drawers) */}
-      {confirmDeletePub &&
-        createPortal(
-          <div
-            onClick={() => setConfirmDeletePub(null)}
-            className="atlas-google-shell fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+      {createPortal(
+        <AnimatePresence>
+          {confirmDeletePub && (
+            <motion.div
+              key="play-confirm-delete-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              onClick={() => setConfirmDeletePub(null)}
+              className="atlas-google-shell fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
             >
-              <h4 className="text-sm font-semibold text-text-main">
-                Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
-              </h4>
-              <p className="text-xs text-text-muted">
-                This removes the publisher record from Play Store Intelligence. If you only want to remove it from a Competitor List, uncheck the list instead.
-              </p>
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setConfirmDeletePub(null)}
-                  className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  disabled={isDeletingPub}
-                  onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                >
-                  {isDeletingPub && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
-                  {isDeletingPub ? "Deleting..." : "Delete Permanently"}
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+              <motion.div
+                initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 6, scale: 0.97 }}
+                transition={{ duration: 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+              >
+                <h4 className="text-sm font-semibold text-text-main">
+                  Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
+                </h4>
+                <p className="text-xs text-text-muted">
+                  This removes the publisher record from Play Store Intelligence. If you only want to remove it from a Competitor List, uncheck the list instead.
+                </p>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeletePub(null)}
+                    className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeletingPub}
+                    onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+                  >
+                    {isDeletingPub && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
+                    {isDeletingPub ? "Deleting..." : "Delete Permanently"}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
 
       {/* UNIVERSAL GAME DETAIL DRAWER (z-[90] via Portal — sits cleanly in front of z-50 top header) */}
       <AnimatePresence>

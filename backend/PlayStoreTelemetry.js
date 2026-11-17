@@ -1873,6 +1873,20 @@ function startTelemetryBackgroundWorkers(pool) {
   return { cardQueue, telemetryQueue };
 }
 
+const telemetryCacheInvalidators = new Set();
+
+function registerTelemetryCacheInvalidator(fn) {
+  if (typeof fn === 'function') telemetryCacheInvalidators.add(fn);
+}
+
+function notifyTelemetryCacheInvalidators() {
+  for (const fn of telemetryCacheInvalidators) {
+    try {
+      fn();
+    } catch {}
+  }
+}
+
 function registerPlayTelemetryRoutes({ app, pool }) {
   const workers = startTelemetryBackgroundWorkers(pool);
 
@@ -1925,6 +1939,7 @@ function registerPlayTelemetryRoutes({ app, pool }) {
       }
 
       const result = await runFullTelemetryForPackage(pool, pkg, { forceRefresh: true });
+      notifyTelemetryCacheInvalidators();
       return res.json(result.game);
     } catch (error) {
       console.error('[PlayTelemetry] GET /api/telemetry error:', error.message);
@@ -1942,6 +1957,7 @@ function registerPlayTelemetryRoutes({ app, pool }) {
         ...(req.body || {}),
         forceRefresh: true
       });
+      notifyTelemetryCacheInvalidators();
       return res.json(result);
     } catch (error) {
       console.error('[PlayTelemetry] POST /api/telemetry/scan error:', error.message);
@@ -1980,5 +1996,6 @@ module.exports = {
   computeEngagementAndRevenue,
   runEngagementRevenuePipeline,
   runFullTelemetryForPackage,
-  registerPlayTelemetryRoutes
+  registerPlayTelemetryRoutes,
+  registerTelemetryCacheInvalidator
 };

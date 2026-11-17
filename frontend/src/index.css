@@ -422,10 +422,142 @@ html:not(.dark) .atlas-google-shell section[aria-labelledby="video-delete-title"
   transition: opacity 80ms ease-out, transform 80ms ease-out !important;
 }
 
+/* DriveDive-inspired fluid motion & theme transition system --------------------
+   Uses hardware-accelerated View Transitions when supported, a scoped color-only
+   transition fallback when not, and shared CSS keyframes matching DriveDive's
+   crisp easing and short durations. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+  mix-blend-mode: normal;
+}
+
+html.atlas-theme-transition,
+html.atlas-theme-transition body,
+html.atlas-theme-transition aside,
+html.atlas-theme-transition nav,
+html.atlas-theme-transition header,
+html.atlas-theme-transition main section,
+html.atlas-theme-transition main article,
+html.atlas-theme-transition .bg-surface-solid,
+html.atlas-theme-transition .bg-surface-glass,
+html.atlas-theme-transition .bg-input-bg {
+  transition:
+    background-color 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 200ms cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+}
+
+/* Suppress per-element CSS transitions while capturing a View Transition snapshot
+   so toggling .dark flips DOM styles synchronously at 60fps. */
+html.atlas-vt-switching *,
+html.atlas-vt-switching *::before,
+html.atlas-vt-switching *::after {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+}
+
+.atlas-cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
+}
+
+.atlas-theme-toggle-icon {
+  transition: transform 240ms cubic-bezier(0.2, 0.9, 0.25, 1.1);
+}
+button:hover .atlas-theme-toggle-icon {
+  transform: rotate(18deg) scale(1.06);
+}
+button:active .atlas-theme-toggle-icon {
+  transform: rotate(-12deg) scale(0.94);
+}
+
+@keyframes atlasPageEnter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes atlasCardRise {
+  from { opacity: 0; transform: translateY(10px) scale(0.992); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes atlasBackdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes atlasModalIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes atlasPopoverIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.atlas-page-enter {
+  animation: atlasPageEnter 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.atlas-card-rise {
+  animation: atlasCardRise 300ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.atlas-stagger-grid > *:nth-child(2) { animation-delay: 40ms; }
+.atlas-stagger-grid > *:nth-child(3) { animation-delay: 80ms; }
+.atlas-stagger-grid > *:nth-child(4) { animation-delay: 120ms; }
+
+.atlas-interactive-card {
+  transition:
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease;
+}
+
+.atlas-interactive-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm-hover);
+}
+
+.atlas-modal-backdrop {
+  animation: atlasBackdropIn 160ms ease both;
+}
+
+.atlas-modal-card {
+  animation: atlasModalIn 210ms cubic-bezier(0.2, 0.9, 0.25, 1.08) both;
+}
+
+.atlas-popover-in {
+  animation: atlasPopoverIn 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: top center;
+}
+
+.atlas-tab-swap {
+  animation: atlasPageEnter 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.animate-in.fade-in {
+  animation: atlasBackdropIn 150ms ease both;
+}
+
+.animate-in.fade-in.zoom-in-95 {
+  animation: atlasPopoverIn 130ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Respect OS accessibility preferences without forcing users through long
    animations or parallax-like motion. */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto !important; }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
 
   *,
   *::before,

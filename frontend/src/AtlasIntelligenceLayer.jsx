@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
 import AtlasFeedback from "./AtlasFeedback.jsx";
+import { getCachedCatalogue, getMemoryCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 
 import { API_BASE } from "./apiConfig.js";
 const AUTH_TOKEN_KEY = "atlas_auth_token";
@@ -141,8 +142,11 @@ function VideoDeleteDialog({ asset, busy, error, onCancel, onConfirm }) {
 }
 
 function VideoLibrary({ onClose }) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const initialVideos = getMemoryCatalogue("video_assets");
+  const [items, setItems] = useState(() => (Array.isArray(initialVideos?.data) ? initialVideos.data : []));
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const [loading, setLoading] = useState(() => !Array.isArray(initialVideos?.data));
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("all");
@@ -152,11 +156,13 @@ function VideoLibrary({ onClose }) {
   const [deleteError, setDeleteError] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (itemsRef.current.length === 0) setLoading(true);
     setError("");
     try {
       const data = await fetchJson(`${API_BASE}/api/video-assets`);
-      setItems(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setItems(list);
+      void setCachedCatalogue("video_assets", list, null);
     } catch (err) {
       setError(err.message || "Unable to load video library.");
     } finally {
@@ -183,7 +189,10 @@ function VideoLibrary({ onClose }) {
     setDeleteError("");
     try {
       await fetchJson(`${API_BASE}/api/video-assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
-      setItems(current => current.filter(item => Number(item.id) !== assetId));
+      const next = itemsRef.current.filter(item => Number(item.id) !== assetId);
+      itemsRef.current = next;
+      setItems(next);
+      void setCachedCatalogue("video_assets", next, null);
       setDeleteTarget(null);
       AtlasFeedback.toast("Video asset deleted.", { tone: "info" });
     } catch (err) {
@@ -193,7 +202,19 @@ function VideoLibrary({ onClose }) {
     }
   }, [deleteTarget]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    if (!getMemoryCatalogue("video_assets")?.data) {
+      void getCachedCatalogue("video_assets").then(cached => {
+        if (active && Array.isArray(cached?.data) && cached.data.length > 0) {
+          setItems(prev => (prev.length === 0 ? cached.data : prev));
+          setLoading(false);
+        }
+      });
+    }
+    void load();
+    return () => { active = false; };
+  }, [load]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -220,7 +241,10 @@ function VideoLibrary({ onClose }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 6 }}
+      transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
       className="atlas-google-shell fixed top-16 bottom-[72px] md:bottom-0 left-0 md:left-[88px] right-0 z-[45] bg-bg-base text-text-main overflow-y-auto custom-scrollbar font-body-md antialiased [text-rendering:optimizeLegibility]"
     >
       <div className="w-full max-w-[1500px] mx-auto px-4 sm:px-6 lg:px-8 py-7 md:py-9">
@@ -283,7 +307,7 @@ function VideoLibrary({ onClose }) {
             <span className="material-symbols-outlined animate-spin text-[30px] text-electric-blue">progress_activity</span>
             <p className="text-[12px] mt-3">Loading video creatives…</p>
           </div>
-        ) : error ? (
+        ) : error && items.length === 0 ? (
           <div className="min-h-[360px] flex flex-col items-center justify-center text-center">
             <span className="material-symbols-outlined text-urgent-red text-[34px]">error</span>
             <p className="text-sm text-text-main font-medium mt-3">Video library unavailable</p>

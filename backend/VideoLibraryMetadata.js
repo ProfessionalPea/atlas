@@ -208,9 +208,21 @@ function buildVideoAssetDisplayFields(item, manualGameMap = new Map()) {
       : hasManualMetadata
         ? 'manually_organized'
         : 'unassigned',
-    automaticGames: automaticGame ? [{ title: automaticGame.title || automaticGame.packageName, packageName: automaticGame.packageName }] : [],
+    automaticGames: automaticGame ? [automaticGame] : [],
     games: displayGames
   };
+}
+
+function serializeVideoAssetsList(items) {
+  return (Array.isArray(items) ? items : []).map(item => ({
+    ...item,
+    automaticGames: Array.isArray(item.automaticGames)
+      ? item.automaticGames.map(ag => ({
+          title: ag.title || ag.packageName,
+          packageName: ag.packageName
+        }))
+      : []
+  }));
 }
 
 function registerVideoMetadataRoutes({ app, pool }) {
@@ -368,7 +380,7 @@ function registerVideoMetadataRoutes({ app, pool }) {
 
       const cached = !forceRefresh ? videoAssetsCache.get(cacheKey) : null;
       if (cached && cached.expiresAt > Date.now()) {
-        return res.json(cached.data);
+        return res.json(serializeVideoAssetsList(cached.data));
       }
 
       const { rows } = await pool.query(`
@@ -603,7 +615,7 @@ function registerVideoMetadataRoutes({ app, pool }) {
         data: result
       });
 
-      return res.json(result);
+      return res.json(serializeVideoAssetsList(result));
     } catch (error) {
       console.error('Video library metadata fetch failed:', error);
       return res.status(500).json({ error: 'Unable to load video library.' });

@@ -1,9 +1,9 @@
-import { lazy, memo, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
+import { lazy, memo, startTransition, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "./lib/utils";
 import PlayStoreIntelligenceView from "./PlayStoreIntelligenceView.jsx";
 import UniversalGameDetailDrawer from "./UniversalGameDetailDrawer.jsx";
-import { getCachedCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
+import { getCachedCatalogue, getMemoryCatalogue, setCachedCatalogue } from "./lib/atlasCache.js";
 import { AtlasFeedback } from "./AtlasFeedback.jsx";
 
 const AmazonIntelligenceView = lazy(() => import("./AmazonIntelligenceView.jsx"));
@@ -42,13 +42,12 @@ const AUTH_USER_KEY = "atlas_auth_user";
 const COUNTRY_SCAN_JOB_KEY = "atlas_country_scan_job";
 const COUNTRY_SCAN_ANNOUNCED_KEY = "atlas_country_scan_announced";
 
-const FADE_UP = { hidden: { opacity: 0, y: 20 }, show: { opacity: 1, y: 0 } };
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const COUNTRY_STATE_META = {
-  live: { label: "Live", icon: "check_circle", className: "text-emerald-500 bg-emerald-500/10 border-emerald-500/20" },
+  live: { label: "Live", icon: "check_circle", className: "text-emerald-800 dark:text-emerald-400 bg-emerald-500/10 border-emerald-600/25 dark:border-emerald-500/20" },
   pre_register: { label: "Pre-register", icon: "event_available", className: "text-electric-blue bg-electric-blue/10 border-electric-blue/20" },
-  early_access: { label: "Early access", icon: "science", className: "text-amber-500 bg-amber-500/10 border-amber-500/20" },
+  early_access: { label: "Early access", icon: "science", className: "text-amber-800 dark:text-amber-400 bg-amber-500/10 border-amber-600/25 dark:border-amber-500/20" },
   unavailable: { label: "Unavailable", icon: "block", className: "text-text-muted bg-input-bg border-border-subtle" },
   unknown: { label: "Unknown", icon: "help", className: "text-urgent-red bg-urgent-red/10 border-urgent-red/20" }
 };
@@ -76,7 +75,7 @@ function PaidBadge({ item, compact = false, showPrice = true }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border border-violet-500/25 bg-violet-500/10 text-violet-400 font-medium whitespace-nowrap",
+        "inline-flex items-center rounded-full border border-violet-600/25 dark:border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300 font-medium whitespace-nowrap",
         compact ? "gap-1 px-1.5 py-0.5 text-[8px]" : "gap-1.5 px-2.5 py-1 text-[9px] md:text-[10px]"
       )}
       title={priceText ? `Paid app · ${priceText}` : "Paid app"}
@@ -262,6 +261,24 @@ const TrendingTargets = memo(function TrendingTargets({
   viewMode,
   latestScanTargetName,
 }) {
+  const [visibleCount, setVisibleCount] = useState(60);
+
+  useEffect(() => {
+    setVisibleCount(60);
+  }, [trendingSort, viewMode]);
+
+  const visibleSlice = useMemo(
+    () => sortedTrending.slice(0, visibleCount),
+    [sortedTrending, visibleCount]
+  );
+
+  const handleScroll = useCallback((e) => {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) {
+      setVisibleCount((prev) => (prev < sortedTrending.length ? prev + 80 : prev));
+    }
+  }, [sortedTrending.length]);
+
   return (
     <section className="xl:col-span-7 bg-surface-solid border border-border-subtle rounded-[24px] shadow-sm flex flex-col h-[500px] md:h-[600px] overflow-hidden">
       <div className="p-4 md:p-5 border-b border-border-subtle flex items-center justify-between gap-3 flex-wrap">
@@ -294,7 +311,7 @@ const TrendingTargets = memo(function TrendingTargets({
         </div>
       </div>
 
-      <motion.div layoutScroll className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-border-subtle">
+      <div onScroll={handleScroll} className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-border-subtle">
         {sortedTrending.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center text-text-muted p-6">
             <div className="w-12 h-12 rounded-full bg-input-bg flex items-center justify-center mb-3">
@@ -307,60 +324,70 @@ const TrendingTargets = memo(function TrendingTargets({
             </span>
           </div>
         ) : (
-          <LayoutGroup id="trending-targets">
-            {sortedTrending.map((game) => {
+          <>
+            {visibleSlice.map((game) => {
               const gameKey = getGameIdentity(game);
               return (
-                <motion.button
-                  type="button"
-                  key={gameKey}
-                  layout="position"
-                  transition={{ layout: { type: "spring", stiffness: 500, damping: 42, mass: 0.65 } }}
-                  onClick={() => onGameClick(game)}
-                  className="w-full flex items-center gap-3 md:gap-4 px-4 md:px-5 py-3.5 text-left hover:bg-input-bg/60 focus-visible:bg-input-bg/60 focus-visible:outline-none transition-colors group"
-                >
-                  <div className="w-11 h-11 md:w-12 md:h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0">
-                    {game.icon ? (
-                      <img loading="lazy" decoding="async" src={game.icon} alt={game.title} className="w-full h-full object-cover" />
-                    ) : (
-                      <span className="material-symbols-outlined text-text-muted">sports_esports</span>
-                    )}
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
-                      <PaidBadge item={game} compact showPrice={false} />
-                      {game.is_suspended && (
-                        <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                <div key={gameKey} className="atlas-cv-row">
+                  <button
+                    type="button"
+                    onClick={() => onGameClick(game)}
+                    className="w-full flex items-center gap-3 md:gap-4 px-4 md:px-5 py-3.5 text-left hover:bg-input-bg/60 focus-visible:bg-input-bg/60 focus-visible:outline-none transition-colors group"
+                  >
+                    <div className="w-11 h-11 md:w-12 md:h-12 rounded-xl overflow-hidden bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0">
+                      {game.icon ? (
+                        <img loading="lazy" decoding="async" src={game.icon} alt={game.title} className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="material-symbols-outlined text-text-muted">sports_esports</span>
                       )}
                     </div>
-                    <p className="text-[10px] md:text-xs text-text-muted truncate mt-0.5">{game.publisher_name}</p>
-                  </div>
 
-                  <div className="flex flex-col items-end gap-1.5 ml-auto flex-shrink-0">
-                    {game.ad_count >= 1 && (
-                      <span className="rounded-full bg-electric-blue/10 text-electric-blue px-2.5 py-1 text-[9px] md:text-[10px] font-medium whitespace-nowrap border border-electric-blue/15">
-                        {viewMode === "latest" ? `${game.ad_count} ads` : `${game.ad_count} detections`}
-                      </span>
-                    )}
-                    <div className="flex items-center gap-1.5">
-                      {game.installs && game.installs !== "0+" && (
-                        <span className="text-[9px] md:text-[10px] font-semibold text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{game.installs}</span>
-                      )}
-                      {getAgeText(getGameReleaseValue(game)) && (
-                        <span className="text-[9px] md:text-[10px] text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{getAgeText(getGameReleaseValue(game))}</span>
-                      )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <h3 className="text-xs md:text-sm font-semibold text-text-main truncate group-hover:text-electric-blue transition-colors">{game.title}</h3>
+                        <PaidBadge item={game} compact showPrice={false} />
+                        {game.is_suspended && (
+                          <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                        )}
+                      </div>
+                      <p className="text-[10px] md:text-xs text-text-muted truncate mt-0.5">{game.publisher_name}</p>
                     </div>
-                  </div>
 
-                  <span className="material-symbols-outlined text-text-muted text-[18px] opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block">chevron_right</span>
-                </motion.button>
+                    <div className="flex flex-col items-end gap-1.5 ml-auto flex-shrink-0">
+                      {game.ad_count >= 1 && (
+                        <span className="rounded-full bg-electric-blue/10 text-electric-blue px-2.5 py-1 text-[9px] md:text-[10px] font-medium whitespace-nowrap border border-electric-blue/15">
+                          {viewMode === "latest" ? `${game.ad_count} ads` : `${game.ad_count} detections`}
+                        </span>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        {game.installs && game.installs !== "0+" && (
+                          <span className="text-[9px] md:text-[10px] font-semibold text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{game.installs}</span>
+                        )}
+                        {getAgeText(getGameReleaseValue(game)) && (
+                          <span className="text-[9px] md:text-[10px] text-text-muted bg-input-bg px-2 py-0.5 rounded-full">{getAgeText(getGameReleaseValue(game))}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <span className="material-symbols-outlined text-text-muted text-[18px] opacity-0 group-hover:opacity-100 transition-opacity hidden sm:block">chevron_right</span>
+                  </button>
+                </div>
               );
             })}
-          </LayoutGroup>
+            {visibleSlice.length < sortedTrending.length && (
+              <div className="p-3 text-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((prev) => Math.min(sortedTrending.length, prev + 80))}
+                  className="px-4 py-1.5 rounded-full bg-input-bg hover:bg-surface-glass border border-border-subtle text-[11px] font-medium text-text-muted hover:text-text-main transition-colors"
+                >
+                  Showing {visibleSlice.length.toLocaleString()} of {sortedTrending.length.toLocaleString()} · Load more
+                </button>
+              </div>
+            )}
+          </>
         )}
-      </motion.div>
+      </div>
     </section>
   );
 });
@@ -377,6 +404,8 @@ const LiveDirectory = memo(function LiveDirectory({
   onDeleteGame,
   isScanning,
 }) {
+  const [visiblePubGames, setVisiblePubGames] = useState({});
+
   return (
     <section className="xl:col-span-5 bg-surface-solid border border-border-subtle rounded-[24px] shadow-sm flex flex-col h-[430px] md:h-[600px] overflow-hidden">
       <div className="p-4 md:p-5 border-b border-border-subtle">
@@ -398,112 +427,143 @@ const LiveDirectory = memo(function LiveDirectory({
             </div>
             <span className="text-xs font-medium">No directory data.</span>
           </div>
-        ) : visibleCompetitorTree.map((comp) => (
-          <div key={comp.id} className="mb-2 text-xs">
-            <div
-              className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-2xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] transition-colors cursor-pointer group"
-              onClick={() => onToggleNode(`comp_${comp.id}`)}
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span
-                  className="material-symbols-outlined text-text-muted text-[18px] transition-transform"
-                  style={{ transform: expandedNodes[`comp_${comp.id}`] === false ? 'rotate(-90deg)' : 'rotate(0deg)' }}
-                >
-                  expand_more
-                </span>
-                <div className="w-8 h-8 rounded-xl bg-input-bg flex items-center justify-center text-text-muted flex-shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">domain</span>
-                </div>
-                <span className="font-semibold text-text-main truncate">{comp.name}</span>
-              </div>
+        ) : visibleCompetitorTree.map((comp, compIdx) => {
+          const isCompExpanded =
+            viewMode === "latest"
+              ? expandedNodes[`comp_${comp.id}`] !== false
+              : compIdx < 5
+              ? expandedNodes[`comp_${comp.id}`] !== false
+              : Boolean(expandedNodes[`comp_${comp.id}`]);
+          const accCount = (comp.accounts || []).length;
 
-              <div className="flex items-center gap-1 flex-shrink-0">
-                <span className="text-[9px] px-2 py-1 rounded-full bg-input-bg text-text-muted font-medium">Group</span>
-                {isAdmin && (
-                  <button
-                    onClick={(e) => onNukeCompetitorData(e, comp.id, comp.name)}
-                    className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
-                    title="Delete all group data"
+          return (
+            <div key={comp.id} className="mb-2 text-xs">
+              <div
+                className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-2xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] transition-colors cursor-pointer group"
+                onClick={() => onToggleNode(`comp_${comp.id}`, isCompExpanded)}
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span
+                    className="material-symbols-outlined text-text-muted text-[18px] transition-transform"
+                    style={{ transform: isCompExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
                   >
-                    <span className="material-symbols-outlined text-[16px]">delete</span>
-                  </button>
-                )}
-              </div>
-            </div>
+                    expand_more
+                  </span>
+                  <div className="w-8 h-8 rounded-xl bg-input-bg flex items-center justify-center text-text-muted flex-shrink-0">
+                    <span className="material-symbols-outlined text-[18px]">domain</span>
+                  </div>
+                  <span className="font-semibold text-text-main truncate">{comp.name}</span>
+                </div>
 
-            {expandedNodes[`comp_${comp.id}`] !== false && (
-              <div className="ml-6 pl-3 border-l border-border-subtle space-y-1 py-1">
-                {comp.accounts && comp.accounts.map((acc) => (
-                  <div key={acc.id}>
-                    <div
-                      className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] transition-colors cursor-pointer group/pub"
-                      onClick={() => onToggleNode(`pub_${acc.id}`)}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <span className="text-[9px] px-2 py-1 rounded-full bg-input-bg text-text-muted font-medium">
+                    {accCount} {accCount === 1 ? "pub" : "pubs"}
+                  </span>
+                  {isAdmin && (
+                    <button
+                      onClick={(e) => onNukeCompetitorData(e, comp.id, comp.name)}
+                      className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all"
+                      title="Delete all group data"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className="material-symbols-outlined text-text-muted text-[16px] transition-transform"
-                          style={{ transform: expandedNodes[`pub_${acc.id}`] === false ? 'rotate(-90deg)' : 'rotate(0deg)' }}
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {isCompExpanded && (
+                <div className="ml-6 pl-3 border-l border-border-subtle space-y-1 py-1">
+                  {comp.accounts && comp.accounts.map((acc) => {
+                    const isPubExpanded =
+                      viewMode === "latest"
+                        ? expandedNodes[`pub_${acc.id}`] !== false
+                        : Boolean(expandedNodes[`pub_${acc.id}`]);
+                    const pubGames = acc.games || [];
+                    const pubLimit = visiblePubGames[acc.id] || 50;
+                    const shownPubGames = pubGames.slice(0, pubLimit);
+
+                    return (
+                      <div key={acc.id}>
+                        <div
+                          className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] transition-colors cursor-pointer group/pub"
+                          onClick={() => onToggleNode(`pub_${acc.id}`, isPubExpanded)}
                         >
-                          expand_more
-                        </span>
-                        <span className="material-symbols-outlined text-text-muted text-[18px] flex-shrink-0">folder</span>
-                        <span className="text-text-main text-[10px] md:text-xs font-medium truncate">{acc.publisher_name}</span>
-                      </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="material-symbols-outlined text-text-muted text-[16px] transition-transform"
+                              style={{ transform: isPubExpanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}
+                            >
+                              expand_more
+                            </span>
+                            <span className="material-symbols-outlined text-text-muted text-[18px] flex-shrink-0">folder</span>
+                            <span className="text-text-main text-[10px] md:text-xs font-medium truncate">{acc.publisher_name}</span>
+                          </div>
 
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <span className="text-[9px] px-2 py-1 rounded-full bg-input-bg text-text-muted font-medium">Pub</span>
-                        {isAdmin && (
-                          <button
-                            onClick={(e) => onNukePublisherData(e, acc.id, acc.publisher_name)}
-                            className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover/pub:opacity-100 focus:opacity-100 transition-all"
-                            title="Delete publisher data"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">delete</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {expandedNodes[`pub_${acc.id}`] !== false && (
-                      <div className="ml-7 pl-3 border-l border-border-subtle space-y-0.5 py-1">
-                        {acc.games && acc.games.map((game) => (
-                          <div
-                            key={getGameIdentity(game)}
-                            onClick={() => onGameClick(game)}
-                            className="group/game flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] cursor-pointer transition-colors"
-                          >
-                            <span className="material-symbols-outlined text-text-muted text-[16px] flex-shrink-0">sports_esports</span>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
-                                <PaidBadge item={game} compact showPrice={false} />
-                                {game.is_suspended && (
-                                  <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
-                                )}
-                              </div>
-                              <div className="text-[9px] text-text-muted truncate">{game.package_name}</div>
-                            </div>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <span className="text-[9px] px-2 py-1 rounded-full bg-input-bg text-text-muted font-medium">{pubGames.length}</span>
                             {isAdmin && (
                               <button
-                                onClick={(e) => onDeleteGame(e, game)}
-                                disabled={isScanning}
-                                className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover/game:opacity-100 focus:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
-                                title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
-                                aria-label={`Delete ${game.title || game.package_name || "game"}`}
+                                onClick={(e) => onNukePublisherData(e, acc.id, acc.publisher_name)}
+                                className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover/pub:opacity-100 focus:opacity-100 transition-all"
+                                title="Delete publisher data"
                               >
-                                <span className="material-symbols-outlined text-[14px]">delete</span>
+                                <span className="material-symbols-outlined text-[15px]">delete</span>
                               </button>
                             )}
                           </div>
-                        ))}
+                        </div>
+
+                        {isPubExpanded && (
+                          <div className="ml-7 pl-3 border-l border-border-subtle space-y-0.5 py-1">
+                            {shownPubGames.map((game) => (
+                              <div
+                                key={getGameIdentity(game)}
+                                onClick={() => onGameClick(game)}
+                                className="group/game flex items-center gap-2 px-2.5 py-2 rounded-xl hover:bg-black/[0.035] dark:hover:bg-white/[0.045] cursor-pointer transition-colors"
+                              >
+                                <span className="material-symbols-outlined text-text-muted text-[16px] flex-shrink-0">sports_esports</span>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <div className="text-[10px] md:text-[11px] font-medium text-text-main truncate">{game.title}</div>
+                                    <PaidBadge item={game} compact showPrice={false} />
+                                    {game.is_suspended && (
+                                      <span className="px-1.5 py-0.5 rounded-full border border-urgent-red/25 bg-urgent-red/10 text-urgent-red text-[8px] font-medium flex-shrink-0">Suspended</span>
+                                    )}
+                                  </div>
+                                  <div className="text-[9px] text-text-muted truncate">{game.package_name}</div>
+                                </div>
+                                {isAdmin && (
+                                  <button
+                                    onClick={(e) => onDeleteGame(e, game)}
+                                    disabled={isScanning}
+                                    className="w-7 h-7 rounded-full text-text-muted hover:text-urgent-red hover:bg-urgent-red/10 flex items-center justify-center opacity-0 group-hover/game:opacity-100 focus:opacity-100 disabled:opacity-20 disabled:cursor-not-allowed transition-all"
+                                    title={isScanning ? "Wait for the active scan to finish" : "Delete game from Atlas"}
+                                    aria-label={`Delete ${game.title || game.package_name || "game"}`}
+                                  >
+                                    <span className="material-symbols-outlined text-[14px]">delete</span>
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                            {pubGames.length > shownPubGames.length && (
+                              <button
+                                type="button"
+                                onClick={() => setVisiblePubGames((prev) => ({ ...prev, [acc.id]: pubGames.length }))}
+                                className="w-full text-left px-2.5 py-1.5 rounded-lg text-[10px] font-medium text-electric-blue hover:bg-electric-blue/10 transition-colors"
+                              >
+                                Show all {pubGames.length} games
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -522,6 +582,12 @@ function App() {
 
   const isAdmin = currentUser?.role === "admin";
 
+  const [initialDashCache] = useState(() => {
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    const user = localStorage.getItem(AUTH_USER_KEY);
+    return token && user ? getMemoryCatalogue("atlas_dashboard_meta")?.data || null : null;
+  });
+
   // Regular users land directly on Play Store Intelligence; Admins land on Dashboard
   const [activeTab, setActiveTab] = useState(() => {
     try {
@@ -532,15 +598,15 @@ function App() {
     }
   }); 
   const [trendingSort, setTrendingSort] = useState("ads");
-  const [stats, setStats] = useState({ competitors: 0, accounts: 0, games: 0 });
-  const [competitorTree, setCompetitorTree] = useState([]);
-  const [trending, setTrending] = useState([]);
+  const [stats, setStats] = useState(() => initialDashCache?.stats || { competitors: 0, accounts: 0, games: 0 });
+  const [competitorTree, setCompetitorTree] = useState(() => initialDashCache?.competitorTree || []);
+  const [trending, setTrending] = useState(() => initialDashCache?.trending || []);
 
   const [globalSearchQuery, setGlobalSearchQuery] = useState("");
   const deferredGlobalSearchQuery = useDeferredValue(globalSearchQuery);
   const [globalSearchHighlightIdx, setGlobalSearchHighlightIdx] = useState(-1);
   const [playStoreSearchQuery, setPlayStoreSearchQuery] = useState("");
-  const [suspendedGames, setSuspendedGames] = useState([]);
+  const [suspendedGames, setSuspendedGames] = useState(() => initialDashCache?.suspendedGames || []);
 
   const [expandedNodes, setExpandedNodes] = useState({});
 
@@ -602,7 +668,7 @@ function App() {
   const [selectedGameCountryLoading, setSelectedGameCountryLoading] = useState(false);
   const [selectedGameVideos, setSelectedGameVideos] = useState([]);
   const [selectedGameVideosLoading, setSelectedGameVideosLoading] = useState(false);
-  const [countryScanLibrary, setCountryScanLibrary] = useState([]);
+  const [countryScanLibrary, setCountryScanLibrary] = useState(() => initialDashCache?.countryScanLibrary || []);
   const [countryLibrarySearch, setCountryLibrarySearch] = useState("");
   const deferredCountryLibrarySearch = useDeferredValue(countryLibrarySearch);
 
@@ -647,9 +713,9 @@ function App() {
   const lastAppliedTerminalSnapshotRef = useRef(null);
   const scanLaunchPendingRef = useRef(false);
 
-  const [targetLists, setTargetLists] = useState([]);
-  const [savedCompetitors, setSavedCompetitors] = useState([]);
-  const [emailLists, setEmailLists] = useState([]); 
+  const [targetLists, setTargetLists] = useState(() => initialDashCache?.targetLists || []);
+  const [savedCompetitors, setSavedCompetitors] = useState(() => initialDashCache?.savedCompetitors || []);
+  const [emailLists, setEmailLists] = useState(() => initialDashCache?.emailLists || []); 
   
   const [newListName, setNewListName] = useState("");
   const [newListTargets, setNewListTargets] = useState("");
@@ -695,47 +761,63 @@ function App() {
     const root = window.document.documentElement;
     const currentlyDark = root.classList.contains("dark");
     const nextDark = !currentlyDark;
+    const prefersReducedMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // 1. Temporarily freeze transitions across DOM during the theme switch
-    let style = document.getElementById("atlas-theme-switch-style");
-    if (!style) {
-      style = document.createElement("style");
-      style.id = "atlas-theme-switch-style";
-      style.textContent = `
-        *, *::before, *::after {
-          -webkit-transition: none !important;
-          -moz-transition: none !important;
-          -o-transition: none !important;
-          -ms-transition: none !important;
-          transition: none !important;
+    const applyThemeDom = () => {
+      if (nextDark) {
+        root.classList.add("dark");
+        localStorage.setItem("atlas_theme", "dark");
+      } else {
+        root.classList.remove("dark");
+        localStorage.setItem("atlas_theme", "light");
+      }
+    };
+
+    if (prefersReducedMotion) {
+      applyThemeDom();
+      startTransition(() => setIsDarkMode(nextDark));
+      return;
+    }
+
+    if (typeof document.startViewTransition === "function") {
+      try {
+        root.classList.add("atlas-vt-switching");
+        const vt = document.startViewTransition(() => {
+          applyThemeDom();
+        });
+        const cleanup = () => {
+          root.classList.remove("atlas-vt-switching");
+        };
+        if (vt?.ready && typeof vt.ready.then === "function") {
+          vt.ready.then(cleanup, cleanup);
+        } else {
+          window.requestAnimationFrame(cleanup);
         }
-      `;
-      document.head.appendChild(style);
+        startTransition(() => setIsDarkMode(nextDark));
+        return;
+      } catch {
+        root.classList.remove("atlas-vt-switching");
+      }
     }
 
-    // 2. Synchronously update DOM classes and localStorage
-    if (nextDark) {
-      root.classList.add("dark");
-      localStorage.setItem("atlas_theme", "dark");
-    } else {
-      root.classList.remove("dark");
-      localStorage.setItem("atlas_theme", "light");
-    }
-
-    // 3. Update React state
-    setIsDarkMode(nextDark);
-
-    // 4. Force synchronous reflow so all elements adopt new CSS variables instantly
-    void window.getComputedStyle(document.body).opacity;
-
-    // 5. Restore transitions cleanly on next frame
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = document.getElementById("atlas-theme-switch-style");
-        if (el) el.remove();
-      });
-    });
+    root.classList.add("atlas-theme-transition");
+    applyThemeDom();
+    startTransition(() => setIsDarkMode(nextDark));
+    window.setTimeout(() => {
+      root.classList.remove("atlas-theme-transition");
+    }, 240);
   }, []);
+
+  // Preload heavy lazy-split views on idle so switching to Amazon feels instant
+  useEffect(() => {
+    if (!authToken || !currentUser) return undefined;
+    const timer = window.setTimeout(() => {
+      void import("./AmazonIntelligenceView.jsx");
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [authToken, currentUser]);
 
   useEffect(() => {
     const root = window.document.documentElement;
@@ -765,22 +847,26 @@ function App() {
     };
   }, [activeStatPanel]);
 
-  // Parallel data load without blocking on a sequential /api/health call first
+  const hasFreshDashLoadRef = useRef(false);
+
+  // Parallel data load with a single batched React state commit on settle
   const loadAllData = useCallback(async () => {
     if (!authToken || !currentUser) return;
     setIsSyncingDashboard(true);
     const freshData = {};
+    let nextEmails = null;
+    let nextSettings = null;
+    let statsFulfilled = false;
+
     const requests = [
       fetchJson(`${API_BASE}/api/stats`).then(data => {
-        setIsNodeOnline(true);
-        const val = data?.error ? { competitors: 0, accounts: 0, games: 0 } : data;
-        setStats(val);
-        freshData.stats = val;
+        statsFulfilled = true;
+        freshData.stats = data?.error ? { competitors: 0, accounts: 0, games: 0 } : data;
       }),
       fetchJson(`${API_BASE}/api/competitors`).then(data => {
         const val = Array.isArray(data) ? data : [];
-        setCompetitorTree(val);
-        freshData.competitorTree = val;
+        const realCompetitorTree = val.filter(comp => !comp.is_unassigned);
+        freshData.competitorTree = realCompetitorTree;
 
         const seenGames = new Map();
         for (const comp of val) {
@@ -790,9 +876,9 @@ function App() {
               if (!seenGames.has(key)) {
                 seenGames.set(key, {
                   ...g,
-                  publisher_name: g.publisher_name || acc.publisher_name,
-                  competitor_id: g.competitor_id ?? comp.id,
-                  competitor_name: g.competitor_name || comp.name
+                  publisher_name: g.publisher_name || (acc.is_unassigned ? null : acc.publisher_name),
+                  competitor_id: g.competitor_id ?? (comp.is_unassigned ? null : comp.id),
+                  competitor_name: g.competitor_name || (comp.is_unassigned ? null : comp.name)
                 });
               }
             }
@@ -801,68 +887,71 @@ function App() {
         const derivedTrending = [...seenGames.values()].sort(
           (a, b) => (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0)
         );
-        setTrending(derivedTrending);
         freshData.trending = derivedTrending;
       }),
       fetchJson(`${API_BASE}/api/lists`).then(data => {
-        const val = Array.isArray(data) ? data : [];
-        setTargetLists(val);
-        freshData.targetLists = val;
+        freshData.targetLists = Array.isArray(data) ? data : [];
       }),
       fetchJson(`${API_BASE}/api/saved-competitors`).then(data => {
-        const val = Array.isArray(data) ? data : [];
-        setSavedCompetitors(val);
-        freshData.savedCompetitors = val;
+        freshData.savedCompetitors = Array.isArray(data) ? data : [];
       }),
       fetchJson(`${API_BASE}/api/emails`).then(data => {
-        const val = Array.isArray(data) ? data : [];
-        setEmailLists(val);
+        nextEmails = Array.isArray(data) ? data : [];
+        freshData.emailLists = nextEmails;
       }),
       fetchJson(`${API_BASE}/api/settings`).then(data => {
-        if (data && !data.error) setSettings(prev => ({ ...prev, ...data }));
+        if (data && !data.error) nextSettings = data;
       }),
       fetchJson(`${API_BASE}/api/country-scans`).then(data => {
-        const val = Array.isArray(data) ? data : [];
-        setCountryScanLibrary(val);
-        freshData.countryScanLibrary = val;
+        freshData.countryScanLibrary = Array.isArray(data) ? data : [];
       }),
       fetchJson(`${API_BASE}/api/suspended-games`).then(data => {
-        const val = Array.isArray(data) ? data : [];
-        setSuspendedGames(val);
-        freshData.suspendedGames = val;
+        freshData.suspendedGames = Array.isArray(data) ? data : [];
       }),
     ];
     try {
       const results = await Promise.allSettled(requests);
       const anyFulfilled = results.some(result => result.status === "fulfilled");
-      setIsNodeOnline(anyFulfilled);
       results.filter(result => result.status === "rejected").forEach(result => console.error("Atlas data load failed:", result.reason));
 
       if (anyFulfilled) {
-        // Background write to IndexedDB so next tab open or refresh renders instantly with 0ms delay
+        hasFreshDashLoadRef.current = true;
+        setIsNodeOnline(true);
+        if (freshData.stats) setStats(freshData.stats);
+        if (freshData.competitorTree) setCompetitorTree(freshData.competitorTree);
+        if (freshData.trending) setTrending(freshData.trending);
+        if (freshData.targetLists) setTargetLists(freshData.targetLists);
+        if (freshData.savedCompetitors) setSavedCompetitors(freshData.savedCompetitors);
+        if (nextEmails) setEmailLists(nextEmails);
+        if (nextSettings) setSettings(prev => ({ ...prev, ...nextSettings }));
+        if (freshData.countryScanLibrary) setCountryScanLibrary(freshData.countryScanLibrary);
+        if (freshData.suspendedGames) setSuspendedGames(freshData.suspendedGames);
         void setCachedCatalogue("atlas_dashboard_meta", freshData);
+      } else if (!statsFulfilled) {
+        setIsNodeOnline(false);
       }
     } finally {
       setIsSyncingDashboard(false);
     }
   }, [authToken, currentUser]);
 
-  // 0ms instant startup from local IndexedDB cache
+  // 0ms instant startup from local L1 memory / IndexedDB cache
   useEffect(() => {
-    if (authToken && currentUser) {
-      getCachedCatalogue("atlas_dashboard_meta").then((cached) => {
-        if (cached?.data) {
-          if (cached.data.stats) setStats(cached.data.stats);
-          if (cached.data.competitorTree) setCompetitorTree(cached.data.competitorTree);
-          if (cached.data.trending) setTrending(cached.data.trending);
-          if (cached.data.targetLists) setTargetLists(cached.data.targetLists);
-          if (cached.data.savedCompetitors) setSavedCompetitors(cached.data.savedCompetitors);
-          if (cached.data.countryScanLibrary) setCountryScanLibrary(cached.data.countryScanLibrary);
-          if (cached.data.suspendedGames) setSuspendedGames(cached.data.suspendedGames);
-        }
-      });
-    }
-  }, [authToken, currentUser]);
+    if (!authToken || !currentUser || initialDashCache) return;
+    let cancelled = false;
+    getCachedCatalogue("atlas_dashboard_meta").then((cached) => {
+      if (cancelled || hasFreshDashLoadRef.current || !cached?.data) return;
+      if (cached.data.stats) setStats(cached.data.stats);
+      if (cached.data.competitorTree) setCompetitorTree(cached.data.competitorTree);
+      if (cached.data.trending) setTrending(cached.data.trending);
+      if (cached.data.targetLists) setTargetLists(cached.data.targetLists);
+      if (cached.data.savedCompetitors) setSavedCompetitors(cached.data.savedCompetitors);
+      if (cached.data.emailLists) setEmailLists(cached.data.emailLists);
+      if (cached.data.countryScanLibrary) setCountryScanLibrary(cached.data.countryScanLibrary);
+      if (cached.data.suspendedGames) setSuspendedGames(cached.data.suspendedGames);
+    });
+    return () => { cancelled = true; };
+  }, [authToken, currentUser, initialDashCache]);
 
   useEffect(() => {
     if (authToken && currentUser) {
@@ -1093,8 +1182,11 @@ function App() {
     }
   };
 
-  const toggleNode = useCallback((nodeId) => {
-    setExpandedNodes(prev => ({ ...prev, [nodeId]: !prev[nodeId] }));
+  const toggleNode = useCallback((nodeId, currentExpanded) => {
+    setExpandedNodes(prev => ({
+      ...prev,
+      [nodeId]: typeof currentExpanded === "boolean" ? !currentExpanded : !prev[nodeId]
+    }));
   }, []);
 
   const handleNukeCompetitorData = useCallback(async (e, id, name) => {
@@ -1400,6 +1492,7 @@ function App() {
   }, [stats, viewMode, visibleCompetitorTree, visibleTrending]);
 
   const statCompetitors = useMemo(() => {
+    if (activeStatPanel !== "competitors") return [];
     return visibleCompetitorTree.map((comp) => {
       const accounts = comp.accounts || [];
       const games = accounts.flatMap((acc) => acc.games || []);
@@ -1411,9 +1504,10 @@ function App() {
         totalInstalls: games.reduce((sum, game) => sum + getInstallCount(game), 0),
       };
     }).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [visibleCompetitorTree]);
+  }, [activeStatPanel, visibleCompetitorTree]);
 
   const statPublishers = useMemo(() => {
+    if (activeStatPanel !== "publishers") return [];
     const publishers = [];
 
     visibleCompetitorTree.forEach((comp) => {
@@ -1430,14 +1524,14 @@ function App() {
     });
 
     return publishers.sort((a, b) => (a.publisher_name || "").localeCompare(b.publisher_name || ""));
-  }, [visibleCompetitorTree]);
+  }, [activeStatPanel, visibleCompetitorTree]);
 
-  // visibleTrending is already deduplicated via dedupeGames(); sort directly without re-running Map deduplication
   const statGames = useMemo(() => {
+    if (activeStatPanel !== "games") return [];
     return [...visibleTrending].sort((a, b) =>
       (a.title || "").localeCompare(b.title || "")
     );
-  }, [visibleTrending]);
+  }, [activeStatPanel, visibleTrending]);
 
   const filteredStatItems = useMemo(() => {
     if (!activeStatPanel) return [];
@@ -1472,24 +1566,48 @@ function App() {
     const query = deferredGlobalSearchQuery.trim().toLowerCase();
     if (query.length < 2) return { games: [], publishers: [], competitors: [] };
 
-    const games = statGames.filter((game) =>
-      (game.title || "").toLowerCase().includes(query) ||
-      (game.publisher_name || "").toLowerCase().includes(query) ||
-      (game.package_name || "").toLowerCase().includes(query)
-    ).slice(0, 5);
+    const games = [];
+    for (const game of visibleTrending) {
+      if (
+        (game.title || "").toLowerCase().includes(query) ||
+        (game.publisher_name || "").toLowerCase().includes(query) ||
+        (game.package_name || "").toLowerCase().includes(query)
+      ) {
+        games.push(game);
+        if (games.length >= 5) break;
+      }
+    }
 
-    const publishers = statPublishers.filter((publisher) =>
-      (publisher.publisher_name || "").toLowerCase().includes(query) ||
-      (publisher.competitorName || "").toLowerCase().includes(query)
-    ).slice(0, 4);
-
-    const competitors = statCompetitors.filter((competitor) =>
-      (competitor.name || "").toLowerCase().includes(query) ||
-      (competitor.ads_id || "").toLowerCase().includes(query)
-    ).slice(0, 4);
+    const publishers = [];
+    const competitors = [];
+    for (const comp of visibleCompetitorTree) {
+      if (
+        competitors.length < 4 &&
+        ((comp.name || "").toLowerCase().includes(query) ||
+          (comp.ads_id || "").toLowerCase().includes(query))
+      ) {
+        competitors.push(comp);
+      }
+      if (publishers.length < 4) {
+        for (const account of comp.accounts || []) {
+          if (
+            (account.publisher_name || "").toLowerCase().includes(query) ||
+            (comp.name || "").toLowerCase().includes(query)
+          ) {
+            publishers.push({
+              ...account,
+              competitorName: comp.name,
+              competitorId: comp.id,
+            });
+            if (publishers.length >= 4) break;
+          }
+        }
+      }
+      if (competitors.length >= 4 && publishers.length >= 4) break;
+    }
 
     return { games, publishers, competitors };
-  }, [deferredGlobalSearchQuery, statGames, statPublishers, statCompetitors]);
+  }, [deferredGlobalSearchQuery, visibleTrending, visibleCompetitorTree]);
 
   const globalSearchResultCount =
     globalSearchResults.games.length +
@@ -1509,22 +1627,28 @@ function App() {
   }, [deferredGlobalSearchQuery, activeDropdown]);
 
   const sortedTrending = useMemo(() => {
-    const games = [...visibleTrending];
-
-    return games.sort((a, b) => {
-      let difference = 0;
-
+    const decorated = visibleTrending.map((game) => {
+      let metric = 0;
       if (trendingSort === "ads") {
-        difference = (Number(b.ad_count) || 0) - (Number(a.ad_count) || 0);
+        metric = Number(game.ad_count) || 0;
       } else if (trendingSort === "newest") {
-        difference = getGameReleaseTime(b) - getGameReleaseTime(a);
+        metric = getGameReleaseTime(game);
       } else {
-        difference = getInstallCount(b) - getInstallCount(a);
+        metric = getInstallCount(game);
       }
-
-      if (difference !== 0) return difference;
-      return getGameIdentity(a).localeCompare(getGameIdentity(b));
+      return {
+        game,
+        metric,
+        identity: getGameIdentity(game),
+      };
     });
+
+    decorated.sort((a, b) => {
+      if (b.metric !== a.metric) return b.metric - a.metric;
+      return a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0;
+    });
+
+    return decorated.map((entry) => entry.game);
   }, [visibleTrending, trendingSort]);
 
   const handleSaveSettings = async (e) => {
@@ -2812,16 +2936,16 @@ function App() {
         <main className="relative min-h-screen px-3 sm:px-5 lg:px-7 pt-24 md:pt-24 pb-32 w-full max-w-[1500px] mx-auto">
           
           {!isNodeOnline && (
-            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6 w-full bg-amber-500/10 border border-amber-500/25 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-center gap-2 text-amber-500 text-[11px] md:text-xs z-40 relative">
-              <span className="flex items-center gap-2 font-medium"><span className="w-2 h-2 rounded-full bg-amber-500"></span> Server offline</span>
-              <span className="hidden sm:block text-amber-500/50">|</span>
+            <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mb-6 w-full bg-amber-500/10 border border-amber-600/35 dark:border-amber-500/25 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-center gap-2 text-amber-800 dark:text-amber-300 text-[11px] md:text-xs z-40 relative">
+              <span className="flex items-center gap-2 font-medium"><span className="w-2 h-2 rounded-full bg-amber-600 dark:bg-amber-400"></span> Server offline</span>
+              <span className="hidden sm:block text-amber-700/50 dark:text-amber-400/50">|</span>
               <span className="text-center sm:text-left">Workstation server is unreachable. Active tracking hours: 9:00 AM – 6:00 PM.</span>
             </motion.div>
           )}
 
           {activeTab === "dashboard" && (
-            <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.08 } } }} className="flex flex-col w-full gap-5 md:gap-6">
-              <motion.div variants={FADE_UP} className="flex items-end justify-between gap-4 px-1">
+            <div className="atlas-page-enter flex flex-col w-full gap-5 md:gap-6">
+              <div className="flex items-end justify-between gap-4 px-1">
                 <div>
                   <div className="flex items-center gap-2.5">
                     <h1 className="text-xl md:text-2xl font-medium text-text-main tracking-tight">Dashboard</h1>
@@ -2840,10 +2964,10 @@ function App() {
                     <button type="button" onClick={() => setViewMode("latest")} className={cn("px-3 py-1.5 rounded-full text-[10px] font-medium", viewMode === "latest" ? "bg-surface-solid text-text-main shadow-sm" : "text-text-muted")}>Latest</button>
                   </div>
                 )}
-              </motion.div>
+              </div>
 
               {isAdmin && (
-                <motion.div variants={FADE_UP} className={cn("w-full bg-surface-solid rounded-[24px] p-3 md:p-4 shadow-sm border border-border-subtle z-40 transition-all", isScanning && "ring-1 ring-electric-blue/40 opacity-80")}>
+                <div className={cn("w-full bg-surface-solid rounded-[24px] p-3 md:p-4 shadow-sm border border-border-subtle z-40 transition-all", isScanning && "ring-1 ring-electric-blue/40 opacity-80")}>
                   <div className="flex flex-col md:flex-row flex-wrap items-end gap-3 md:gap-4 w-full">
                     <div className="flex-[2] min-w-full md:min-w-[200px] space-y-1.5 md:space-y-2">
                       <label className="text-[10px] md:text-[11px] text-text-muted font-medium pl-2 block">Target competitor / ID</label>
@@ -3113,11 +3237,11 @@ function App() {
                       </button>
                     </div>
                   </div>
-                </motion.div>
+                </div>
               )}
 
               {isAdmin && (
-                <motion.div variants={FADE_UP} className="w-full bg-surface-solid rounded-[24px] p-4 md:p-5 shadow-sm border border-border-subtle">
+                <div className="w-full bg-surface-solid rounded-[24px] p-4 md:p-5 shadow-sm border border-border-subtle">
                   <div className="flex flex-col lg:flex-row lg:items-end gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-3 mb-3">
@@ -3169,10 +3293,10 @@ function App() {
                       </button>
                     </div>
                   </div>
-                </motion.div>
+                </div>
               )}
 
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+              <div className="atlas-stagger-grid grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
                 {[
                   { label: "Last scan", value: lastScanTime, icon: "schedule", tone: "text-text-muted", iconBg: "bg-input-bg", note: "Most recent run" },
                   { id: "competitors", label: "Competitors", value: displayStats.competitors, icon: "groups", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Tracked groups" },
@@ -3180,16 +3304,15 @@ function App() {
                   { id: "games", label: "Games", value: displayStats.games, icon: "sports_esports", tone: "text-electric-blue", iconBg: "bg-electric-blue/10", note: viewMode === "latest" ? "In latest scan" : "Unique titles" }
                 ].map((stat) => {
                   const isClickable = Boolean(stat.id);
-                  const CardTag = isClickable ? motion.button : motion.div;
+                  const CardTag = isClickable ? "button" : "div";
                   return (
                     <CardTag
                       key={stat.label}
                       type={isClickable ? "button" : undefined}
-                      variants={FADE_UP}
                       onClick={isClickable ? () => openStatPanel(stat.id) : undefined}
                       className={cn(
-                        "bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between transition-all",
-                        isClickable && "group cursor-pointer hover:-translate-y-0.5 hover:border-electric-blue/40 hover:shadow-md"
+                        "bg-surface-solid rounded-[24px] p-4 md:p-5 border border-border-subtle text-left min-h-[130px] md:min-h-[150px] flex flex-col justify-between atlas-interactive-card atlas-card-rise",
+                        isClickable && "group cursor-pointer hover:border-electric-blue/40"
                       )}
                     >
                       <div className="flex items-start justify-between gap-3 w-full">
@@ -3215,7 +3338,7 @@ function App() {
                 })}
               </div>
 
-              <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-5">
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 md:gap-5">
                 <TrendingTargets
                   sortedTrending={sortedTrending}
                   trendingSort={trendingSort}
@@ -3236,19 +3359,14 @@ function App() {
                   onDeleteGame={handleDeleteGame}
                   isScanning={isScanning}
                 />
-              </motion.div>
-            </motion.div>
+              </div>
+            </div>
           )}
 
           {/* COUNTRY SCAN LIBRARY TAB */}
           {activeTab === "countryScans" && (
-            <motion.div
-              initial="hidden"
-              animate="show"
-              variants={{ show: { transition: { staggerChildren: 0.06 } } }}
-              className="flex flex-col w-full gap-5 md:gap-6 max-w-7xl mx-auto"
-            >
-              <motion.div variants={FADE_UP} className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+            <div className="atlas-page-enter flex flex-col w-full gap-5 md:gap-6 max-w-7xl mx-auto">
+              <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2.5">
                     <div className="w-10 h-10 rounded-full bg-electric-blue/10 text-electric-blue flex items-center justify-center">
@@ -3267,9 +3385,9 @@ function App() {
                   <span className="text-text-main font-medium">{countryScanLibrary.length}</span>
                   {" "}saved {countryScanLibrary.length === 1 ? "package" : "packages"}
                 </div>
-              </motion.div>
+              </div>
 
-              <motion.div variants={FADE_UP} className="bg-surface-solid border border-border-subtle rounded-[24px] p-4 md:p-5 shadow-sm">
+              <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-4 md:p-5 shadow-sm">
                 <div className="flex flex-col lg:flex-row gap-3">
                   <div className="flex-1 relative">
                     <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">deployed_code</span>
@@ -3300,9 +3418,9 @@ function App() {
                     </button>
                   )}
                 </div>
-              </motion.div>
+              </div>
 
-              <motion.div variants={FADE_UP} className="sticky top-16 md:top-20 z-20 bg-bg-base/95 backdrop-blur-xl py-2">
+              <div className="sticky top-16 md:top-20 z-20 bg-bg-base/95 backdrop-blur-xl py-2">
                 <div className="relative w-full md:max-w-md">
                   <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-[19px]">search</span>
                   <input
@@ -3322,10 +3440,10 @@ function App() {
                     </button>
                   )}
                 </div>
-              </motion.div>
+              </div>
 
               {filteredCountryScanLibrary.length === 0 ? (
-                <motion.div variants={FADE_UP} className="bg-surface-solid border border-border-subtle rounded-[24px] min-h-[280px] flex flex-col items-center justify-center text-center p-8 shadow-sm">
+                <div className="bg-surface-solid border border-border-subtle rounded-[24px] min-h-[280px] flex flex-col items-center justify-center text-center p-8 shadow-sm">
                   <div className="w-14 h-14 rounded-full bg-input-bg text-text-muted flex items-center justify-center">
                     <span className="material-symbols-outlined text-[28px]">public_off</span>
                   </div>
@@ -3337,19 +3455,18 @@ function App() {
                       ? "Run a country availability scan and the package will stay here for future review and rescanning."
                       : "Try searching by game title, developer, or Android package name."}
                   </p>
-                </motion.div>
+                </div>
               ) : (
-                <motion.div variants={FADE_UP} className="grid grid-cols-1 xl:grid-cols-2 gap-3 md:gap-4">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 md:gap-4">
                   {filteredCountryScanLibrary.map(item => {
                     const counts = item.counts || {};
                     const runningThisPackage = isCountryScanRunning && countryScanJob?.packageName === item.packageName;
 
                     return (
-                      <motion.div
+                      <div
                         key={item.packageName}
-                        whileHover={{ y: -2 }}
                         className={cn(
-                          "bg-surface-solid border rounded-[22px] p-4 md:p-5 shadow-sm transition-all",
+                          "atlas-interactive-card bg-surface-solid border rounded-[22px] p-4 md:p-5 shadow-sm transition-all",
                           runningThisPackage ? "border-electric-blue/50 ring-1 ring-electric-blue/20" : "border-border-subtle"
                         )}
                       >
@@ -3469,29 +3586,29 @@ function App() {
                             </div>
                           </div>
                         </div>
-                      </motion.div>
+                      </div>
                     );
                   })}
-                </motion.div>
+                </div>
               )}
-            </motion.div>
+            </div>
           )}
 
           {/* DATABASE TARGETS TAB */}
           {activeTab === "automated" && (
-            <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-7xl mx-auto">
-              <motion.div variants={FADE_UP} className="flex justify-between items-end mb-4">
+            <div className="atlas-page-enter flex flex-col w-full gap-6 md:gap-8 max-w-7xl mx-auto">
+              <div className="flex justify-between items-end mb-4">
                 <div>
                   <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">Targets</h1>
                   <p className="text-sm text-text-muted mt-2">
                     {isAdmin ? "Manage saved competitors, batch lists, and email reporting targets." : "View saved competitor targets and active batch lists."}
                   </p>
                 </div>
-              </motion.div>
+              </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8">
                 {isAdmin && (
-                  <motion.div variants={FADE_UP} className="lg:col-span-4 space-y-6 md:space-y-8">
+                  <div className="lg:col-span-4 space-y-6 md:space-y-8">
                     <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 shadow-sm">
                       <h2 className="text-base font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-electric-blue text-[22px]">person_add</span> Save Competitor</h2>
                       <form onSubmit={handleSaveCompetitor} className="space-y-4">
@@ -3527,15 +3644,15 @@ function App() {
                         </button>
                       </form>
                     </div>
-                  </motion.div>
+                  </div>
                 )}
 
-                <motion.div variants={FADE_UP} className={cn("space-y-6 md:space-y-8", isAdmin ? "lg:col-span-8" : "lg:col-span-12")}>
+                <div className={cn("space-y-6 md:space-y-8", isAdmin ? "lg:col-span-8" : "lg:col-span-12")}>
                   <div className="bg-surface-solid border border-border-subtle rounded-[24px] p-6 min-h-[250px] shadow-sm">
                     <h2 className="text-sm font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">person</span> Saved competitors</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {savedCompetitors.map((comp) => (
-                        <motion.div whileHover={{ y: -2 }} key={comp.id} className="bg-surface-solid border border-border-subtle rounded-xl p-4 flex items-center justify-between transition-all group shadow-sm">
+                        <div key={comp.id} className="atlas-interactive-card bg-surface-solid border border-border-subtle rounded-xl p-4 flex items-center justify-between transition-all group shadow-sm">
                           <div className="min-w-0 pr-4">
                             <h3 className="text-sm font-semibold text-text-main truncate">{comp.name}</h3>
                             <button
@@ -3560,7 +3677,7 @@ function App() {
                               </span>
                             </button>
                           )}
-                        </motion.div>
+                        </div>
                       ))}
                       {savedCompetitors.length === 0 && <div className="col-span-full text-sm text-text-muted py-6 text-center italic border-2 border-dashed border-border-subtle rounded-xl">No competitors saved.</div>}
                     </div>
@@ -3577,7 +3694,7 @@ function App() {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {targetLists.map((list) => (
-                        <motion.div
+                        <div
                           key={list.id}
                           className="group bg-surface-solid border border-border-subtle rounded-2xl p-4 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.025]"
                         >
@@ -3613,7 +3730,7 @@ function App() {
                               </div>
                             ))}
                           </div>
-                        </motion.div>
+                        </div>
                       ))}
 
                       {targetLists.length === 0 && (
@@ -3632,7 +3749,7 @@ function App() {
                     <h2 className="text-sm font-semibold text-text-main mb-5 flex items-center gap-2"><span className="material-symbols-outlined text-[18px]">mail</span> Report recipients</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {emailLists.map((list) => (
-                        <motion.div whileHover={{ y: -2 }} key={list.id} className="bg-surface-solid border border-border-subtle rounded-xl p-5 flex flex-col transition-all group shadow-sm">
+                        <div key={list.id} className="atlas-interactive-card bg-surface-solid border border-border-subtle rounded-xl p-5 flex flex-col transition-all group shadow-sm">
                           <h3 className="text-sm font-semibold text-text-main truncate mb-4">{list.name}</h3>
                           <div className="bg-input-bg border border-border-subtle rounded-lg p-3 h-16 overflow-y-auto text-xs text-text-muted mb-4">
                             {parseJsonArray(list.emails).map((e, i) => <div key={i} className="truncate mb-1">{e}</div>)}
@@ -3650,19 +3767,19 @@ function App() {
                               {deletingTargetKey === `email:${list.id}` ? "Deleting..." : "Delete recipient"}
                             </button>
                           )}
-                        </motion.div>
+                        </div>
                       ))}
                       {emailLists.length === 0 && <div className="col-span-full text-sm text-text-muted py-6 text-center italic border-2 border-dashed border-border-subtle rounded-xl">No recipients saved.</div>}
                     </div>
                   </div>
-                </motion.div>
+                </div>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* SETTINGS TAB (ADMIN ONLY) */}
           {activeTab === "settings" && isAdmin && (
-            <motion.div initial="hidden" animate="show" variants={{ show: { transition: { staggerChildren: 0.1 } } }} className="flex flex-col w-full gap-6 md:gap-8 max-w-4xl mx-auto">
+            <div className="atlas-page-enter flex flex-col w-full gap-6 md:gap-8 max-w-4xl mx-auto">
               <div>
                 <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium">System Settings</h1>
                 <p className="font-body-sm md:font-body-md text-text-muted mt-1">Configure Google Sheets integrations and PDF report templates.</p>
@@ -3704,7 +3821,7 @@ function App() {
                   </button>
                 </div>
               </form>
-            </motion.div>
+            </div>
           )}
 
           {/* PLAY STORE INTELLIGENCE TAB */}
@@ -4210,7 +4327,7 @@ function App() {
                     )}
                   </div>
 
-                  <div className="p-3 md:p-4">
+                  <div key={countryScanViewTab} className="p-3 md:p-4 atlas-tab-swap">
                     {countryScanViewTab === "performance" ? (
                       countryPerformanceRows.length === 0 ? (
                         <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center px-6">
