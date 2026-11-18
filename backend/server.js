@@ -12,7 +12,7 @@ const SESSION_SECRET = getSessionSecret();
 const SESSION_EXPIRATION_DAYS = 30;
 
 const { generateAndSendReport } = require("./AutomatedReport");
-const { scanCompetitor, isValidPackage } = require("./GoogleAdsScannerBroad");
+const { scanCompetitor, isValidPackage, isAcceptedPackage } = require("./GoogleAdsScannerBroad");
 const { resolveMaxAdsToInspect } = require("./ScanAccounting");
 const { scanPackageCountries, normalizePackageName, COUNTRY_CODES } = require("./CountryAvailabilityScanner");
 const { pushScanToSheets, syncPublisherLinksToSheets } = require("./GoogleSheetsSync"); 
@@ -1843,7 +1843,7 @@ app.post("/api/scan", async (req, res) => {
               creativeId: String(creativeId)
             };
           })
-          .filter(entry => isValidPackage(entry.package));
+          .filter(entry => isAcceptedPackage(entry.package));
 
         // Early exit: Target produced 0 Play Store packages/ads
         if (!results || results.length === 0) {

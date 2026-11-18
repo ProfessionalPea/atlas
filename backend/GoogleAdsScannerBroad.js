@@ -16,6 +16,11 @@ const { createScanAccounting, resolveTargetUniqueGames, resolveMaxAdsToInspect }
 const videoPool = getDatabasePool();
 let videoDbReady = false;
 let videoDbInitialization = null;
+const COOKIES_FILE_PATH = path.join(__dirname, 'google_cookies.json');
+
+const verifiedNonComPackages = new Set();
+const playStoreVerificationCache = new Map();
+const MAX_PLAY_VERIFY_CACHE = 4000;
 
 async function ensureVideoDb() {
   if (videoDbReady) return;
@@ -64,6 +69,90 @@ const PACKAGE_BLACKLIST = [
   'apple.'
 ];
 
+const NON_COM_REJECT_PREFIXES = [
+  ...PACKAGE_BLACKLIST,
+  'window.',
+  'document.',
+  'navigator.',
+  'location.',
+  'this.',
+  'event.',
+  'target.',
+  'console.',
+  'process.',
+  'global.',
+  'self.',
+  'top.',
+  'parent.',
+  'frames.',
+  'history.',
+  'screen.',
+  'performance.',
+  'localstorage.',
+  'sessionstorage.',
+  'indexeddb.',
+  'caches.',
+  'crypto.',
+  'math.',
+  'json.',
+  'object.',
+  'array.',
+  'string.',
+  'number.',
+  'boolean.',
+  'promise.',
+  'symbol.',
+  'reflect.',
+  'proxy.',
+  'intl.',
+  'webassembly.',
+  'error.',
+  'regexp.',
+  'date.',
+  'map.',
+  'set.',
+  'player.',
+  'video.',
+  'audio.',
+  'canvas.',
+  'context.',
+  'config.',
+  'options.',
+  'settings.',
+  'params.',
+  'props.',
+  'state.',
+  'data.',
+  'result.',
+  'response.',
+  'request.',
+  'status.',
+  'headers.',
+  'cookies.',
+  'org.w3c.',
+  'org.apache.',
+  'org.chromium.',
+  'org.mozilla.',
+  'org.webkit.',
+  'org.json.',
+  'org.xml.',
+  'io.github.',
+  'io.reactivex.',
+  'io.netty.',
+  'io.grpc.',
+  'io.sentry.',
+  'net.openid.',
+  'dalvik.',
+  'java.',
+  'javax.',
+  'kotlin.',
+  'kotlinx.',
+  'android.',
+  'androidx.'
+];
+
+const PACKAGE_REJECT_EXT_REGEX = /\.(?:js|mjs|cjs|json|png|jpe?g|gif|webp|svg|ico|mp4|webm|mp3|wav|ogg|css|html?|xml|txt|pdf|woff2?|ttf|eot|otf|map|php|aspx?|jsp|apk|aab|ipa|zip|tar|gz)$/i;
+
 function isValidPackage(pkg) {
   if (!pkg || typeof pkg !== 'string') return false;
   const value = pkg.trim();
@@ -80,6 +169,31 @@ function isValidPackage(pkg) {
   if (!segments.slice(1).every(segment => /^[a-z0-9_]+$/.test(segment) && /[a-z]/.test(segment))) return false;
 
   return true;
+}
+
+function isValidNonComCandidate(pkg) {
+  if (!pkg || typeof pkg !== 'string') return false;
+  const value = pkg.trim();
+  if (!value || value.length > 255) return false;
+
+  const lower = value.toLowerCase();
+  if (lower.startsWith('com.')) return false;
+  if (NON_COM_REJECT_PREFIXES.some(prefix => lower.startsWith(prefix))) return false;
+  if (value.includes('_KNOWN_') || PACKAGE_REJECT_EXT_REGEX.test(lower)) return false;
+
+  const segments = lower.split('.');
+  if (segments.length < 3 || segments.length > 26) return false;
+  if (!/^[a-z][a-z0-9_]*$/.test(segments[0])) return false;
+  if (!segments.slice(1).every(segment => /^[a-z0-9_]+$/.test(segment) && /[a-z]/.test(segment))) return false;
+
+  return true;
+}
+
+function isAcceptedPackage(pkg) {
+  if (!pkg || typeof pkg !== 'string') return false;
+  const lower = pkg.trim().toLowerCase();
+  if (!lower) return false;
+  return isValidPackage(lower) || verifiedNonComPackages.has(lower);
 }
 
 function decodeForInspection(value) {
@@ -121,6 +235,9 @@ function addPackage(set, value) {
   set.add(String(value).trim().toLowerCase());
 }
 
+const DESTINATION_PACKAGE_REGEX = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi;
+const KEYED_PACKAGE_REGEX = /(?:packageName|package_name|appId|app_id|bundleId|bundle_id|androidPackageName|android_package_name|applicationId|application_id|applicationPackage|application_package|appPackage|app_package|appIdentifier|app_identifier|googlePlayAppId|storePackageName|store_package_name)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
+
 // This intentionally restores the September scanner's broad discovery model.
 // An ad limit limits creatives inspected, not games discovered. One creative can
 // contribute several package candidates.
@@ -129,13 +246,11 @@ function extractBroadPackages(value) {
   const found = new Set();
 
   // Strong evidence: an actual Play Store or market destination.
-  const destinationRegex = /(?:id=|id%3D|details\?id=|details%3Fid%3D|market:\/\/details\?id=)([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi;
-  for (const match of decoded.matchAll(destinationRegex)) addPackage(found, match[1]);
+  for (const match of decoded.matchAll(DESTINATION_PACKAGE_REGEX)) addPackage(found, match[1]);
 
   // Structured evidence: app/package identifiers in JSON, JS objects or
   // initialization payloads. The same com.* rule applies to every field.
-  const keyedRegex = /(?:packageName|package_name|appId|app_id|bundleId|bundle_id|androidPackageName|android_package_name|applicationId|application_id|applicationPackage|application_package|appPackage|app_package|appIdentifier|app_identifier|googlePlayAppId|storePackageName|store_package_name)["']?\s*[:=]\s*["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)["']/gi;
-  for (const match of decoded.matchAll(keyedRegex)) addPackage(found, match[1]);
+  for (const match of decoded.matchAll(KEYED_PACKAGE_REGEX)) addPackage(found, match[1]);
 
   // Broad evidence: quoted dotted identifiers, including the September model.
   const delimitedRegex = /["']([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){2,})["']/g;
@@ -149,7 +264,24 @@ function extractBroadPackages(value) {
   return [...found];
 }
 
-function extractExplicitStorePackages(value) {
+function extractCandidatePackages(value) {
+  const decoded = decodeForInspection(value).slice(0, 5000000);
+  const comPackages = extractBroadPackages(decoded);
+  const nonCom = new Set();
+
+  for (const match of decoded.matchAll(DESTINATION_PACKAGE_REGEX)) {
+    const candidate = String(match[1] || '').trim().toLowerCase();
+    if (isValidNonComCandidate(candidate)) nonCom.add(candidate);
+  }
+  for (const match of decoded.matchAll(KEYED_PACKAGE_REGEX)) {
+    const candidate = String(match[1] || '').trim().toLowerCase();
+    if (isValidNonComCandidate(candidate)) nonCom.add(candidate);
+  }
+
+  return { comPackages, nonComCandidates: [...nonCom] };
+}
+
+function extractExplicitStorePackages(value, includeVerifiedNonCom = false) {
   const decoded = decodeForInspection(value);
   const found = new Set();
   const patterns = [
@@ -157,7 +289,28 @@ function extractExplicitStorePackages(value) {
     /market:\/\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
   ];
   for (const pattern of patterns) {
-    for (const match of decoded.matchAll(pattern)) addPackage(found, match[1]);
+    for (const match of decoded.matchAll(pattern)) {
+      const candidate = String(match[1] || '').trim().toLowerCase();
+      if (isValidPackage(candidate) || (includeVerifiedNonCom && verifiedNonComPackages.has(candidate))) {
+        found.add(candidate);
+      }
+    }
+  }
+  return [...found];
+}
+
+function extractExplicitNonComStoreCandidates(value) {
+  const decoded = decodeForInspection(value);
+  const found = new Set();
+  const patterns = [
+    /play\.google\.com\/store\/apps\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi,
+    /market:\/\/details\?[^"'<>\s]*?\bid=([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)/gi
+  ];
+  for (const pattern of patterns) {
+    for (const match of decoded.matchAll(pattern)) {
+      const candidate = String(match[1] || '').trim().toLowerCase();
+      if (isValidNonComCandidate(candidate)) found.add(candidate);
+    }
   }
   return [...found];
 }
@@ -312,7 +465,7 @@ async function inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPack
 
     try {
       const html = await frame.content();
-      recordPackages(html, 'frameHtml');
+      recordPackages(html, 'frameHtml', isCreativeFrame ? frame : null);
 
       const assets = extractVideoAssets(html);
       for (const asset of assets) mergeVideoAsset(videoMap, asset);
@@ -348,7 +501,7 @@ async function inspectCreativeFrames(adPage, videoMap, frameEvidence, recordPack
           canvas ? canvas.outerHTML : ''
         ].join('\n').slice(0, 5000000);
       });
-      recordPackages(livePayload, 'frameHtml');
+      recordPackages(livePayload, 'frameHtml', isCreativeFrame ? frame : null);
     } catch {}
   }
 }
@@ -404,6 +557,102 @@ const DEFAULT_RPC_HEADERS = {
   'Referer': 'https://adstransparency.google.com/?region=any'
 };
 
+let cachedRpcCookieHeader = '';
+let cachedCookiesMtimeMs = -1;
+
+function getRpcHeaders() {
+  let cookieHeader = '';
+  try {
+    if (process.env.ATLAS_GOOGLE_COOKIES) {
+      const parsed = JSON.parse(process.env.ATLAS_GOOGLE_COOKIES);
+      if (Array.isArray(parsed)) {
+        cookieHeader = parsed
+          .filter(c => c && c.name && c.value !== undefined)
+          .map(c => `${c.name}=${c.value}`)
+          .join('; ');
+      }
+    } else if (fs.existsSync(COOKIES_FILE_PATH)) {
+      const mtimeMs = fs.statSync(COOKIES_FILE_PATH).mtimeMs;
+      if (mtimeMs !== cachedCookiesMtimeMs) {
+        const parsed = JSON.parse(fs.readFileSync(COOKIES_FILE_PATH, 'utf8'));
+        cachedRpcCookieHeader = Array.isArray(parsed)
+          ? parsed
+              .filter(c => c && c.name && c.value !== undefined)
+              .map(c => `${c.name}=${c.value}`)
+              .join('; ')
+          : '';
+        cachedCookiesMtimeMs = mtimeMs;
+      }
+      cookieHeader = cachedRpcCookieHeader;
+    }
+  } catch {}
+
+  if (cookieHeader) {
+    return { ...DEFAULT_RPC_HEADERS, Cookie: cookieHeader };
+  }
+  return DEFAULT_RPC_HEADERS;
+}
+
+async function verifyPackageOnPlayStore(pkg) {
+  const lower = String(pkg || '').trim().toLowerCase();
+  if (!lower) return false;
+  if (isValidPackage(lower)) return true;
+  if (verifiedNonComPackages.has(lower)) return true;
+  if (!isValidNonComCandidate(lower)) return false;
+
+  if (playStoreVerificationCache.has(lower)) {
+    return await playStoreVerificationCache.get(lower);
+  }
+
+  if (playStoreVerificationCache.size >= MAX_PLAY_VERIFY_CACHE) {
+    playStoreVerificationCache.clear();
+  }
+
+  const pending = (async () => {
+    try {
+      const dbHit = await videoPool
+        .query('SELECT 1 FROM games WHERE package_name = $1 LIMIT 1', [lower])
+        .catch(() => ({ rowCount: 0 }));
+      if (dbHit.rowCount > 0) {
+        verifiedNonComPackages.add(lower);
+        return true;
+      }
+
+      const res = await fetch(
+        `https://play.google.com/store/apps/details?id=${encodeURIComponent(lower)}&hl=en&gl=us`,
+        {
+          headers: {
+            'User-Agent': DEFAULT_RPC_HEADERS['User-Agent'],
+            'Accept-Language': 'en-US,en;q=0.9'
+          },
+          signal: AbortSignal.timeout(5500)
+        }
+      );
+
+      if (!res.ok) return false;
+      const html = await res.text();
+      if (!html || /requested URL was not found on this server/i.test(html)) {
+        return false;
+      }
+
+      const looksLikeListing =
+        html.includes('itemprop="name"') ||
+        html.includes('property="og:title"') ||
+        html.includes('AF_initDataCallback');
+      if (!looksLikeListing) return false;
+
+      verifiedNonComPackages.add(lower);
+      return true;
+    } catch {
+      playStoreVerificationCache.delete(lower);
+      return false;
+    }
+  })();
+
+  playStoreVerificationCache.set(lower, pending);
+  return await pending;
+}
+
 function parseAnjiRpcJson(rawText) {
   if (!rawText || typeof rawText !== 'string') return null;
   const cleaned = rawText.replace(/^\)\]\}'\s*/, '').trim();
@@ -439,7 +688,7 @@ async function resolveAdvertiserIdViaRpc(queryText) {
       'https://adstransparency.google.com/anji/_/rpc/SearchService/SearchSuggestions?authuser=',
       {
         method: 'POST',
-        headers: DEFAULT_RPC_HEADERS,
+        headers: getRpcHeaders(),
         body: 'f.req=' + encodeURIComponent(JSON.stringify({
           '1': cleanQuery,
           '2': 10,
@@ -498,7 +747,7 @@ async function fetchSearchCreativesRpcPage(advertiserId, pageToken = null) {
         'https://adstransparency.google.com/anji/_/rpc/SearchService/SearchCreatives?authuser=',
         {
           method: 'POST',
-          headers: DEFAULT_RPC_HEADERS,
+          headers: getRpcHeaders(),
           body: 'f.req=' + encodeURIComponent(JSON.stringify(reqPayload)),
           signal: AbortSignal.timeout(10000)
         }
@@ -534,13 +783,14 @@ async function fetchSearchCreativesRpcPage(advertiserId, pageToken = null) {
 }
 
 async function fetchCreativePreviewUrlsByIdRpc(advertiserId, creativeId) {
+  let lastStatus = 0;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const res = await fetch(
         'https://adstransparency.google.com/anji/_/rpc/LookupService/GetCreativeById?authuser=',
         {
           method: 'POST',
-          headers: DEFAULT_RPC_HEADERS,
+          headers: getRpcHeaders(),
           body: 'f.req=' + encodeURIComponent(JSON.stringify({
             '1': advertiserId,
             '2': creativeId,
@@ -549,22 +799,24 @@ async function fetchCreativePreviewUrlsByIdRpc(advertiserId, creativeId) {
           signal: AbortSignal.timeout(8000)
         }
       );
+      lastStatus = res.status;
       if (res.status === 429 || res.status >= 500) {
         await new Promise(resolve => setTimeout(resolve, 900 * (attempt + 1)));
         continue;
       }
-      if (!res.ok) return [];
+      if (!res.ok) return { urls: [], ok: false, status: res.status };
       const parsed = parseAnjiRpcJson(await res.text());
+      if (!parsed) return { urls: [], ok: false, status: res.status };
       const variations = Array.isArray(parsed?.['1']?.['5']) ? parsed['1']['5'] : [];
       const urls = [];
       for (const variation of variations) {
         const url = variation?.['1']?.['4'];
         if (typeof url === 'string' && url.startsWith('http')) urls.push(url);
       }
-      return [...new Set(urls)];
+      return { urls: [...new Set(urls)], ok: true, status: res.status };
     } catch {}
   }
-  return [];
+  return { urls: [], ok: false, status: lastStatus };
 }
 
 async function fetchPreviewScriptWithRetry(previewUrl) {
@@ -628,7 +880,17 @@ async function inspectCreativeViaRpcFastPath(advertiserId, creativeId, initialPr
       if (!res.ok || !res.body) continue;
       sawValidResponse = true;
 
-      for (const pkg of extractBroadPackages(res.body)) discoveredPackages.add(pkg);
+      const { comPackages, nonComCandidates } = extractCandidatePackages(res.body);
+      for (const pkg of comPackages) discoveredPackages.add(pkg);
+      if (nonComCandidates.length > 0) {
+        const verified = await Promise.all(
+          nonComCandidates.map(async candidate => ((await verifyPackageOnPlayStore(candidate)) ? candidate : null))
+        );
+        for (const pkg of verified) {
+          if (pkg) discoveredPackages.add(pkg);
+        }
+      }
+
       if (/googlevideo\.com|youtube\.com|youtu\.be|MediaFile|<video/i.test(res.body)) {
         for (const asset of extractVideoAssets(res.body)) mergeVideoAsset(discoveredVideos, asset);
       }
@@ -642,17 +904,21 @@ async function inspectCreativeViaRpcFastPath(advertiserId, creativeId, initialPr
 
   await inspectUrlList(initialPreviewUrls);
 
+  let fallbackChecked = false;
   if (discoveredPackages.size === 0 && (!initialPreviewUrls.length || sawBrokenVariation || !sawNonAndroidAppStore)) {
-    const fallbackUrls = await fetchCreativePreviewUrlsByIdRpc(advertiserId, creativeId);
-    if (fallbackUrls.length > 0) {
-      await inspectUrlList(fallbackUrls);
+    const fallback = await fetchCreativePreviewUrlsByIdRpc(advertiserId, creativeId);
+    if (fallback.urls.length > 0) {
+      await inspectUrlList(fallback.urls);
     }
+    fallbackChecked = fallback.ok === true;
   }
+
+  const allVariationsChecked = discoveredPackages.size > 0 || sawNonAndroidAppStore || (fallbackChecked && !sawBrokenVariation);
 
   return {
     packages: [...discoveredPackages],
     videos: [...discoveredVideos.values()],
-    resolved: discoveredPackages.size > 0 || sawNonAndroidAppStore || (sawValidResponse && triedUrls.size > 0),
+    resolved: discoveredPackages.size > 0 || sawNonAndroidAppStore || (sawValidResponse && triedUrls.size > 0 && allVariationsChecked),
     isNonAndroid: discoveredPackages.size === 0 && sawNonAndroidAppStore
   };
 }
@@ -754,7 +1020,7 @@ async function scanCompetitor(
   const proxyServer = process.env.ATLAS_SCANNER_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || null;
   const isHeadless = String(process.env.ATLAS_SCANNER_HEADLESS || 'true').toLowerCase() !== 'false';
   const profileDir = process.env.ATLAS_SCANNER_PROFILE_DIR || path.join(__dirname, '.playwright_transparency_profile');
-  const cookiesFilePath = path.join(__dirname, 'google_cookies.json');
+  const cookiesFilePath = COOKIES_FILE_PATH;
 
   const launchOptions = {
     headless: isHeadless,
@@ -1168,6 +1434,33 @@ async function scanCompetitor(
     }
 
     const knownPackagesByCreative = new Map();
+    const hydrateFromCacheMap = async cacheMap => {
+      const verifyLookups = [];
+      for (const [crId, entry] of cacheMap.entries()) {
+        if (!Array.isArray(entry?.packageNames) || entry.packageNames.length === 0) continue;
+        for (const rawPkg of entry.packageNames) {
+          const pkg = String(rawPkg || '').trim().toLowerCase();
+          if (!pkg) continue;
+          if (isValidPackage(pkg)) {
+            seenCreativeIds.add(crId);
+            if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
+            knownPackagesByCreative.get(crId).add(pkg);
+          } else if (isValidNonComCandidate(pkg)) {
+            verifyLookups.push(
+              verifyPackageOnPlayStore(pkg).then(ok => {
+                if (ok) {
+                  seenCreativeIds.add(crId);
+                  if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
+                  knownPackagesByCreative.get(crId).add(pkg);
+                }
+              })
+            );
+          }
+        }
+      }
+      if (verifyLookups.length > 0) await Promise.all(verifyLookups);
+    };
+
     try {
       await ensureVideoDb();
       const [seenRes, cacheRes] = await Promise.all([
@@ -1182,25 +1475,17 @@ async function scanCompetitor(
         getCreativeExtractionCache(videoPool, [...adIds]).catch(() => new Map())
       ]);
       for (const row of seenRes.rows) {
-        if (row.creative_id) {
-          seenCreativeIds.add(row.creative_id);
-          if (row.package_name && isValidPackage(row.package_name)) {
-            if (!knownPackagesByCreative.has(row.creative_id)) knownPackagesByCreative.set(row.creative_id, new Set());
-            knownPackagesByCreative.get(row.creative_id).add(String(row.package_name).trim().toLowerCase());
-          }
+        if (!row.creative_id) continue;
+        seenCreativeIds.add(row.creative_id);
+        const pkg = String(row.package_name || '').trim().toLowerCase();
+        if (!pkg) continue;
+        if (isValidPackage(pkg) || isValidNonComCandidate(pkg)) {
+          if (!isValidPackage(pkg)) verifiedNonComPackages.add(pkg);
+          if (!knownPackagesByCreative.has(row.creative_id)) knownPackagesByCreative.set(row.creative_id, new Set());
+          knownPackagesByCreative.get(row.creative_id).add(pkg);
         }
       }
-      for (const [crId, entry] of cacheRes.entries()) {
-        if (Array.isArray(entry?.packageNames) && entry.packageNames.length > 0) {
-          seenCreativeIds.add(crId);
-          for (const pkg of entry.packageNames) {
-            if (isValidPackage(pkg)) {
-              if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
-              knownPackagesByCreative.get(crId).add(String(pkg).trim().toLowerCase());
-            }
-          }
-        }
-      }
+      await hydrateFromCacheMap(cacheRes);
     } catch {}
 
     const inspectedCreativeIds = new Set();
@@ -1226,17 +1511,7 @@ async function scanCompetitor(
       if (!added) break;
       try {
         const cacheMore = await getCreativeExtractionCache(videoPool, [...adIds]).catch(() => new Map());
-        for (const [crId, entry] of cacheMore.entries()) {
-          if (Array.isArray(entry?.packageNames) && entry.packageNames.length > 0) {
-            seenCreativeIds.add(crId);
-            for (const pkg of entry.packageNames) {
-              if (isValidPackage(pkg)) {
-                if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
-                knownPackagesByCreative.get(crId).add(String(pkg).trim().toLowerCase());
-              }
-            }
-          }
-        }
+        await hydrateFromCacheMap(cacheMore);
       } catch {}
       idArray = prioritizeUnseenCreatives([...adIds]).slice(0, maxAdsToInspect);
     }
@@ -1275,17 +1550,7 @@ async function scanCompetitor(
             const uninspected = [...adIds].filter(id => !inspectedCreativeIds.has(id));
             try {
               const cacheBatch = await getCreativeExtractionCache(videoPool, uninspected).catch(() => new Map());
-              for (const [crId, entry] of cacheBatch.entries()) {
-                if (Array.isArray(entry?.packageNames) && entry.packageNames.length > 0) {
-                  seenCreativeIds.add(crId);
-                  for (const pkg of entry.packageNames) {
-                    if (isValidPackage(pkg)) {
-                      if (!knownPackagesByCreative.has(crId)) knownPackagesByCreative.set(crId, new Set());
-                      knownPackagesByCreative.get(crId).add(String(pkg).trim().toLowerCase());
-                    }
-                  }
-                }
-              }
+              await hydrateFromCacheMap(cacheBatch);
             } catch {}
             const remaining = prioritizeUnseenCreatives(uninspected);
             idArray = [...inspectedCreativeIds, ...remaining].slice(0, maxAdsToInspect);
@@ -1315,6 +1580,12 @@ async function scanCompetitor(
         responseBody: new Set(),
         frameHtml: new Set()
       };
+      const pendingNonComBySource = {
+        requestUrl: new Set(),
+        responseBody: new Set(),
+        frameHtml: new Set()
+      };
+      const pendingExplicitFrameNonCom = new Map();
       let lastRelevantSignalAt = Date.now();
       let sawVideoRendererSignal = false;
       let slowRendererDetected = false;
@@ -1323,17 +1594,32 @@ async function scanCompetitor(
       const activeRelevantRequests = new Set();
       const trackedCreativeRequestTypes = new Set(['document', 'xhr', 'fetch', 'script']);
 
-      const recordPackages = (payload, source) => {
-        const candidates = extractBroadPackages(payload);
+      const recordPackages = (payload, source, explicitFrame = null) => {
+        const { comPackages, nonComCandidates } = extractCandidatePackages(payload);
         const sourceSet = packageSources[source];
-        for (const pkg of candidates) {
+        const pendingSet = pendingNonComBySource[source];
+        for (const pkg of comPackages) {
           sourceSet.add(pkg);
           if (!discovered.has(pkg)) {
             discovered.add(pkg);
             lastRelevantSignalAt = Date.now();
           }
         }
-        return candidates.length;
+        for (const candidate of nonComCandidates) {
+          if (!pendingSet.has(candidate)) {
+            pendingSet.add(candidate);
+            lastRelevantSignalAt = Date.now();
+          }
+        }
+        if (explicitFrame) {
+          for (const candidate of extractExplicitNonComStoreCandidates(payload)) {
+            if (!pendingExplicitFrameNonCom.has(explicitFrame)) {
+              pendingExplicitFrameNonCom.set(explicitFrame, new Set());
+            }
+            pendingExplicitFrameNonCom.get(explicitFrame).add(candidate);
+          }
+        }
+        return comPackages.length + nonComCandidates.length;
       };
 
       const isBackgroundTelemetryUrl = urlStr =>
@@ -1355,9 +1641,9 @@ async function scanCompetitor(
           lastRelevantSignalAt = Date.now();
         }
 
-        recordPackages(reqUrl, 'requestUrl');
-
         const isCreativeFrame = frame && frame !== adPage.mainFrame() && !frameUrl.includes('/sadbundle/');
+        recordPackages(reqUrl, 'requestUrl', isCreativeFrame ? frame : null);
+
         if (isCreativeFrame) {
           const evidence = getFrameEvidence(frameEvidence, frame);
           for (const pkg of extractExplicitStorePackages(reqUrl)) evidence.packages.add(pkg);
@@ -1490,6 +1776,11 @@ async function scanCompetitor(
           inspect: inspectAndDetectRenderer,
           getSignature: () => [
             [...discovered].sort().join(','),
+            [...new Set([
+              ...pendingNonComBySource.requestUrl,
+              ...pendingNonComBySource.responseBody,
+              ...pendingNonComBySource.frameHtml
+            ])].sort().join(','),
             [...videoMap.keys()].sort().join(','),
             adPage.frames().map(frame => frame.url()).sort().join(',')
           ].join('::'),
@@ -1509,6 +1800,34 @@ async function scanCompetitor(
           console.log('[Broad Scanner] Ad ' + displayIndex + ' reached its bounded ' + readiness.maxWaitMs + 'ms inspection budget; preserving all evidence collected.');
         }
         throwIfStopped();
+
+        const allPendingNonCom = new Set([
+          ...pendingNonComBySource.requestUrl,
+          ...pendingNonComBySource.responseBody,
+          ...pendingNonComBySource.frameHtml
+        ]);
+        if (allPendingNonCom.size > 0) {
+          const verifiedSet = new Set();
+          await Promise.all(
+            [...allPendingNonCom].map(async candidate => {
+              if (await verifyPackageOnPlayStore(candidate)) verifiedSet.add(candidate);
+            })
+          );
+          for (const pkg of verifiedSet) {
+            discovered.add(pkg);
+            for (const sourceKey of ['requestUrl', 'responseBody', 'frameHtml']) {
+              if (pendingNonComBySource[sourceKey].has(pkg)) {
+                packageSources[sourceKey].add(pkg);
+              }
+            }
+          }
+          for (const [frame, candidates] of pendingExplicitFrameNonCom.entries()) {
+            const evidence = getFrameEvidence(frameEvidence, frame);
+            for (const candidate of candidates) {
+              if (verifiedSet.has(candidate)) evidence.packages.add(candidate);
+            }
+          }
+        }
 
         const uniqueInAd = [...discovered];
         const packageAccounting = accounting.recordPackages(uniqueInAd);
@@ -1821,7 +2140,11 @@ async function scanCompetitor(
 module.exports = {
   scanCompetitor,
   extractBroadPackages,
+  extractCandidatePackages,
   extractExplicitStorePackages,
   buildSafeVideoAttribution,
-  isValidPackage
+  isValidPackage,
+  isValidNonComCandidate,
+  isAcceptedPackage,
+  verifyPackageOnPlayStore
 };
