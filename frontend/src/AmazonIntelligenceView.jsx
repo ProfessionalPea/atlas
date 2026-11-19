@@ -4,6 +4,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import { API_BASE } from "./apiConfig";
 import AtlasFeedback from "./AtlasFeedback.jsx";
 import AtlasSelect from "./AtlasSelect";
+import AtlasIcon from "./components/ui/AtlasIcon.jsx";
+import {
+  Badge,
+  KpiStrip,
+  PageHeader,
+  ScanProgressBanner,
+  TableSkeleton
+} from "./components/ui/UiPrimitives.jsx";
 import {
   getCachedCatalogue,
   setCachedCatalogue,
@@ -83,8 +91,7 @@ function getPublisherSyncState(pub) {
   if (hasGames) {
     return {
       dataLabel: "Synced",
-      dataTone: "bg-emerald-500/15 text-emerald-800 dark:text-emerald-400 border-emerald-600/30 dark:border-emerald-500/30",
-      dotTone: "bg-emerald-600 dark:bg-emerald-400",
+      textTone: "text-sem-success",
       lastSyncedText: formatRelativeTime(lastSuccess),
       hasRefreshWarning: latestAttemptFailed,
       warningText: latestAttemptFailed
@@ -96,8 +103,7 @@ function getPublisherSyncState(pub) {
   if (latestStatus === "blocked") {
     return {
       dataLabel: "Blocked",
-      dataTone: "bg-urgent-red/15 text-urgent-red border-urgent-red/30",
-      dotTone: "bg-urgent-red",
+      textTone: "text-sem-danger",
       lastSyncedText: formatRelativeTime(pub.last_scanned_at),
       hasRefreshWarning: true,
       warningText: pub.last_scan_detail || "Amazon temporarily blocked the scan request."
@@ -107,8 +113,7 @@ function getPublisherSyncState(pub) {
   if (latestStatus === "error") {
     return {
       dataLabel: "Retry Needed",
-      dataTone: "bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-600/35 dark:border-amber-500/30",
-      dotTone: "bg-amber-600 dark:bg-amber-400",
+      textTone: "text-sem-warning",
       lastSyncedText: formatRelativeTime(pub.last_scanned_at),
       hasRefreshWarning: true,
       warningText: pub.last_scan_detail || "Scan did not return listings."
@@ -117,8 +122,7 @@ function getPublisherSyncState(pub) {
 
   return {
     dataLabel: "Unscanned",
-    dataTone: "bg-input-bg text-text-muted border-border-subtle",
-    dotTone: "bg-text-muted",
+    textTone: "text-text-muted",
     lastSyncedText: "Never",
     hasRefreshWarning: false,
     warningText: null
@@ -1078,7 +1082,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         totalPublishers: Array.isArray(payload.links) ? payload.links.length : prev.totalPublishers || 1,
         startedAt: new Date().toISOString(),
         finishedAt: null,
-        log: "> 🚀 Starting Amazon catalogue scan..."
+        log: "Starting Amazon catalogue scan..."
       }));
       const res = await fetcher(`${API_BASE}/api/amazon/scan`, {
         method: "POST",
@@ -1379,101 +1383,97 @@ function AmazonIntelligenceView({ isAdmin = false }) {
 
   return (
     <div className="atlas-page-enter flex flex-col w-full gap-5">
-      {/* GOOGLE PLAY STYLE ALL / GAMES / APPS SEGMENT SWITCHER */}
-      <div className="flex items-center gap-1 border-b border-border-subtle pb-1 -mt-1 px-1">
+      {/* ALL / GAMES / APPS SEGMENT SWITCHER */}
+      <div className="flex items-center gap-1 border-b border-border-subtle pb-1 -mt-1">
         <button
           type="button"
           onClick={() => setAppTypeFilter("all")}
-          className={`px-4 py-2 text-xs md:text-sm font-semibold rounded-lg transition-all relative ${
+          className={`h-9 px-3.5 text-[13px] font-medium rounded-lg transition-colors relative tabular-nums ${
             appTypeFilter === "all"
-              ? "text-emerald-700 dark:text-emerald-400 after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[3px] after:rounded-full after:bg-emerald-600 dark:after:bg-emerald-400"
+              ? "text-text-main font-semibold after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[2px] after:rounded-full after:bg-btn-primary"
               : "text-text-muted hover:text-text-main"
           }`}
         >
-          All ({overview.games.length})
+          All ({overview.games.length.toLocaleString()})
         </button>
         <button
           type="button"
           onClick={() => setAppTypeFilter("game")}
-          className={`px-4 py-2 text-xs md:text-sm font-semibold rounded-lg transition-all relative flex items-center gap-1.5 ${
+          className={`h-9 px-3.5 text-[13px] font-medium rounded-lg transition-colors relative flex items-center gap-1.5 tabular-nums ${
             appTypeFilter === "game"
-              ? "text-emerald-700 dark:text-emerald-400 after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[3px] after:rounded-full after:bg-emerald-600 dark:after:bg-emerald-400"
+              ? "text-text-main font-semibold after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[2px] after:rounded-full after:bg-btn-primary"
               : "text-text-muted hover:text-text-main"
           }`}
         >
-          <span className="material-symbols-outlined text-[17px]">sports_esports</span>
-          Games ({appCounts.games})
+          <AtlasIcon name="sports_esports" size={15} />
+          Games ({appCounts.games.toLocaleString()})
         </button>
         <button
           type="button"
           onClick={() => setAppTypeFilter("app")}
-          className={`px-4 py-2 text-xs md:text-sm font-semibold rounded-lg transition-all relative flex items-center gap-1.5 ${
+          className={`h-9 px-3.5 text-[13px] font-medium rounded-lg transition-colors relative flex items-center gap-1.5 tabular-nums ${
             appTypeFilter === "app"
-              ? "text-emerald-700 dark:text-emerald-400 after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[3px] after:rounded-full after:bg-emerald-600 dark:after:bg-emerald-400"
+              ? "text-text-main font-semibold after:absolute after:bottom-[-5px] after:left-0 after:right-0 after:h-[2px] after:rounded-full after:bg-btn-primary"
               : "text-text-muted hover:text-text-main"
           }`}
         >
-          <span className="material-symbols-outlined text-[17px]">apps</span>
-          Apps ({appCounts.apps})
+          <AtlasIcon name="apps" size={15} />
+          Apps ({appCounts.apps.toLocaleString()})
         </button>
       </div>
 
       {/* HEADER */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 px-1">
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px] font-semibold mb-1.5">
-            <span className="material-symbols-outlined text-[15px]">storefront</span>
-            Amazon Intelligence
-          </div>
-          <h1 className="text-2xl md:text-3xl text-text-main tracking-tight font-medium flex items-center gap-3 flex-wrap">
-            <span>Competitor Research &amp; Portfolio Analysis</span>
-            {isRefreshingOverview && !loading && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-400 text-[11px] font-semibold tracking-normal">
-                <span className="material-symbols-outlined text-[13px] animate-spin">progress_activity</span>
-                Syncing
-              </span>
+      <PageHeader
+        title="Amazon Appstore Intelligence"
+        subtitle="Competitor research and portfolio pricing analysis."
+        badge={
+          isRefreshingOverview && !loading ? (
+            <Badge tone="accent">
+              <AtlasIcon name="progress_activity" size={12} className="animate-spin" />
+              Syncing
+            </Badge>
+          ) : null
+        }
+        actions={
+          <>
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => openListManager(activeListObj || null)}
+                  className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-border-strong hover:bg-input-bg transition"
+                >
+                  <AtlasIcon name="folder_managed" size={15} className="text-text-muted" />
+                  Lists ({overview.lists.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (activeListObj) {
+                      setScanTargetListIds([activeListObj.id]);
+                    } else {
+                      setScanTargetListIds([]);
+                    }
+                    setShowScannerModal(true);
+                  }}
+                  className="h-9 inline-flex items-center gap-1.5 px-3.5 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold transition"
+                >
+                  <AtlasIcon name="add_link" size={15} />
+                  Add &amp; Scan Accounts
+                </button>
+              </>
             )}
-          </h1>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <>
-              <button
-                type="button"
-                onClick={() => openListManager(activeListObj || null)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition"
-              >
-                <span className="material-symbols-outlined text-[16px]">folder_managed</span>
-                Manage Lists ({overview.lists.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (activeListObj) {
-                    setScanTargetListIds([activeListObj.id]);
-                  } else {
-                    setScanTargetListIds([]);
-                  }
-                  setShowScannerModal(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition shadow-sm"
-              >
-                <span className="material-symbols-outlined text-[17px]">add_link</span>
-                Add &amp; Scan Accounts
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={exportCsv}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:bg-input-bg transition"
-          >
-            <span className="material-symbols-outlined text-[16px]">download</span>
-            Export CSV ({filteredGames.length})
-          </button>
-        </div>
-      </div>
+            <button
+              type="button"
+              onClick={exportCsv}
+              className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-border-strong hover:bg-input-bg transition tabular-nums"
+            >
+              <AtlasIcon name="download" size={15} className="text-text-muted" />
+              Export CSV ({filteredGames.length.toLocaleString()})
+            </button>
+          </>
+        }
+      />
 
       {/* LIVE PROGRESS BAR & SCAN BANNER */}
       {(scanStatus.running ||
@@ -1481,100 +1481,45 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         scanStatus.state === "cancelled" ||
         scanStatus.state === "error") &&
         scanStatus.log && (
-          <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3 shadow-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <span
-                  className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                    scanStatus.running
-                      ? "bg-amber-400 animate-pulse"
-                      : scanStatus.state === "error"
-                      ? "bg-urgent-red"
-                      : "bg-emerald-400"
-                  }`}
-                />
-                <div className="min-w-0">
-                  <div className="text-xs font-semibold text-text-main flex flex-wrap items-center gap-2">
-                    <span>
-                      {scanStatus.running
-                        ? `Scanning ${scanStatus.currentPublisher || "..."} (${scanStatus.completedPublishers || 0}/${scanStatus.totalPublishers || 1} completed)`
-                        : scanStatus.state === "cancelled"
-                        ? "Scan Aborted · Partial Results Saved"
-                        : scanStatus.state === "error"
-                        ? "Scan Finished with Errors"
-                        : "Amazon Scan Complete"}
-                    </span>
-                    {scanStatus.phase && scanStatus.running && (
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                          scanStatus.phase === "retrying"
-                            ? "bg-amber-500/20 text-amber-300"
-                            : "bg-electric-blue/20 text-electric-blue"
-                        }`}
-                      >
-                        {scanStatus.phase.replace(/_/g, " ")}
-                      </span>
-                    )}
-                    <span className="text-[11px] font-mono text-text-muted">
-                      · Elapsed: {formatDurationSec(elapsedSec)} · Pages: {scanStatus.totalPagesProcessed || scanStatus.currentPage || 0} · Games Saved: {scanStatus.totalGamesSaved || 0}
-                    </span>
-                  </div>
-                  <div className="text-[11px] text-text-muted font-mono truncate mt-0.5">{scanStatus.log}</div>
-                </div>
-              </div>
-
-              {isAdmin && (
-                <div className="flex items-center gap-2 shrink-0">
-                  {!scanStatus.running && Array.isArray(scanStatus.failedLinks) && scanStatus.failedLinks.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => handleStartScan({ links: scanStatus.failedLinks })}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-600/35 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">refresh</span>
-                      Retry Failed ({scanStatus.failedLinks.length})
-                    </button>
-                  )}
-                  {scanStatus.running && (
-                    <button
-                      type="button"
-                      onClick={handleCancelScan}
-                      className="px-3.5 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition"
-                    >
-                      Abort &amp; Save Collected
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Visual Progress Bar */}
-            {scanStatus.totalPublishers > 0 && (
-              <div className="w-full h-2 rounded-full bg-input-bg overflow-hidden">
-                <div
-                  style={{ width: `${scanStatus.running ? scanProgressPct : 100}%` }}
-                  className={`h-full transition-all duration-300 ${
-                    scanStatus.state === "error"
-                      ? "bg-urgent-red"
-                      : scanStatus.running
-                      ? "bg-electric-blue"
-                      : "bg-emerald-500"
-                  }`}
-                />
-              </div>
-            )}
-          </div>
+          <ScanProgressBanner
+            running={scanStatus.running}
+            state={scanStatus.state}
+            title={
+              scanStatus.running
+                ? `Scanning ${scanStatus.currentPublisher || "..."} (${scanStatus.completedPublishers || 0}/${scanStatus.totalPublishers || 1} completed)`
+                : scanStatus.state === "cancelled"
+                ? "Scan Aborted · Partial Results Saved"
+                : scanStatus.state === "error"
+                ? "Scan Finished with Errors"
+                : "Amazon Scan Complete"
+            }
+            phase={scanStatus.running ? scanStatus.phase : null}
+            meta={`Elapsed ${formatDurationSec(elapsedSec)} · Pages ${scanStatus.totalPagesProcessed || scanStatus.currentPage || 0} · Saved ${scanStatus.totalGamesSaved || 0}`}
+            log={scanStatus.log}
+            progressPct={scanStatus.totalPublishers > 0 ? (scanStatus.running ? scanProgressPct : 100) : 100}
+            onCancel={isAdmin ? handleCancelScan : undefined}
+            cancelLabel="Abort & Save"
+            onRetryFailed={
+              isAdmin
+                ? () => handleStartScan({ links: scanStatus.failedLinks })
+                : undefined
+            }
+            failedCount={
+              isAdmin && !scanStatus.running && Array.isArray(scanStatus.failedLinks)
+                ? scanStatus.failedLinks.length
+                : 0
+            }
+          />
         )}
 
-      {/* COMPETITOR LISTS & LAUNCH DATE FILTER BAR */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 flex flex-col gap-3.5 shadow-sm">
-        {/* Row 1: Competitor List & Publisher Account Dropdowns */}
+      {/* INLINE FILTER & SCOPE TOOLBAR */}
+      <div className="flex flex-col gap-3 border-y border-border-subtle py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             {/* Competitor List Dropdown */}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
-                <span className="material-symbols-outlined text-[15px]">folder</span>
+              <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider flex items-center gap-1">
+                <AtlasIcon name="folder" size={14} />
                 Competitor:
               </span>
               <AtlasSelect
@@ -1587,14 +1532,14 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 ariaLabel="Select competitor"
                 placeholder="All Competitors"
                 searchPlaceholder="Search competitors & batches..."
-                buttonClassName="max-w-[280px]"
+                buttonClassName="max-w-[260px]"
               />
             </div>
 
             {/* Publisher Account Dropdown */}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
-                <span className="material-symbols-outlined text-[15px]">storefront</span>
+              <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider flex items-center gap-1">
+                <AtlasIcon name="storefront" size={14} />
                 Publisher:
               </span>
               <AtlasSelect
@@ -1604,7 +1549,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 ariaLabel="Select publisher"
                 placeholder="All Accounts"
                 searchPlaceholder="Search publisher accounts..."
-                buttonClassName="max-w-[280px]"
+                buttonClassName="max-w-[260px]"
               />
             </div>
 
@@ -1613,18 +1558,16 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               <button
                 type="button"
                 onClick={() => setShowDateFilterPopover((prev) => !prev)}
-                className={`h-9 px-3 rounded-xl border text-xs font-semibold transition flex items-center gap-1.5 ${
+                className={`h-9 px-3 rounded-lg border text-xs font-medium transition flex items-center gap-1.5 ${
                   durationPreset !== "all"
-                    ? "bg-amber-500/15 text-amber-500 border-amber-500"
-                    : "bg-input-bg text-text-muted hover:text-text-main border-border-subtle hover:border-amber-400/40"
+                    ? "bg-accent/10 text-link border-accent font-semibold"
+                    : "bg-surface-solid text-text-main border-border-subtle hover:border-border-strong"
                 }`}
                 title="Filter games by launch date or discovery date"
               >
-                <span className="material-symbols-outlined text-[15px]">calendar_today</span>
+                <AtlasIcon name="calendar_today" size={14} className={durationPreset !== "all" ? "text-link" : "text-text-muted"} />
                 <span>{durationPreset === "all" ? "Date: All Time" : `Date: ${dateWindow.label}`}</span>
-                <span className="material-symbols-outlined text-[14px]">
-                  {showDateFilterPopover ? "expand_less" : "expand_more"}
-                </span>
+                <AtlasIcon name={showDateFilterPopover ? "expand_less" : "expand_more"} size={14} className="text-text-muted" />
               </button>
 
               <AnimatePresence>
@@ -1634,123 +1577,123 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     animate={{ opacity: 1, y: 0, scale: 1 }}
                     exit={{ opacity: 0, y: -4, scale: 0.98 }}
                     transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-                    className="absolute left-0 top-full mt-1.5 z-50 w-80 sm:w-96 bg-surface-solid border border-border-subtle rounded-2xl p-4 shadow-2xl flex flex-col gap-3"
+                    className="absolute left-0 top-full mt-1.5 z-50 w-80 sm:w-96 bg-surface-solid border border-border-subtle rounded-xl p-4 shadow-xl flex flex-col gap-3"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div className="flex items-center justify-between border-b border-border-subtle pb-2">
-                      <span className="text-xs font-bold text-text-main flex items-center gap-1.5">
-                        <span className="material-symbols-outlined text-[16px] text-amber-500">calendar_today</span>
+                      <span className="text-xs font-semibold text-text-main flex items-center gap-1.5">
+                        <AtlasIcon name="calendar_today" size={14} className="text-link" />
                         Date Range Filter
                       </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowDateFilterPopover(false)}
-                      className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">close</span>
-                    </button>
-                  </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Date Basis</label>
-                    <select
-                      value={dateBasis}
-                      onChange={(e) => setDateBasis(e.target.value)}
-                      className="rounded-xl bg-input-bg border border-border-subtle px-3 py-1.5 text-xs font-semibold text-text-main focus:outline-none focus:border-amber-500 cursor-pointer"
-                    >
-                      <option value="release_date">Amazon Launch Date</option>
-                      <option value="first_seen_at">First Discovered in Atlas</option>
-                    </select>
-                  </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Presets</label>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {[
-                        { id: "all", label: "All Time" },
-                        { id: "today", label: "Today" },
-                        { id: "7d", label: "7 Days" },
-                        { id: "14d", label: "14 Days" },
-                        { id: "30d", label: "30 Days" },
-                        { id: "90d", label: "90 Days" },
-                        { id: "6m", label: "6 Months" },
-                        { id: "1y", label: "1 Year" },
-                        { id: "custom", label: "Custom Range" }
-                      ].map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => {
-                            setDurationPreset(p.id);
-                            if (p.id !== "custom") setShowDateFilterPopover(false);
-                          }}
-                          className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition ${
-                            durationPreset === p.id
-                              ? "bg-amber-500 text-white shadow-sm"
-                              : "bg-input-bg text-text-muted hover:text-text-main border border-border-subtle/50 hover:bg-surface-glass"
-                          }`}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setShowDateFilterPopover(false)}
+                        aria-label="Close date filter"
+                        className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
+                      >
+                        <AtlasIcon name="close" size={15} />
+                      </button>
                     </div>
-                  </div>
 
-                  {durationPreset === "custom" && (
-                    <div className="flex flex-col gap-1.5 pt-1 border-t border-border-subtle">
-                      <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Custom Date Range</label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="date"
-                          value={customStartDate}
-                          onChange={(e) => setCustomStartDate(e.target.value)}
-                          className="rounded-xl bg-input-bg border border-border-subtle px-2.5 py-1.5 text-xs text-text-main flex-1 focus:outline-none focus:border-amber-500"
-                        />
-                        <span className="text-xs text-text-muted">to</span>
-                        <input
-                          type="date"
-                          value={customEndDate}
-                          onChange={(e) => setCustomEndDate(e.target.value)}
-                          className="rounded-xl bg-input-bg border border-border-subtle px-2.5 py-1.5 text-xs text-text-main flex-1 focus:outline-none focus:border-amber-500"
-                        />
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-medium text-text-muted uppercase tracking-wider">Date Basis</label>
+                      <select
+                        value={dateBasis}
+                        onChange={(e) => setDateBasis(e.target.value)}
+                        className="h-9 rounded-lg bg-input-bg border border-border-subtle px-3 text-xs font-medium text-text-main focus:outline-none focus:border-accent cursor-pointer"
+                      >
+                        <option value="release_date">Amazon Launch Date</option>
+                        <option value="first_seen_at">First Discovered in Atlas</option>
+                      </select>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-medium text-text-muted uppercase tracking-wider">Presets</label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          { id: "all", label: "All Time" },
+                          { id: "today", label: "Today" },
+                          { id: "7d", label: "7 Days" },
+                          { id: "14d", label: "14 Days" },
+                          { id: "30d", label: "30 Days" },
+                          { id: "90d", label: "90 Days" },
+                          { id: "6m", label: "6 Months" },
+                          { id: "1y", label: "1 Year" },
+                          { id: "custom", label: "Custom Range" }
+                        ].map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              setDurationPreset(p.id);
+                              if (p.id !== "custom") setShowDateFilterPopover(false);
+                            }}
+                            className={`py-1.5 px-2 rounded-lg text-xs font-medium transition ${
+                              durationPreset === p.id
+                                ? "bg-btn-primary text-btn-primary-fg font-semibold"
+                                : "bg-input-bg text-text-muted hover:text-text-main border border-border-subtle"
+                            }`}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                  )}
 
-                  {dateWindow.active && scopedStats.unknownDateCount > 0 && (
-                    <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-text-muted pt-1">
-                      <input
-                        type="checkbox"
-                        checked={includeUnknownDates}
-                        onChange={(e) => setIncludeUnknownDates(e.target.checked)}
-                        className="rounded border-border-subtle text-amber-500"
-                      />
-                      <span>Include {scopedStats.unknownDateCount} games with unknown dates</span>
-                    </label>
-                  )}
+                    {durationPreset === "custom" && (
+                      <div className="flex flex-col gap-1.5 pt-1 border-t border-border-subtle">
+                        <label className="text-[11px] font-medium text-text-muted uppercase tracking-wider">Custom Date Range</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="date"
+                            value={customStartDate}
+                            onChange={(e) => setCustomStartDate(e.target.value)}
+                            className="h-9 rounded-lg bg-input-bg border border-border-subtle px-2.5 text-xs text-text-main flex-1 focus:outline-none focus:border-accent"
+                          />
+                          <span className="text-xs text-text-muted">to</span>
+                          <input
+                            type="date"
+                            value={customEndDate}
+                            onChange={(e) => setCustomEndDate(e.target.value)}
+                            className="h-9 rounded-lg bg-input-bg border border-border-subtle px-2.5 text-xs text-text-main flex-1 focus:outline-none focus:border-accent"
+                          />
+                        </div>
+                      </div>
+                    )}
 
-                  <div className="flex items-center justify-between pt-2 border-t border-border-subtle text-[11px] text-text-muted">
-                    <span>
-                      Known: <strong className="text-text-main">{scopedStats.knownDateCount.toLocaleString()}</strong>
-                      {scopedStats.unknownDateCount > 0 && ` · Unknown: ${scopedStats.unknownDateCount.toLocaleString()}`}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDurationPreset("all");
-                        setShowDateFilterPopover(false);
-                      }}
-                      className="text-amber-500 hover:underline font-semibold"
-                    >
-                      Reset to All Time
-                    </button>
-                  </div>
-                </motion.div>
+                    {dateWindow.active && scopedStats.unknownDateCount > 0 && (
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-text-muted pt-1">
+                        <input
+                          type="checkbox"
+                          checked={includeUnknownDates}
+                          onChange={(e) => setIncludeUnknownDates(e.target.checked)}
+                          className="rounded border-border-subtle"
+                        />
+                        <span>Include {scopedStats.unknownDateCount} games with unknown dates</span>
+                      </label>
+                    )}
+
+                    <div className="flex items-center justify-between pt-2 border-t border-border-subtle text-xs text-text-muted">
+                      <span className="tabular-nums">
+                        Known: <strong className="text-text-main">{scopedStats.knownDateCount.toLocaleString()}</strong>
+                        {scopedStats.unknownDateCount > 0 && ` · Unknown: ${scopedStats.unknownDateCount.toLocaleString()}`}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDurationPreset("all");
+                          setShowDateFilterPopover(false);
+                        }}
+                        className="text-link hover:underline font-medium"
+                      >
+                        Reset to All Time
+                      </button>
+                    </div>
+                  </motion.div>
                 )}
               </AnimatePresence>
             </div>
 
-            {/* Reset Filters button if any filter active */}
             {(selectedListId !== "all" || selectedPublisher !== "all" || durationPreset !== "all") && (
               <button
                 type="button"
@@ -1759,25 +1702,25 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                   setSelectedPublisher("all");
                   setDurationPreset("all");
                 }}
-                className="h-9 px-2.5 rounded-xl bg-surface-glass border border-border-subtle hover:border-urgent-red/40 text-text-muted hover:text-urgent-red text-xs font-medium transition flex items-center gap-1"
+                className="h-9 px-2.5 rounded-lg bg-surface-solid border border-border-subtle hover:border-sem-danger text-text-muted hover:text-sem-danger text-xs font-medium transition flex items-center gap-1"
                 title="Reset all filters to show everything"
               >
-                <span className="material-symbols-outlined text-[14px]">filter_alt_off</span>
+                <AtlasIcon name="filter_alt_off" size={14} />
                 Reset
               </button>
             )}
 
             {/* Admin Shortcuts: Competitor Batches + Lists */}
             {isAdmin && (
-              <div className="flex items-center gap-1.5 ml-1">
+              <div className="flex items-center gap-1.5">
                 {activeGroupObj && (
                   <button
                     type="button"
                     onClick={() => openBatchManager(activeGroupObj)}
                     title={`Edit competitor batch "${activeGroupObj.name}"`}
-                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle hover:border-electric-blue text-text-main text-xs font-semibold transition flex items-center gap-1"
+                    className="h-9 px-2.5 rounded-lg bg-surface-solid border border-border-subtle hover:border-border-strong text-text-main text-xs font-medium transition flex items-center gap-1"
                   >
-                    <span className="material-symbols-outlined text-[14px]">edit</span>
+                    <AtlasIcon name="edit" size={14} />
                     Edit Batch
                   </button>
                 )}
@@ -1785,9 +1728,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                   type="button"
                   onClick={() => openBatchManager(null)}
                   title="Group competitors into a batch (e.g. Trenzy & Gaminator into Bahria)"
-                  className="h-8 px-2.5 rounded-lg bg-input-bg border border-dashed border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue transition flex items-center gap-1 text-xs font-semibold"
+                  className="h-9 px-2.5 rounded-lg bg-surface-solid border border-dashed border-border-subtle text-text-muted hover:text-text-main hover:border-border-strong transition flex items-center gap-1 text-xs font-medium"
                 >
-                  <span className="material-symbols-outlined text-[14px]">folder_special</span>
+                  <AtlasIcon name="folder_special" size={14} />
                   + Batch
                 </button>
                 {activeListObj && (
@@ -1795,170 +1738,152 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     type="button"
                     onClick={() => openListManager(activeListObj)}
                     title={`Edit list "${activeListObj.name}"`}
-                    className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle hover:border-amber-500/40 text-text-main text-xs font-semibold transition flex items-center gap-1"
+                    className="h-9 px-2.5 rounded-lg bg-surface-solid border border-border-subtle hover:border-border-strong text-text-main text-xs font-medium transition flex items-center gap-1"
                   >
-                    <span className="material-symbols-outlined text-[14px]">edit</span>
+                    <AtlasIcon name="edit" size={14} />
                     Edit List
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => openListManager(null)}
-                  className="h-8 px-2.5 rounded-lg bg-input-bg border border-dashed border-border-subtle text-text-muted hover:text-electric-blue hover:border-electric-blue transition flex items-center gap-1 text-xs font-semibold"
+                  className="h-9 px-2.5 rounded-lg bg-surface-solid border border-dashed border-border-subtle text-text-muted hover:text-text-main hover:border-border-strong transition flex items-center gap-1 text-xs font-medium"
                 >
-                  <span className="material-symbols-outlined text-[14px]">add</span>
+                  <AtlasIcon name="add" size={14} />
                   New List
                 </button>
               </div>
             )}
           </div>
+        </div>
 
-          {/* Active Batch Member Competitors Strip */}
-          {activeGroupObj && (
-            <div className="pt-2.5 border-t border-border-subtle flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-semibold text-text-muted flex items-center gap-1 mr-1">
-                  <span className="material-symbols-outlined text-[14px] text-amber-500">folder_special</span>
-                  Batch "{activeGroupObj.name}" Competitors ({(activeGroupObj.competitor_names || []).length}):
-                </span>
-                {(overview.lists || [])
-                  .filter((l) => l.competitor_id && (activeGroupObj.competitor_ids || []).map(Number).includes(Number(l.competitor_id)))
-                  .map((comp) => (
-                    <button
-                      key={comp.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedListId(comp.id);
-                        setSelectedPublisher("all");
-                      }}
-                      title={`Switch filter to competitor "${comp.name}" (${comp.account_count || 0} accounts)`}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 text-amber-500 text-[11px] font-semibold transition"
-                    >
-                      <span className="material-symbols-outlined text-[13px]">folder</span>
-                      <span>{comp.name}</span>
-                      <span className="text-[10px] opacity-75">({comp.account_count || 0})</span>
-                    </button>
-                  ))}
-                {(activeGroupObj.competitor_names || []).length === 0 && (
-                  <span className="text-[11px] text-text-muted italic">No competitors assigned to this batch yet.</span>
-                )}
-              </div>
-              {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => openBatchManager(activeGroupObj)}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-input-bg border border-border-subtle hover:border-amber-500 text-text-main text-[11px] font-semibold transition shrink-0"
-                >
-                  <span className="material-symbols-outlined text-[13px]">edit</span>
-                  Manage Batch Members
-                </button>
+        {/* Active Batch Member Competitors Strip */}
+        {activeGroupObj && (
+          <div className="pt-2.5 border-t border-border-subtle flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-medium text-text-muted flex items-center gap-1 mr-1">
+                <AtlasIcon name="folder_special" size={14} className="text-link" />
+                Batch &ldquo;{activeGroupObj.name}&rdquo; ({(activeGroupObj.competitor_names || []).length}):
+              </span>
+              {(overview.lists || [])
+                .filter((l) => l.competitor_id && (activeGroupObj.competitor_ids || []).map(Number).includes(Number(l.competitor_id)))
+                .map((comp) => (
+                  <button
+                    key={comp.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedListId(comp.id);
+                      setSelectedPublisher("all");
+                    }}
+                    title={`Switch filter to competitor "${comp.name}" (${comp.account_count || 0} accounts)`}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md atlas-badge-accent border text-xs font-medium hover:opacity-90 transition"
+                  >
+                    <AtlasIcon name="folder" size={12} />
+                    <span>{comp.name}</span>
+                    <span className="opacity-75 tabular-nums">({comp.account_count || 0})</span>
+                  </button>
+                ))}
+              {(activeGroupObj.competitor_names || []).length === 0 && (
+                <span className="text-xs text-text-muted">No competitors assigned to this batch yet.</span>
               )}
             </div>
-          )}
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => openBatchManager(activeGroupObj)}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface-solid border border-border-subtle hover:border-border-strong text-text-main text-xs font-medium transition shrink-0"
+              >
+                <AtlasIcon name="edit" size={13} />
+                Manage Batch Members
+              </button>
+            )}
+          </div>
+        )}
 
-          {/* Admin List Quick Action buttons */}
-          {isAdmin && activeListObj && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setScanTargetListIds([activeListObj.id]);
-                  setShowScannerModal(true);
-                }}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-electric-blue/15 text-electric-blue text-[11px] font-semibold hover:bg-electric-blue/25"
-              >
-                <span className="material-symbols-outlined text-[14px]">add_link</span>
-                Add Accounts to "{activeListObj.name}"
-              </button>
-              <button
-                type="button"
-                disabled={scanStatus.running || !activeListObj.account_count}
-                onClick={() => handleRescanList(activeListObj)}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25 disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[14px]">refresh</span>
-                Re-scan List ({activeListObj.account_count})
-              </button>
-            </div>
-          )}
-        </div>
+        {/* Admin List Quick Action buttons */}
+        {isAdmin && activeListObj && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setScanTargetListIds([activeListObj.id]);
+                setShowScannerModal(true);
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg atlas-badge-accent border text-xs font-medium hover:opacity-90"
+            >
+              <AtlasIcon name="add_link" size={13} />
+              Add Accounts to &ldquo;{activeListObj.name}&rdquo;
+            </button>
+            <button
+              type="button"
+              disabled={scanStatus.running || !activeListObj.account_count}
+              onClick={() => handleRescanList(activeListObj)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg atlas-badge-warning border text-xs font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              <AtlasIcon name="refresh" size={13} />
+              Re-scan List ({activeListObj.account_count})
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* 4 CLEAN KPI CARDS (Scoped to active list + account + date filter) */}
-      <div className="atlas-stagger-grid grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="atlas-interactive-card atlas-card-rise bg-surface-solid border border-border-subtle rounded-2xl p-4">
-          <div className="text-[11px] text-text-muted">
-            {selectedPublisher !== "all"
-              ? `Total Games (${getDisplayName(selectedPublisher)})`
-              : activeListObj
-              ? `Total Games in "${activeListObj.name}"`
-              : "Total Unique Games"}
-          </div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.allTimeUnique.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {visiblePublishers.length} account{visiblePublishers.length === 1 ? "" : "s"}
-            {scopedStats.totalListings > scopedStats.allTimeUnique
-              ? ` · ${scopedStats.totalListings.toLocaleString()} total listings`
-              : " · Distinct Amazon ASINs"}
-          </div>
-        </div>
-
-        <div className="atlas-interactive-card atlas-card-rise bg-surface-solid border border-border-subtle rounded-2xl p-4">
-          <div className="text-[11px] text-electric-blue font-medium">
-            {dateWindow.active ? `Launched (${dateWindow.label})` : "Games in Selected Period"}
-          </div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.matchingUnique.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {dateWindow.active
+      {/* 4 CLEAN KPI STRIP */}
+      <KpiStrip
+        items={[
+          {
+            key: "total-unique",
+            label:
+              selectedPublisher !== "all"
+                ? `Total Games (${getDisplayName(selectedPublisher)})`
+                : activeListObj
+                ? `Total Games in "${activeListObj.name}"`
+                : "Total Unique Games",
+            value: scopedStats.allTimeUnique.toLocaleString(),
+            note: `${visiblePublishers.length} account${visiblePublishers.length === 1 ? "" : "s"}${
+              scopedStats.totalListings > scopedStats.allTimeUnique
+                ? ` · ${scopedStats.totalListings.toLocaleString()} listings`
+                : " · Distinct ASINs"
+            }`
+          },
+          {
+            key: "period-games",
+            label: dateWindow.active ? `Launched (${dateWindow.label})` : "Games in Selected Period",
+            value: scopedStats.matchingUnique.toLocaleString(),
+            note: dateWindow.active
               ? `${scopedStats.freeMatching} Free · ${scopedStats.paidMatching} Paid`
-              : `All Time (${scopedStats.knownDateCount} with known date)`}
-          </div>
-        </div>
-
-        <div
-          onClick={() => setSelectedPricing(selectedPricing === "free" ? "all" : "free")}
-          className={`atlas-interactive-card atlas-card-rise cursor-pointer bg-surface-solid border rounded-2xl p-4 transition ${
-            selectedPricing === "free"
-              ? "border-emerald-400 ring-1 ring-emerald-400/40"
-              : "border-border-subtle hover:border-emerald-500/40"
-          }`}
-        >
-          <div className="text-[11px] text-emerald-400 font-medium">
-            Free Games {dateWindow.active ? `(${dateWindow.label})` : "(Click to filter)"}
-          </div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.freeMatching.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {Math.round((scopedStats.freeShare || 0) * 100)}% of {dateWindow.active ? "period" : "portfolio"}
-          </div>
-        </div>
-
-        <div
-          onClick={() => setSelectedPricing(selectedPricing === "paid" ? "all" : "paid")}
-          className={`atlas-interactive-card atlas-card-rise cursor-pointer bg-surface-solid border rounded-2xl p-4 transition ${
-            selectedPricing === "paid"
-              ? "border-amber-400 ring-1 ring-amber-400/40"
-              : "border-border-subtle hover:border-amber-500/40"
-          }`}
-        >
-          <div className="text-[11px] text-amber-400 font-medium">
-            Paid Games {dateWindow.active ? `(${dateWindow.label})` : "(Click to filter)"}
-          </div>
-          <div className="text-2xl font-semibold text-text-main mt-1">{scopedStats.paidMatching.toLocaleString()}</div>
-          <div className="text-[10px] text-text-muted mt-1">
-            {scopedStats.matchingUnique
-              ? Math.round((scopedStats.paidMatching / scopedStats.matchingUnique) * 100)
-              : 0}
-            % of {dateWindow.active ? "period" : "portfolio"}
-          </div>
-        </div>
-      </div>
+              : `All Time (${scopedStats.knownDateCount} with known date)`
+          },
+          {
+            key: "free-games",
+            label: `Free Games${dateWindow.active ? ` (${dateWindow.label})` : ""}`,
+            value: scopedStats.freeMatching.toLocaleString(),
+            badge: selectedPricing === "free" ? <Badge tone="success">Filtered</Badge> : null,
+            note: `${Math.round((scopedStats.freeShare || 0) * 100)}% of ${dateWindow.active ? "period" : "portfolio"} · Click to filter`,
+            noteClass: "text-sem-success",
+            onClick: () => setSelectedPricing(selectedPricing === "free" ? "all" : "free")
+          },
+          {
+            key: "paid-games",
+            label: `Paid Games${dateWindow.active ? ` (${dateWindow.label})` : ""}`,
+            value: scopedStats.paidMatching.toLocaleString(),
+            badge: selectedPricing === "paid" ? <Badge tone="warning">Filtered</Badge> : null,
+            note: `${
+              scopedStats.matchingUnique
+                ? Math.round((scopedStats.paidMatching / scopedStats.matchingUnique) * 100)
+                : 0
+            }% of ${dateWindow.active ? "period" : "portfolio"} · Click to filter`,
+            noteClass: "text-sem-warning",
+            onClick: () => setSelectedPricing(selectedPricing === "paid" ? "all" : "paid")
+          }
+        ]}
+      />
 
       {/* PUBLISHER COMPARISON */}
-      <div className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border-subtle pb-3">
+      <div className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden flex flex-col">
+        <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border-subtle">
           <div>
-            <h2 className="text-base font-semibold text-text-main">Publisher Comparison</h2>
-            <p className="text-xs text-text-muted">
+            <h2 className="text-[15px] font-semibold text-text-main">Publisher Comparison</h2>
+            <p className="text-xs text-text-muted mt-0.5">
               Click any publisher account, Free bar, or Paid bar to inspect its games below.
               {dateWindow.active ? ` Showing games launched in: ${dateWindow.label}.` : ""}
             </p>
@@ -1973,22 +1898,22 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                   setSelectedPricing("all");
                   setDurationPreset("all");
                 }}
-                className="px-3 py-1 rounded-lg bg-electric-blue/15 text-electric-blue font-semibold hover:bg-electric-blue/25 transition"
+                className="text-link font-medium hover:underline"
               >
                 Reset Filters
               </button>
             )}
             <span className="inline-flex items-center gap-1.5 text-text-muted">
-              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" /> Free
+              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 inline-block" /> Free
             </span>
             <span className="inline-flex items-center gap-1.5 text-text-muted">
-              <span className="w-2.5 h-2.5 rounded-sm bg-amber-500 inline-block" /> Paid
+              <span className="w-2.5 h-2.5 rounded-sm bg-amber-600 inline-block" /> Paid
             </span>
           </div>
         </div>
 
         {comparisonPublishers.length === 0 ? (
-          <div className="py-8 text-center text-xs text-text-muted flex flex-col items-center gap-2">
+          <div className="py-10 px-4 text-center text-xs text-text-muted flex flex-col items-center gap-3">
             <span>
               {visiblePublishers.length === 0
                 ? "No Amazon accounts in this Competitor List yet."
@@ -1999,7 +1924,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 <button
                   type="button"
                   onClick={() => openListManager(activeListObj)}
-                  className="px-3 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-text-main font-semibold"
+                  className="h-9 px-3 rounded-lg bg-surface-solid border border-border-subtle text-text-main font-medium hover:border-border-strong"
                 >
                   Select Existing Accounts
                 </button>
@@ -2009,7 +1934,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     setScanTargetListIds([activeListObj.id]);
                     setShowScannerModal(true);
                   }}
-                  className="px-3 py-1.5 rounded-xl bg-electric-blue text-white font-semibold"
+                  className="h-9 px-3.5 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg font-semibold"
                 >
                   Add &amp; Scan New Links
                 </button>
@@ -2017,7 +1942,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
             )}
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
+          <div className="divide-y divide-border-subtle">
             {(showAllPublishers ? comparisonPublishers : comparisonPublishers.slice(0, 12)).map((pub) => {
               const pSt = publisherStatsByName.get(pub.publisher_name) || {
                 total: Number(pub.total_games) || 0,
@@ -2036,14 +1961,18 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               const dispName = getDisplayName(pub.publisher_name);
               const hasCustomName = dispName !== pub.publisher_name;
               const syncMeta = getPublisherSyncState(pub);
+              const isScanningThisPub =
+                scanStatus.running &&
+                String(scanStatus.currentPublisher || "").trim().toLowerCase() ===
+                  String(pub.publisher_name || "").trim().toLowerCase();
 
               return (
                 <div
                   key={pub.id}
-                  className={`p-3 rounded-xl border transition ${
+                  className={`px-4 py-3 transition-colors ${
                     isSelected
-                      ? "border-electric-blue bg-electric-blue/5"
-                      : "border-border-subtle bg-input-bg/40 hover:border-border-subtle/80"
+                      ? "bg-accent/10 border-l-2 border-l-btn-primary"
+                      : "hover:bg-input-bg/40"
                   }`}
                 >
                   <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -2059,24 +1988,20 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                         }}
                         className="text-left min-w-0 flex-1"
                       >
-                        <div className="text-xs font-semibold text-text-main hover:text-electric-blue truncate">
+                        <div className="text-[13px] font-semibold text-text-main hover:text-link truncate">
                           {dispName}
                         </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-text-muted truncate mt-0.5">
+                        <div className="flex items-center gap-1.5 text-[11px] text-text-muted truncate mt-0.5">
                           <span
-                            className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full border text-[9px] font-semibold ${syncMeta.dataTone}`}
+                            className={`font-medium ${syncMeta.textTone}`}
                             title={syncMeta.warningText || `Last synced: ${syncMeta.lastSyncedText}`}
                           >
-                            <span className={`w-1.5 h-1.5 rounded-full ${syncMeta.dotTone}`} />
                             {syncMeta.dataLabel}
                           </span>
                           <span>· {syncMeta.lastSyncedText}</span>
                           {syncMeta.hasRefreshWarning && (
-                            <span
-                              title={syncMeta.warningText}
-                              className="text-amber-400 inline-flex items-center"
-                            >
-                              <span className="material-symbols-outlined text-[12px]">info</span>
+                            <span title={syncMeta.warningText} className="text-sem-warning inline-flex items-center">
+                              <AtlasIcon name="info" size={12} />
                             </span>
                           )}
                           {hasCustomName && <span className="truncate">· {pub.publisher_name}</span>}
@@ -2090,19 +2015,13 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                             disabled={scanStatus.running}
                             onClick={() => handleRescanPublisher(pub)}
                             title={`Re-scan ${dispName}`}
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-amber-400 transition disabled:opacity-40"
+                            className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted hover:text-sem-warning transition disabled:opacity-40"
                           >
-                            <span
-                              className={`material-symbols-outlined text-[15px] ${
-                                scanStatus.running &&
-                                String(scanStatus.currentPublisher || "").trim().toLowerCase() ===
-                                  String(pub.publisher_name || "").trim().toLowerCase()
-                                  ? "animate-spin text-amber-400"
-                                  : ""
-                              }`}
-                            >
-                              refresh
-                            </span>
+                            <AtlasIcon
+                              name="refresh"
+                              size={14}
+                              className={isScanningThisPub ? "animate-spin text-sem-warning" : ""}
+                            />
                           </button>
                           <button
                             type="button"
@@ -2115,9 +2034,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                               })
                             }
                             title="Rename account or assign to Competitor Lists"
-                            className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-text-main transition"
+                            className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main transition"
                           >
-                            <span className="material-symbols-outlined text-[15px]">edit</span>
+                            <AtlasIcon name="edit" size={14} />
                           </button>
                           {activeListObj && (
                             <button
@@ -2125,15 +2044,13 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                               disabled={removingPublisherId === pub.id}
                               onClick={() => handleRemoveFromCurrentList(pub.id, activeListObj.id)}
                               title={`Remove "${dispName}" from list "${activeListObj.name}"`}
-                              className="p-1 rounded-lg hover:bg-surface-solid text-text-muted hover:text-urgent-red transition disabled:opacity-40"
+                              className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted hover:text-sem-danger transition disabled:opacity-40"
                             >
-                              <span
-                                className={`material-symbols-outlined text-[15px] ${
-                                  removingPublisherId === pub.id ? "animate-spin text-urgent-red" : ""
-                                }`}
-                              >
-                                {removingPublisherId === pub.id ? "progress_activity" : "folder_off"}
-                              </span>
+                              <AtlasIcon
+                                name={removingPublisherId === pub.id ? "progress_activity" : "folder_off"}
+                                size={14}
+                                className={removingPublisherId === pub.id ? "animate-spin text-sem-danger" : ""}
+                              />
                             </button>
                           )}
                         </div>
@@ -2141,9 +2058,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     </div>
 
                     {/* Stacked Bar */}
-                    <div className="flex-1 flex items-center gap-1.5 h-7 bg-bg-base/60 rounded-lg p-1 overflow-hidden">
+                    <div className="flex-1 flex items-center gap-1 h-7 bg-input-bg rounded-lg p-1 overflow-hidden">
                       {total === 0 ? (
-                        <span className="text-[10px] text-text-muted px-2">
+                        <span className="text-[11px] text-text-muted px-2">
                           No {appTypeFilter === "app" ? "apps" : appTypeFilter === "game" ? "games" : "titles"} in selected period ({effectiveAllTime} all-time)
                         </span>
                       ) : (
@@ -2158,7 +2075,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                               }}
                               style={{ width: `${Math.max(freeWidthPct, 3)}%` }}
                               title={`${dispName}: ${free} Free games (click to filter)`}
-                              className="h-full rounded bg-emerald-500 hover:bg-emerald-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
+                              className="h-full rounded-md bg-emerald-600 hover:bg-emerald-500 transition flex items-center justify-center text-[11px] font-semibold text-white overflow-hidden whitespace-nowrap px-1 select-none tabular-nums"
                             >
                               {freeWidthPct >= 18 ? `${free} Free` : freeWidthPct >= 10 ? `${free}F` : freeWidthPct >= 5 ? String(free) : ""}
                             </button>
@@ -2173,7 +2090,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                               }}
                               style={{ width: `${Math.max(paidWidthPct, 3)}%` }}
                               title={`${dispName}: ${paid} Paid games · Median $${Number(pub.median_paid_price || 0).toFixed(2)} (click to filter)`}
-                              className="h-full rounded bg-amber-500 hover:bg-amber-400 transition flex items-center justify-center text-[10px] font-bold text-slate-950 overflow-hidden whitespace-nowrap px-1 select-none"
+                              className="h-full rounded-md bg-amber-600 hover:bg-amber-500 transition flex items-center justify-center text-[11px] font-semibold text-white overflow-hidden whitespace-nowrap px-1 select-none tabular-nums"
                             >
                               {paidWidthPct >= 18 ? `${paid} Paid` : paidWidthPct >= 10 ? `${paid}P` : paidWidthPct >= 5 ? String(paid) : ""}
                             </button>
@@ -2183,50 +2100,54 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     </div>
 
                     {/* Compact Metrics */}
-                    <div className="md:w-64 shrink-0 flex items-center justify-between md:justify-end gap-3 text-[11px] text-text-muted font-mono">
+                    <div className="md:w-64 shrink-0 flex items-center justify-between md:justify-end gap-3 text-xs text-text-muted font-mono tabular-nums">
                       <span>
                         <strong className="text-text-main">{total}</strong>
                         {dateWindow.active ? `/${effectiveAllTime}` : (appTypeFilter === "app" ? " apps" : appTypeFilter === "game" ? " games" : " total")}
                       </span>
-                      <span className="text-emerald-400">{free}F</span>
-                      <span className="text-amber-400">{paid}P</span>
+                      <span className="text-sem-success font-medium">{free}F</span>
+                      <span className="text-sem-warning font-medium">{paid}P</span>
                       <span>
                         Med:{" "}
                         <strong className="text-text-main">
                           {pub.median_paid_price ? `$${Number(pub.median_paid_price).toFixed(2)}` : "—"}
                         </strong>
                       </span>
-                      <span>⭐ {pub.avg_rating ? Number(pub.avg_rating).toFixed(1) : "—"}</span>
+                      <span className="inline-flex items-center gap-1">
+                        <AtlasIcon name="star" size={12} className="text-sem-warning" />
+                        {pub.avg_rating ? Number(pub.avg_rating).toFixed(1) : "—"}
+                      </span>
                     </div>
                   </div>
                 </div>
               );
             })}
-            {comparisonPublishers.length > 12 && (
-              <div className="pt-2 flex justify-center">
-                <button
-                  type="button"
-                  onClick={() => setShowAllPublishers((prev) => !prev)}
-                  className="px-4 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:border-electric-blue/50 transition"
-                >
-                  {showAllPublishers
-                    ? "Collapse to Top 12 Accounts"
-                    : `Show all ${comparisonPublishers.length} accounts (+${comparisonPublishers.length - 12} more)`}
-                </button>
-              </div>
-            )}
+          </div>
+        )}
+
+        {comparisonPublishers.length > 12 && (
+          <div className="px-4 py-3 border-t border-border-subtle bg-input-bg/30 flex justify-center">
+            <button
+              type="button"
+              onClick={() => setShowAllPublishers((prev) => !prev)}
+              className="h-8 px-4 rounded-lg bg-surface-solid border border-border-subtle text-xs font-medium text-text-main hover:border-border-strong transition"
+            >
+              {showAllPublishers
+                ? "Collapse to Top 12 Accounts"
+                : `Show all ${comparisonPublishers.length} accounts (+${comparisonPublishers.length - 12} more)`}
+            </button>
           </div>
         )}
       </div>
 
       {/* SELECTED PUBLISHER SUMMARY BAR */}
       {selectedPublisherObj && (
-        <div className="bg-electric-blue/10 border border-electric-blue/30 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="bg-surface-solid border border-border-subtle rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-text-main flex flex-wrap items-center gap-2">
+            <div className="text-sm font-semibold text-text-main flex flex-wrap items-center gap-2.5">
               <span>Account: {getDisplayName(selectedPublisherObj.publisher_name)}</span>
               {selectedPublisherObj.display_name && (
-                <span className="text-xs text-text-muted">(Amazon: {selectedPublisherObj.publisher_name})</span>
+                <span className="text-xs font-normal text-text-muted">(Amazon: {selectedPublisherObj.publisher_name})</span>
               )}
               {isAdmin && (
                 <>
@@ -2234,9 +2155,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     type="button"
                     disabled={scanStatus.running}
                     onClick={() => handleRescanPublisher(selectedPublisherObj)}
-                    className="text-xs text-amber-400 hover:underline inline-flex items-center gap-1 disabled:opacity-50"
+                    className="text-xs text-sem-warning hover:underline inline-flex items-center gap-1 disabled:opacity-50"
                   >
-                    <span className="material-symbols-outlined text-[14px]">refresh</span> Re-scan
+                    <AtlasIcon name="refresh" size={13} /> Re-scan
                   </button>
                   <button
                     type="button"
@@ -2248,9 +2169,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                         list_ids: Array.isArray(selectedPublisherObj.list_ids) ? [...selectedPublisherObj.list_ids] : []
                       })
                     }
-                    className="text-xs text-electric-blue hover:underline inline-flex items-center gap-1"
+                    className="text-xs text-link hover:underline inline-flex items-center gap-1"
                   >
-                    <span className="material-symbols-outlined text-[14px]">edit</span> Rename / Lists
+                    <AtlasIcon name="edit" size={13} /> Rename / Lists
                   </button>
                 </>
               )}
@@ -2258,12 +2179,12 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 href={selectedPublisherObj.source_url}
                 target="_blank"
                 rel="noreferrer"
-                className="text-xs text-electric-blue hover:underline inline-flex items-center gap-1"
+                className="text-xs text-link hover:underline inline-flex items-center gap-1"
               >
-                Amazon Store <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                Amazon Store <AtlasIcon name="open_in_new" size={13} />
               </a>
             </div>
-            <div className="text-xs text-text-muted mt-0.5">
+            <div className="text-xs text-text-muted mt-1 tabular-nums">
               {selectedPublisherObj.total_games} all-time games ({selectedPublisherObj.free_games} Free ·{" "}
               {selectedPublisherObj.paid_games} Paid) · Median Paid $
               {Number(selectedPublisherObj.median_paid_price || 0).toFixed(2)} ·{" "}
@@ -2276,10 +2197,10 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 key={mode}
                 type="button"
                 onClick={() => setSelectedPricing(mode)}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold capitalize ${
+                className={`h-8 px-3 rounded-lg text-xs font-medium capitalize transition ${
                   selectedPricing === mode
-                    ? "bg-electric-blue text-white"
-                    : "bg-surface-solid text-text-muted border border-border-subtle"
+                    ? "bg-btn-primary text-btn-primary-fg font-semibold"
+                    : "bg-input-bg text-text-muted border border-border-subtle hover:text-text-main"
                 }`}
               >
                 {mode}
@@ -2288,7 +2209,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
             <button
               type="button"
               onClick={() => setSelectedPublisher("all")}
-              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-surface-solid text-text-main border border-border-subtle"
+              className="h-8 px-3 rounded-lg text-xs font-medium bg-surface-solid text-text-main border border-border-subtle hover:border-border-strong"
             >
               Show All Accounts
             </button>
@@ -2299,37 +2220,37 @@ function AmazonIntelligenceView({ isAdmin = false }) {
       {/* GAME DIRECTORY TABLE */}
       <div
         ref={catalogSectionRef}
-        className="bg-surface-solid border border-border-subtle rounded-2xl p-5 flex flex-col gap-4"
+        className="bg-surface-solid border border-border-subtle rounded-xl p-5 flex flex-col gap-4"
       >
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold text-text-main flex flex-wrap items-center gap-2">
+            <h2 className="text-[15px] font-semibold text-text-main flex flex-wrap items-center gap-2 tabular-nums">
               <span>Games ({filteredGames.length.toLocaleString()})</span>
               {appTypeFilter !== "all" && (
-                <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 capitalize">
+                <Badge tone="success" className="capitalize">
                   {appTypeFilter}s only
-                </span>
+                </Badge>
               )}
               {selectedPublisher !== "all" && (
-                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full bg-electric-blue/10 border border-electric-blue/30 text-electric-blue">
+                <Badge tone="accent">
                   <span>{getDisplayName(selectedPublisher)}</span>
                   <button
                     type="button"
                     onClick={() => setSelectedPublisher("all")}
-                    className="hover:underline font-semibold"
+                    className="hover:underline font-semibold ml-1"
                     title="Clear account filter"
                   >
                     Clear
                   </button>
-                </span>
+                </Badge>
               )}
             </h2>
-            <p className="text-xs text-text-muted">
+            <p className="text-xs text-text-muted mt-0.5">
               Click any game row to inspect its details and compare free vs. paid sibling titles from that publisher.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
             <AtlasSelect
               value={selectedPublisher}
               onChange={(val) => setSelectedPublisher(val)}
@@ -2359,81 +2280,81 @@ function AmazonIntelligenceView({ isAdmin = false }) {
             />
 
             <div className="relative">
-              <span className="material-symbols-outlined text-[16px] text-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                search
-              </span>
+              <AtlasIcon
+                name="search"
+                size={15}
+                className="text-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+              />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search title, ASIN, account..."
-                className="h-9 pl-8 pr-3 rounded-xl bg-input-bg border border-border-subtle text-xs font-medium text-text-main placeholder:text-text-muted focus:border-amber-400 outline-none transition w-48 sm:w-56"
+                className="h-9 pl-8 pr-3 rounded-lg bg-input-bg border border-border-subtle text-xs font-medium text-text-main placeholder:text-text-muted focus:border-accent outline-none transition w-48 sm:w-56"
               />
             </div>
           </div>
         </div>
 
         {loading ? (
-          <div className="py-12 text-center text-xs text-text-muted">Loading Amazon intelligence dataset...</div>
+          <TableSkeleton rows={8} cols={7} />
         ) : (
           <>
             <div className="overflow-x-auto border border-border-subtle rounded-xl max-h-[540px] overflow-y-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-input-bg text-text-muted uppercase text-[10px] sticky top-0 z-10">
+                <thead className="bg-input-bg text-text-muted uppercase tracking-wider text-[11px] sticky top-0 z-10 border-b border-border-subtle">
                   <tr>
-                    <th className="py-3 px-4">Game</th>
-                    <th className="py-3 px-3">Account</th>
-                    <th className="py-3 px-3">Pricing</th>
-                    <th className="py-3 px-3 text-right">
+                    <th className="py-3 px-4 font-semibold">Game</th>
+                    <th className="py-3 px-3 font-semibold">Account</th>
+                    <th className="py-3 px-3 font-semibold">Pricing</th>
+                    <th className="py-3 px-3 text-right font-semibold">
                       <button
                         type="button"
                         onClick={() => setSortBy(sortBy === "price_desc" ? "price_asc" : "price_desc")}
                         className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
-                          sortBy === "price_desc" || sortBy === "price_asc" ? "text-amber-400 font-bold" : ""
+                          sortBy === "price_desc" || sortBy === "price_asc" ? "text-link font-semibold" : ""
                         }`}
                       >
                         <span>Price</span>
                         {(sortBy === "price_desc" || sortBy === "price_asc") && (
-                          <span className="material-symbols-outlined text-[13px]">
-                            {sortBy === "price_asc" ? "arrow_upward" : "arrow_downward"}
-                          </span>
+                          <AtlasIcon name={sortBy === "price_asc" ? "arrow_upward" : "arrow_downward"} size={12} />
                         )}
                       </button>
                     </th>
-                    <th className="py-3 px-3 text-right">
+                    <th className="py-3 px-3 text-right font-semibold">
                       <button
                         type="button"
                         onClick={() => setSortBy("rating")}
                         className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
-                          sortBy === "rating" ? "text-amber-400 font-bold" : ""
+                          sortBy === "rating" ? "text-link font-semibold" : ""
                         }`}
                       >
                         <span>Rating</span>
-                        {sortBy === "rating" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                        {sortBy === "rating" && <AtlasIcon name="arrow_downward" size={12} />}
                       </button>
                     </th>
-                    <th className="py-3 px-3 text-right">
+                    <th className="py-3 px-3 text-right font-semibold">
                       <button
                         type="button"
                         onClick={() => setSortBy("reviews")}
                         className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
-                          sortBy === "reviews" ? "text-amber-400 font-bold" : ""
+                          sortBy === "reviews" ? "text-link font-semibold" : ""
                         }`}
                       >
                         <span>Reviews</span>
-                        {sortBy === "reviews" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                        {sortBy === "reviews" && <AtlasIcon name="arrow_downward" size={12} />}
                       </button>
                     </th>
-                    <th className="py-3 px-4 text-right">
+                    <th className="py-3 px-4 text-right font-semibold">
                       <button
                         type="button"
                         onClick={() => setSortBy("release")}
                         className={`inline-flex items-center justify-end gap-1 uppercase hover:text-text-main transition-colors ${
-                          sortBy === "release" ? "text-amber-400 font-bold" : ""
+                          sortBy === "release" ? "text-link font-semibold" : ""
                         }`}
                       >
                         <span>Launch Date</span>
-                        {sortBy === "release" && <span className="material-symbols-outlined text-[13px]">arrow_downward</span>}
+                        {sortBy === "release" && <AtlasIcon name="arrow_downward" size={12} />}
                       </button>
                     </th>
                   </tr>
@@ -2443,7 +2364,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     <tr
                       key={`${g.asin}-${g.publisher_id || g.publisher_name}`}
                       onClick={() => setActiveGameDrawer(g)}
-                      className="hover:bg-input-bg/60 cursor-pointer transition"
+                      className="hover:bg-input-bg/50 cursor-pointer transition-colors"
                     >
                       <td className="py-2.5 px-4">
                         <div className="flex items-center gap-3 min-w-0">
@@ -2456,31 +2377,30 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                             />
                           )}
                           <div className="min-w-0">
-                            <div className="font-semibold text-text-main truncate max-w-xs">{g.title}</div>
-                            <div className="flex items-center gap-1.5 text-[10px] font-mono text-text-muted">
+                            <div className="text-[13px] font-semibold text-text-main truncate max-w-xs">{g.title}</div>
+                            <div className="flex items-center gap-1.5 text-[11px] font-mono text-text-muted mt-0.5">
                               <span>{g.asin}</span>
                               <button
                                 type="button"
                                 onClick={(e) => handleCopyAsin(g.asin, e)}
                                 title="Copy ASIN"
                                 aria-label={`Copy ${g.asin}`}
-                                className="p-0.5 rounded hover:bg-input-bg text-text-muted hover:text-amber-400 transition shrink-0"
+                                className="p-0.5 rounded hover:bg-input-bg text-text-muted hover:text-link transition shrink-0"
                               >
-                                <span
-                                  className={`material-symbols-outlined text-[12px] ${
-                                    copiedAsin === g.asin ? "text-emerald-400" : ""
-                                  }`}
-                                >
-                                  {copiedAsin === g.asin ? "check" : "content_copy"}
-                                </span>
+                                <AtlasIcon
+                                  name={copiedAsin === g.asin ? "check" : "content_copy"}
+                                  size={12}
+                                  className={copiedAsin === g.asin ? "text-sem-success" : ""}
+                                />
                               </button>
                               {Number(g.shared_publisher_count) > 1 && (
-                                <span
-                                  className="px-1.5 py-0.2 rounded bg-electric-blue/15 text-electric-blue font-sans font-semibold"
+                                <Badge
+                                  tone="accent"
+                                  className="font-sans"
                                   title={`Published under ${g.shared_publisher_count} accounts: ${(g.shared_publishers || []).join(", ")}`}
                                 >
                                   Shared ({g.shared_publisher_count} accounts)
-                                </span>
+                                </Badge>
                               )}
                             </div>
                           </div>
@@ -2488,26 +2408,27 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                       </td>
                       <td className="py-2.5 px-3 text-text-muted">{getDisplayName(g.publisher_name)}</td>
                       <td className="py-2.5 px-3">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                            g.pricing === "free"
-                              ? "bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400"
-                              : "bg-amber-500/15 text-amber-400"
-                          }`}
-                        >
+                        <Badge tone={g.pricing === "free" ? "success" : "warning"} className="uppercase">
                           {g.pricing}
-                        </span>
+                        </Badge>
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main">
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-text-main tabular-nums">
                         {g.pricing === "free" ? "$0.00" : `$${Number(g.price || 0).toFixed(2)}`}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono">
-                        {g.rating ? `⭐ ${Number(g.rating).toFixed(1)}` : "—"}
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums">
+                        {g.rating ? (
+                          <span className="inline-flex items-center justify-end gap-1 text-text-main font-medium">
+                            <AtlasIcon name="star" size={12} className="text-sem-warning" />
+                            {Number(g.rating).toFixed(1)}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono">
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                         {g.review_count ? Number(g.review_count).toLocaleString() : "0"}
                       </td>
-                      <td className="py-2.5 px-4 text-right font-mono text-text-muted">
+                      <td className="py-2.5 px-4 text-right font-mono text-text-muted tabular-nums">
                         {g.release_date ? String(g.release_date).slice(0, 10) : "Unknown"}
                       </td>
                     </tr>
@@ -2516,22 +2437,22 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               </table>
             </div>
             {filteredGames.length > visibleRowCount && (
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
-                <span>
+              <div className="pt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+                <span className="tabular-nums">
                   Showing {visibleRowCount.toLocaleString()} of {filteredGames.length.toLocaleString()} titles
                 </span>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setVisibleRowCount((c) => c + 200)}
-                    className="px-3.5 py-1.5 rounded-xl bg-input-bg border border-border-subtle text-text-main font-semibold hover:border-amber-400/50 transition"
+                    className="h-8 px-3 rounded-lg bg-input-bg border border-border-subtle text-text-main font-medium hover:bg-surface-solid transition"
                   >
                     Show +200 More
                   </button>
                   <button
                     type="button"
                     onClick={() => setVisibleRowCount(filteredGames.length)}
-                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 text-amber-400 font-semibold hover:bg-amber-500/25 transition"
+                    className="h-8 px-3 rounded-lg atlas-badge-accent border font-medium hover:opacity-90 transition"
                   >
                     Show All ({filteredGames.length.toLocaleString()})
                   </button>
@@ -2544,8 +2465,6 @@ function AmazonIntelligenceView({ isAdmin = false }) {
 
       {/* ===================================================================== */}
       {/* MODAL 1: MANAGE COMPETITOR LISTS (z-[100])                            */}
-      {/* Supports switching between ANY existing list OR creating a new list,  */}
-      {/* and links directly to Add & Scan New Accounts into that list.         */}
       {/* ===================================================================== */}
       {createPortal(
         <AnimatePresence>
@@ -2557,7 +2476,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => setListModal(null)}
-              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+              className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
               <motion.form
                 initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -2566,176 +2485,177 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
                 onSubmit={(e) => handleSaveListModal(e, false)}
-                className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+                className="w-full max-w-lg bg-surface-solid border border-border-subtle rounded-xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
               >
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-text-main">Manage Competitor Lists</h3>
-                <button
-                  type="button"
-                  onClick={() => setListModal(null)}
-                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              {/* Switch between any existing list or "+ Create New List" */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
-                <select
-                  value={listModal.mode === "create" ? "new" : listModal.listId}
-                  onChange={(e) => handleSelectListInModal(e.target.value)}
-                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs font-semibold text-text-main"
-                >
-                  <option value="new">+ Create New Competitor List</option>
-                  {(overview.lists || []).map((l) => (
-                    <option key={l.id} value={l.id}>
-                      Edit List: {l.name} ({l.account_count} accounts)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-text-muted">List Name</label>
-                <input
-                  type="text"
-                  required
-                  value={listModal.name}
-                  onChange={(e) => setListModal({ ...listModal, name: e.target.value, error: null })}
-                  placeholder="e.g. Ozi Tech"
-                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-text-muted">Notes / Description (Optional)</label>
-                <input
-                  type="text"
-                  value={listModal.description || ""}
-                  onChange={(e) => setListModal({ ...listModal, description: e.target.value })}
-                  placeholder="Optional notes about this competitor group..."
-                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-                />
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium text-text-muted">
-                    Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setListModal({
-                          ...listModal,
-                          publisherIds: (overview.publishers || []).map((p) => p.id)
-                        })
-                      }
-                      className="text-[11px] text-electric-blue hover:underline"
-                    >
-                      Select All
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setListModal({ ...listModal, publisherIds: [] })}
-                      className="text-[11px] text-text-muted hover:underline"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-
-                <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
-                  {(overview.publishers || []).map((p) => {
-                    const checked = (listModal.publisherIds || []).includes(p.id);
-                    const disp = getDisplayName(p.publisher_name);
-                    return (
-                      <label
-                        key={p.id}
-                        className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg text-xs"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              const cur = listModal.publisherIds || [];
-                              setListModal({
-                                ...listModal,
-                                publisherIds: checked ? cur.filter((id) => id !== p.id) : [...cur, p.id]
-                              });
-                            }}
-                          />
-                          <div className="min-w-0">
-                            <div className="font-medium text-text-main truncate">{disp}</div>
-                            {disp !== p.publisher_name && (
-                              <div className="text-[10px] text-text-muted truncate">Amazon: {p.publisher_name}</div>
-                            )}
-                          </div>
-                        </div>
-                        <span className="text-[11px] font-mono text-text-muted shrink-0">
-                          {p.total_games} games ({p.free_games}F / {p.paid_games}P)
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Direct Link to Add & Scan New Amazon Accounts into this list */}
-              <div className="p-3 rounded-xl bg-electric-blue/10 border border-electric-blue/25 flex items-center justify-between gap-3">
-                <div className="text-xs text-text-main">
-                  Want to scan <strong>brand-new Amazon links</strong> into this list?
-                </div>
-                <button
-                  type="button"
-                  disabled={!listModal.name.trim() || isSavingList}
-                  onClick={(e) => handleSaveListModal(e, true)}
-                  className="px-3 py-1.5 rounded-lg bg-electric-blue text-white text-xs font-semibold hover:opacity-95 shrink-0 disabled:opacity-50"
-                >
-                  {listModal.mode === "create" ? "Create List & Add New Links →" : "Save & Add New Links →"}
-                </button>
-              </div>
-
-              {listModal.error && (
-                <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs font-medium">
-                  {listModal.error}
-                </div>
-              )}
-
-              <div className="flex items-center justify-between gap-2 pt-2">
-                {listModal.mode === "edit" ? (
-                  <button
-                    type="button"
-                    disabled={isDeletingList || isSavingList}
-                    onClick={() => handleDeleteList(listModal.listId)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-urgent-red/15 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 disabled:opacity-50"
-                  >
-                    {isDeletingList && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
-                    {isDeletingList ? "Deleting..." : "Delete List"}
-                  </button>
-                ) : (
-                  <div />
-                )}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-[15px] font-semibold text-text-main">Manage Competitor Lists</h3>
                   <button
                     type="button"
                     onClick={() => setListModal(null)}
-                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    aria-label="Close list modal"
+                    className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
                   >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSavingList}
-                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                  >
-                    {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create Empty / Selected List" : "Save List"}
+                    <AtlasIcon name="close" size={18} />
                   </button>
                 </div>
-              </div>
+
+                {/* Switch between any existing list or "+ Create New List" */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-text-muted">Select List to Edit or Create New</label>
+                  <select
+                    value={listModal.mode === "create" ? "new" : listModal.listId}
+                    onChange={(e) => handleSelectListInModal(e.target.value)}
+                    className="h-9 rounded-lg bg-input-bg border border-border-subtle px-3 text-xs font-medium text-text-main focus:outline-none focus:border-accent"
+                  >
+                    <option value="new">+ Create New Competitor List</option>
+                    {(overview.lists || []).map((l) => (
+                      <option key={l.id} value={l.id}>
+                        Edit List: {l.name} ({l.account_count} accounts)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-text-muted">List Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={listModal.name}
+                    onChange={(e) => setListModal({ ...listModal, name: e.target.value, error: null })}
+                    placeholder="e.g. Ozi Tech"
+                    className="h-9 rounded-lg bg-input-bg border border-border-subtle px-3 text-xs text-text-main focus:outline-none focus:border-accent"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-text-muted">Notes / Description (Optional)</label>
+                  <input
+                    type="text"
+                    value={listModal.description || ""}
+                    onChange={(e) => setListModal({ ...listModal, description: e.target.value })}
+                    placeholder="Optional notes about this competitor group..."
+                    className="h-9 rounded-lg bg-input-bg border border-border-subtle px-3 text-xs text-text-main focus:outline-none focus:border-accent"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-text-muted">
+                      Existing Accounts in Atlas ({(listModal.publisherIds || []).length} selected)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setListModal({
+                            ...listModal,
+                            publisherIds: (overview.publishers || []).map((p) => p.id)
+                          })
+                        }
+                        className="text-xs text-link hover:underline"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setListModal({ ...listModal, publisherIds: [] })}
+                        className="text-xs text-text-muted hover:underline"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+                    {(overview.publishers || []).map((p) => {
+                      const checked = (listModal.publisherIds || []).includes(p.id);
+                      const disp = getDisplayName(p.publisher_name);
+                      return (
+                        <label
+                          key={p.id}
+                          className="px-3.5 py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg text-xs"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const cur = listModal.publisherIds || [];
+                                setListModal({
+                                  ...listModal,
+                                  publisherIds: checked ? cur.filter((id) => id !== p.id) : [...cur, p.id]
+                                });
+                              }}
+                            />
+                            <div className="min-w-0">
+                              <div className="font-medium text-text-main truncate">{disp}</div>
+                              {disp !== p.publisher_name && (
+                                <div className="text-[11px] text-text-muted truncate">Amazon: {p.publisher_name}</div>
+                              )}
+                            </div>
+                          </div>
+                          <span className="text-[11px] font-mono text-text-muted shrink-0 tabular-nums">
+                            {p.total_games} games ({p.free_games}F / {p.paid_games}P)
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Direct Link to Add & Scan New Amazon Accounts into this list */}
+                <div className="p-3 rounded-xl bg-input-bg/60 border border-border-subtle flex items-center justify-between gap-3">
+                  <div className="text-xs text-text-main">
+                    Want to scan <strong>brand-new Amazon links</strong> into this list?
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!listModal.name.trim() || isSavingList}
+                    onClick={(e) => handleSaveListModal(e, true)}
+                    className="h-8 px-3 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold shrink-0 disabled:opacity-50"
+                  >
+                    {listModal.mode === "create" ? "Create & Add Links →" : "Save & Add Links →"}
+                  </button>
+                </div>
+
+                {listModal.error && (
+                  <div className="p-3 rounded-xl atlas-badge-danger border text-xs font-medium">
+                    {listModal.error}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-border-subtle">
+                  {listModal.mode === "edit" ? (
+                    <button
+                      type="button"
+                      disabled={isDeletingList || isSavingList}
+                      onClick={() => handleDeleteList(listModal.listId)}
+                      className="h-9 inline-flex items-center gap-1.5 px-3.5 rounded-lg atlas-badge-danger border text-xs font-semibold hover:opacity-90 disabled:opacity-50"
+                    >
+                      {isDeletingList && <AtlasIcon name="progress_activity" size={14} className="animate-spin" />}
+                      {isDeletingList ? "Deleting..." : "Delete List"}
+                    </button>
+                  ) : (
+                    <div />
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setListModal(null)}
+                      className="h-9 px-4 rounded-lg bg-input-bg border border-border-subtle text-text-muted hover:text-text-main text-xs font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingList}
+                      className="h-9 px-4 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold disabled:opacity-50"
+                    >
+                      {isSavingList ? "Saving..." : listModal.mode === "create" ? "Create List" : "Save List"}
+                    </button>
+                  </div>
+                </div>
               </motion.form>
             </motion.div>
           )}
@@ -2745,7 +2665,6 @@ function AmazonIntelligenceView({ isAdmin = false }) {
 
       {/* ===================================================================== */}
       {/* MODAL 2: ADD & SCAN AMAZON ACCOUNTS (z-[100])                         */}
-      {/* Dedicated flow to paste URLs, validate, pick destination list, & scan */}
       {/* ===================================================================== */}
       {createPortal(
         <AnimatePresence>
@@ -2757,7 +2676,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => setShowScannerModal(false)}
-              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+              className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
               <motion.div
                 initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -2765,162 +2684,164 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 exit={{ opacity: 0, scale: 0.98, y: 4 }}
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
-                className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
+                className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
               >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-text-main">Add &amp; Scan Amazon Publisher Links</h3>
-                  <p className="text-xs text-text-muted">
-                    Paste one or more Amazon publisher links, choose a destination list, and scan.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowScannerModal(false)}
-                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-text-muted">Amazon Appstore Publisher URLs (one per line)</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const text = SAMPLE_LINKS.join("\n");
-                    setLinksInput(text);
-                    handleValidateLinks(text);
-                  }}
-                  className="text-[11px] font-medium text-electric-blue hover:underline"
-                >
-                  Load 16 Benchmark Links
-                </button>
-              </div>
-
-              <textarea
-                rows={5}
-                value={linksInput}
-                onChange={(e) => setLinksInput(e.target.value)}
-                placeholder="https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGames%2BStop%2BStudio&search-type=ss"
-                className="w-full rounded-xl bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-electric-blue"
-              />
-
-              {/* Destination List Picker */}
-              <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
-                <div className="text-xs font-semibold text-text-main">
-                  Assign Scanned Accounts to Competitor List(s)
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {(overview.lists || []).map((list) => {
-                    const checked = scanTargetListIds.includes(list.id);
-                    return (
-                      <button
-                        key={list.id}
-                        type="button"
-                        onClick={() =>
-                          setScanTargetListIds((prev) =>
-                            checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
-                          )
-                        }
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
-                          checked
-                            ? "bg-amber-500/20 text-amber-300 border-amber-400"
-                            : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
-                        }`}
-                      >
-                        <span className="material-symbols-outlined text-[14px]">
-                          {checked ? "check_box" : "check_box_outline_blank"}
-                        </span>
-                        {list.name}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                  <span className="text-[11px] text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
-                  <input
-                    type="text"
-                    value={scanNewListName}
-                    onChange={(e) => setScanNewListName(e.target.value)}
-                    placeholder="e.g. Ozi Tech"
-                    className="rounded-lg bg-surface-solid border border-border-subtle px-3 py-1.5 text-xs text-text-main flex-1"
-                  />
-                </div>
-              </div>
-
-              {validationResult && (
-                <div className="border border-border-subtle rounded-xl overflow-hidden">
-                  <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold text-text-main">
-                      Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
-                      {validationResult.invalidCount} Invalid
-                    </span>
-                    {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
-                      <button
-                        type="button"
-                        onClick={handleRemoveInvalidAndDuplicates}
-                        className="text-[11px] text-amber-400 font-semibold hover:underline"
-                      >
-                        Clean Invalid/Duplicates
-                      </button>
-                    )}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-[15px] font-semibold text-text-main">Add &amp; Scan Amazon Publisher Links</h3>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Paste one or more Amazon publisher links, choose a destination list, and scan.
+                    </p>
                   </div>
-                  <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
-                    {validationResult.validation.map((item) => (
-                      <div key={item.index} className="px-4 py-2 flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-medium text-text-main truncate">
-                            {item.valid ? item.publisher : item.input}
-                          </div>
-                          <div className="text-[10px] text-text-muted truncate">
-                            {item.valid ? item.normalizedUrl : item.error}
-                          </div>
-                        </div>
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 border ${
-                            !item.valid
-                              ? "bg-urgent-red/15 text-urgent-red border-urgent-red/30"
-                              : item.duplicate
-                              ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-                              : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                          }`}
-                        >
-                          {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between gap-2 pt-2">
-                <button
-                  type="button"
-                  disabled={!linksInput.trim() || isValidating}
-                  onClick={() => handleValidateLinks(linksInput)}
-                  className="px-3.5 py-2 rounded-xl bg-input-bg border border-border-subtle text-text-main text-xs font-semibold hover:border-electric-blue transition disabled:opacity-50"
-                >
-                  {isValidating ? "Validating..." : "Validate Links"}
-                </button>
-                <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setShowScannerModal(false)}
-                    className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    aria-label="Close Amazon scanner modal"
+                    className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
                   >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!linksInput.trim() || scanStatus.running}
-                    onClick={() => handleStartScan()}
-                    className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 transition disabled:opacity-50"
-                  >
-                    {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
+                    <AtlasIcon name="close" size={18} />
                   </button>
                 </div>
-              </div>
+
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-text-muted">Amazon Appstore Publisher URLs (one per line)</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = SAMPLE_LINKS.join("\n");
+                      setLinksInput(text);
+                      handleValidateLinks(text);
+                    }}
+                    className="text-xs font-medium text-link hover:underline"
+                  >
+                    Load 16 Benchmark Links
+                  </button>
+                </div>
+
+                <textarea
+                  rows={5}
+                  value={linksInput}
+                  onChange={(e) => setLinksInput(e.target.value)}
+                  placeholder="https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGames%2BStop%2BStudio&search-type=ss"
+                  className="w-full rounded-lg bg-input-bg border border-border-subtle p-3 text-xs font-mono text-text-main focus:outline-none focus:border-accent"
+                />
+
+                {/* Destination List Picker */}
+                <div className="bg-input-bg/60 border border-border-subtle rounded-xl p-3.5 flex flex-col gap-3">
+                  <div className="text-xs font-semibold text-text-main">
+                    Assign Scanned Accounts to Competitor List(s)
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(overview.lists || []).map((list) => {
+                      const checked = scanTargetListIds.includes(list.id);
+                      return (
+                        <button
+                          key={list.id}
+                          type="button"
+                          onClick={() =>
+                            setScanTargetListIds((prev) =>
+                              checked ? prev.filter((id) => id !== list.id) : [...prev, list.id]
+                            )
+                          }
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition flex items-center gap-1.5 ${
+                            checked
+                              ? "atlas-badge-warning border font-semibold"
+                              : "bg-surface-solid text-text-muted border-border-subtle hover:text-text-main"
+                          }`}
+                        >
+                          <AtlasIcon
+                            name={checked ? "check_box" : "check_box_outline_blank"}
+                            size={14}
+                          />
+                          {list.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <span className="text-xs text-text-muted shrink-0">Or create &amp; assign to a new list:</span>
+                    <input
+                      type="text"
+                      value={scanNewListName}
+                      onChange={(e) => setScanNewListName(e.target.value)}
+                      placeholder="e.g. Ozi Tech"
+                      className="h-9 rounded-lg bg-surface-solid border border-border-subtle px-3 text-xs text-text-main flex-1 focus:outline-none focus:border-accent"
+                    />
+                  </div>
+                </div>
+
+                {validationResult && (
+                  <div className="border border-border-subtle rounded-xl overflow-hidden">
+                    <div className="bg-input-bg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="font-semibold text-text-main tabular-nums">
+                        Validation: {validationResult.validCount} Valid · {validationResult.duplicateCount} Duplicates ·{" "}
+                        {validationResult.invalidCount} Invalid
+                      </span>
+                      {(validationResult.invalidCount > 0 || validationResult.duplicateCount > 0) && (
+                        <button
+                          type="button"
+                          onClick={handleRemoveInvalidAndDuplicates}
+                          className="text-xs text-sem-warning font-semibold hover:underline"
+                        >
+                          Clean Invalid/Duplicates
+                        </button>
+                      )}
+                    </div>
+                    <div className="max-h-40 overflow-y-auto divide-y divide-border-subtle text-xs">
+                      {validationResult.validation.map((item) => (
+                        <div key={item.index} className="px-4 py-2 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium text-text-main truncate">
+                              {item.valid ? item.publisher : item.input}
+                            </div>
+                            <div className="text-[11px] text-text-muted truncate">
+                              {item.valid ? item.normalizedUrl : item.error}
+                            </div>
+                          </div>
+                          <Badge
+                            tone={
+                              !item.valid
+                                ? "danger"
+                                : item.duplicate
+                                ? "warning"
+                                : "success"
+                            }
+                          >
+                            {!item.valid ? "Invalid" : item.duplicate ? "Duplicate" : "Valid"}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-border-subtle">
+                  <button
+                    type="button"
+                    disabled={!linksInput.trim() || isValidating}
+                    onClick={() => handleValidateLinks(linksInput)}
+                    className="h-9 px-3.5 rounded-lg bg-input-bg border border-border-subtle text-text-main text-xs font-medium hover:border-border-strong transition disabled:opacity-50"
+                  >
+                    {isValidating ? "Validating..." : "Validate Links"}
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowScannerModal(false)}
+                      className="h-9 px-4 rounded-lg bg-input-bg border border-border-subtle text-text-muted hover:text-text-main text-xs font-medium"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!linksInput.trim() || scanStatus.running}
+                      onClick={() => handleStartScan()}
+                      className="h-9 px-4 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold transition disabled:opacity-50"
+                    >
+                      {scanStatus.running ? "Scan Running..." : "Validate & Start Scan"}
+                    </button>
+                  </div>
+                </div>
               </motion.div>
             </motion.div>
           )}
@@ -2941,7 +2862,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => setEditingPublisher(null)}
-              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+              className="fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
             >
               <motion.form
                 initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -2950,116 +2871,117 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
                 onSubmit={handleSavePublisherModal}
-                className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+                className="w-full max-w-md bg-surface-solid border border-border-subtle rounded-xl p-6 flex flex-col gap-4 shadow-2xl"
               >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-text-main">Rename Account &amp; Lists</h3>
-                  <p className="text-[11px] text-text-muted">Amazon Brand: {editingPublisher.publisher_name}</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-[15px] font-semibold text-text-main">Rename Account &amp; Lists</h3>
+                    <p className="text-xs text-text-muted">Amazon Brand: {editingPublisher.publisher_name}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditingPublisher(null)}
+                    aria-label="Close rename modal"
+                    className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
+                  >
+                    <AtlasIcon name="close" size={18} />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setEditingPublisher(null)}
-                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
 
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-text-muted">
-                  Custom Display Name (Leave blank to use original Amazon name)
-                </label>
-                <input
-                  type="text"
-                  value={editingPublisher.display_name}
-                  onChange={(e) => setEditingPublisher({ ...editingPublisher, display_name: e.target.value })}
-                  placeholder={editingPublisher.publisher_name}
-                  className="rounded-xl bg-input-bg border border-border-subtle px-3.5 py-2 text-xs text-text-main"
-                />
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <label className="text-xs font-medium text-text-muted">
-                  Competitor Lists (Account can belong to multiple lists)
-                </label>
-                <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
-                  {(overview.lists || []).map((list) => {
-                    const checked = (editingPublisher.list_ids || []).includes(list.id);
-                    return (
-                      <label
-                        key={list.id}
-                        className="px-3.5 py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-input-bg text-xs"
-                      >
-                        <span className="text-text-main font-medium">{list.name}</span>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            const cur = editingPublisher.list_ids || [];
-                            setEditingPublisher({
-                              ...editingPublisher,
-                              list_ids: checked ? cur.filter((id) => id !== list.id) : [...cur, list.id]
-                            });
-                          }}
-                        />
-                      </label>
-                    );
-                  })}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-text-muted">
+                    Custom Display Name (Leave blank to use original Amazon name)
+                  </label>
+                  <input
+                    type="text"
+                    value={editingPublisher.display_name}
+                    onChange={(e) => setEditingPublisher({ ...editingPublisher, display_name: e.target.value })}
+                    placeholder={editingPublisher.publisher_name}
+                    className="h-9 rounded-lg bg-input-bg border border-border-subtle px-3 text-xs text-text-main focus:outline-none focus:border-accent"
+                  />
                 </div>
-              </div>
 
-              {editingPublisher.error && (
-                <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs font-medium">
-                  {editingPublisher.error}
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-medium text-text-muted">
+                    Competitor Lists (Account can belong to multiple lists)
+                  </label>
+                  <div className="max-h-48 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40">
+                    {(overview.lists || []).map((list) => {
+                      const checked = (editingPublisher.list_ids || []).includes(list.id);
+                      return (
+                        <label
+                          key={list.id}
+                          className="px-3.5 py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-input-bg text-xs"
+                        >
+                          <span className="text-text-main font-medium">{list.name}</span>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const cur = editingPublisher.list_ids || [];
+                              setEditingPublisher({
+                                ...editingPublisher,
+                                list_ids: checked ? cur.filter((id) => id !== list.id) : [...cur, list.id]
+                              });
+                            }}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
-              )}
 
-              <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
+                {editingPublisher.error && (
+                  <div className="p-3 rounded-xl atlas-badge-danger border text-xs font-medium">
+                    {editingPublisher.error}
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-2.5 border-t border-border-subtle pt-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {activeListObj && (editingPublisher.list_ids || []).includes(activeListObj.id) && (
+                        <button
+                          type="button"
+                          disabled={removingPublisherId === editingPublisher.id || isSavingPublisher}
+                          onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
+                          className="h-8 inline-flex items-center gap-1 px-2.5 rounded-lg atlas-badge-warning border text-xs font-medium hover:opacity-90 disabled:opacity-50"
+                        >
+                          {removingPublisherId === editingPublisher.id && (
+                            <AtlasIcon name="progress_activity" size={12} className="animate-spin" />
+                          )}
+                          {removingPublisherId === editingPublisher.id
+                            ? "Removing..."
+                            : `Remove from "${activeListObj.name}"`}
+                        </button>
+                      )}
                       <button
                         type="button"
-                        disabled={removingPublisherId === editingPublisher.id || isSavingPublisher}
-                        onClick={() => handleRemoveFromCurrentList(editingPublisher.id, activeListObj.id)}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-semibold hover:bg-amber-500/25 disabled:opacity-50"
+                        onClick={() => setConfirmDeletePub(editingPublisher)}
+                        className="h-8 px-2.5 rounded-lg atlas-badge-danger border text-xs font-medium hover:opacity-90"
                       >
-                        {removingPublisherId === editingPublisher.id && (
-                          <span className="material-symbols-outlined text-[12px] animate-spin">progress_activity</span>
-                        )}
-                        {removingPublisherId === editingPublisher.id
-                          ? "Removing..."
-                          : `Remove from "${activeListObj.name}"`}
+                        Delete from Atlas
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeletePub(editingPublisher)}
-                      className="px-3 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-[11px] font-semibold hover:bg-urgent-red/25"
-                    >
-                      Delete from Atlas
-                    </button>
-                  </div>
+                    </div>
 
-                  <div className="flex items-center gap-2 ml-auto">
-                    <button
-                      type="button"
-                      onClick={() => setEditingPublisher(null)}
-                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={isSavingPublisher}
-                      className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                    >
-                      {isSavingPublisher ? "Saving..." : "Save Changes"}
-                    </button>
+                    <div className="flex items-center gap-2 ml-auto">
+                      <button
+                        type="button"
+                        onClick={() => setEditingPublisher(null)}
+                        className="h-9 px-4 rounded-lg bg-input-bg border border-border-subtle text-text-muted hover:text-text-main text-xs font-medium"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSavingPublisher}
+                        className="h-9 px-4 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold disabled:opacity-50"
+                      >
+                        {isSavingPublisher ? "Saving..." : "Save Changes"}
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
               </motion.form>
             </motion.div>
           )}
@@ -3080,7 +3002,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => setConfirmDeletePub(null)}
-              className="atlas-google-shell fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+              className="fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
             >
               <motion.div
                 initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -3088,19 +3010,19 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 exit={{ opacity: 0, scale: 0.98, y: 4 }}
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
-                className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl"
+                className="w-full max-w-sm bg-surface-solid border border-border-subtle rounded-xl p-6 flex flex-col gap-4 shadow-2xl"
               >
                 <h4 className="text-sm font-semibold text-text-main">
-                  Delete "{getDisplayName(confirmDeletePub.publisher_name)}" from Atlas?
+                  Delete &ldquo;{getDisplayName(confirmDeletePub.publisher_name)}&rdquo; from Atlas?
                 </h4>
-                <p className="text-xs text-text-muted">
+                <p className="text-xs text-text-muted leading-relaxed">
                   This will permanently remove the publisher and its extracted games from Atlas. If you only want to remove it from a Competitor List, uncheck the list instead.
                 </p>
-                <div className="flex items-center justify-end gap-2">
+                <div className="flex items-center justify-end gap-2 pt-1">
                   <button
                     type="button"
                     onClick={() => setConfirmDeletePub(null)}
-                    className="px-3.5 py-1.5 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
+                    className="h-9 px-3.5 rounded-lg bg-input-bg border border-border-subtle text-text-muted hover:text-text-main text-xs font-medium"
                   >
                     Cancel
                   </button>
@@ -3108,9 +3030,9 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                     type="button"
                     disabled={isDeletingPub}
                     onClick={() => executeDeletePublisherFromAtlas(confirmDeletePub)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-urgent-red text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
+                    className="h-9 inline-flex items-center gap-1.5 px-3.5 rounded-lg bg-sem-danger text-white text-xs font-semibold hover:opacity-90 disabled:opacity-50"
                   >
-                    {isDeletingPub && <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>}
+                    {isDeletingPub && <AtlasIcon name="progress_activity" size={14} className="animate-spin" />}
                     {isDeletingPub ? "Deleting..." : "Delete Permanently"}
                   </button>
                 </div>
@@ -3134,7 +3056,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => setActiveGameDrawer(null)}
-              className="atlas-google-shell fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
+              className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-sm flex justify-end"
             >
               <motion.aside
                 initial={{ x: "100%" }}
@@ -3145,143 +3067,138 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 className="w-full max-w-lg bg-surface-solid border-l border-border-subtle h-full overflow-y-auto p-6 shadow-2xl"
               >
                 <div key={activeGameDrawer.asin} className="atlas-tab-swap flex flex-col gap-5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3.5">
-                  {activeGameDrawer.icon && (
-                    <img
-                      src={activeGameDrawer.icon}
-                      alt=""
-                      className="w-16 h-16 rounded-2xl object-cover border border-border-subtle shrink-0"
-                    />
-                  )}
-                  <div>
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                        activeGameDrawer.pricing === "free"
-                          ? "bg-emerald-500/15 text-emerald-400"
-                          : "bg-amber-500/15 text-amber-400"
-                      }`}
-                    >
-                      {activeGameDrawer.pricing === "free"
-                        ? "Free User-Acquisition Title"
-                        : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
-                    </span>
-                    <h3 className="text-base font-semibold text-text-main mt-1">{activeGameDrawer.title}</h3>
-                    <div className="text-xs text-text-muted">{getDisplayName(activeGameDrawer.publisher_name)}</div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActiveGameDrawer(null)}
-                  className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted shrink-0"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2.5">
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">ASIN</div>
-                  <div className="flex items-center justify-between gap-1.5 mt-0.5">
-                    <div className="text-xs font-mono font-semibold text-text-main truncate">{activeGameDrawer.asin}</div>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3.5">
+                      {activeGameDrawer.icon && (
+                        <img
+                          src={activeGameDrawer.icon}
+                          alt=""
+                          className="w-16 h-16 rounded-xl object-cover border border-border-subtle shrink-0"
+                        />
+                      )}
+                      <div>
+                        <Badge tone={activeGameDrawer.pricing === "free" ? "success" : "warning"} className="uppercase">
+                          {activeGameDrawer.pricing === "free"
+                            ? "Free User-Acquisition Title"
+                            : `Paid Title · $${Number(activeGameDrawer.price || 0).toFixed(2)}`}
+                        </Badge>
+                        <h3 className="text-[15px] font-semibold text-text-main mt-1.5">{activeGameDrawer.title}</h3>
+                        <div className="text-xs text-text-muted">{getDisplayName(activeGameDrawer.publisher_name)}</div>
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      onClick={(e) => handleCopyAsin(activeGameDrawer.asin, e)}
-                      title="Copy ASIN"
-                      aria-label={`Copy ${activeGameDrawer.asin}`}
-                      className="p-0.5 rounded hover:bg-surface-solid text-text-muted hover:text-amber-400 transition shrink-0"
+                      onClick={() => setActiveGameDrawer(null)}
+                      aria-label="Close Amazon game drawer"
+                      className="p-1.5 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main shrink-0"
                     >
-                      <span
-                        className={`material-symbols-outlined text-[13px] ${
-                          copiedAsin === activeGameDrawer.asin ? "text-emerald-400" : ""
-                        }`}
-                      >
-                        {copiedAsin === activeGameDrawer.asin ? "check" : "content_copy"}
-                      </span>
+                      <AtlasIcon name="close" size={18} />
                     </button>
                   </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Rating &amp; Reviews</div>
-                  <div className="text-xs font-semibold text-text-main mt-0.5">
-                    ⭐ {activeGameDrawer.rating ?? "—"} ({Number(activeGameDrawer.review_count || 0).toLocaleString()})
-                  </div>
-                </div>
-                <div className="bg-input-bg rounded-xl p-3">
-                  <div className="text-[10px] text-text-muted">Amazon Launch Date</div>
-                  <div className="text-xs font-mono font-semibold text-text-main mt-0.5">
-                    {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
-                  </div>
-                </div>
-              </div>
 
-              <a
-                href={
-                  activeGameDrawer.url ||
-                  `https://www.amazon.com/dp/${encodeURIComponent(activeGameDrawer.asin)}`
-                }
-                target="_blank"
-                rel="noreferrer"
-                className="w-full py-2.5 rounded-xl bg-electric-blue text-white text-xs font-semibold text-center hover:opacity-95 transition flex items-center justify-center gap-2"
-              >
-                Open Listing on Amazon Appstore
-                <span className="material-symbols-outlined text-[16px]">open_in_new</span>
-              </a>
-
-              {(() => {
-                const siblings = gamesByPublisher.get(activeGameDrawer.publisher_name) || [];
-                const paidSiblings = siblings.filter((g) => g.pricing === "paid" && g.asin !== activeGameDrawer.asin);
-                const freeSiblings = siblings.filter((g) => g.pricing === "free" && g.asin !== activeGameDrawer.asin);
-                const dispPub = getDisplayName(activeGameDrawer.publisher_name);
-                return (
-                  <div className="flex flex-col gap-4 border-t border-border-subtle pt-4">
-                    <div>
-                      <h4 className="text-xs font-semibold text-amber-400">
-                        {dispPub}’s Paid Titles ({paidSiblings.length})
-                      </h4>
-                      <p className="text-[11px] text-text-muted mb-2">
-                        Candidate paid games potentially promoted by this publisher’s free catalogue:
-                      </p>
-                      <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
-                        {paidSiblings.slice(0, 15).map((s) => (
-                          <button
-                            key={s.asin}
-                            type="button"
-                            onClick={() => setActiveGameDrawer(s)}
-                            className="p-2 rounded-lg bg-input-bg hover:bg-amber-500/10 flex items-center justify-between gap-2 text-left text-xs"
-                          >
-                            <span className="truncate text-text-main font-medium">{s.title}</span>
-                            <span className="font-mono text-amber-400 shrink-0">
-                              ${Number(s.price || 0).toFixed(2)} · {s.review_count || 0} rev
-                            </span>
-                          </button>
-                        ))}
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <div className="bg-input-bg border border-border-subtle rounded-lg p-3">
+                      <div className="text-[11px] text-text-muted">ASIN</div>
+                      <div className="flex items-center justify-between gap-1.5 mt-0.5">
+                        <div className="text-xs font-mono font-semibold text-text-main truncate">{activeGameDrawer.asin}</div>
+                        <button
+                          type="button"
+                          onClick={(e) => handleCopyAsin(activeGameDrawer.asin, e)}
+                          title="Copy ASIN"
+                          aria-label={`Copy ${activeGameDrawer.asin}`}
+                          className="p-0.5 rounded hover:bg-surface-solid text-text-muted hover:text-link transition shrink-0"
+                        >
+                          <AtlasIcon
+                            name={copiedAsin === activeGameDrawer.asin ? "check" : "content_copy"}
+                            size={13}
+                            className={copiedAsin === activeGameDrawer.asin ? "text-sem-success" : ""}
+                          />
+                        </button>
                       </div>
                     </div>
-
-                    <div>
-                      <h4 className="text-xs font-semibold text-emerald-400">
-                        {dispPub}’s Top Free Titles ({freeSiblings.length})
-                      </h4>
-                      <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto mt-1.5">
-                        {freeSiblings.slice(0, 15).map((s) => (
-                          <button
-                            key={s.asin}
-                            type="button"
-                            onClick={() => setActiveGameDrawer(s)}
-                            className="p-2 rounded-lg bg-input-bg hover:bg-emerald-500/10 flex items-center justify-between gap-2 text-left text-xs"
-                          >
-                            <span className="truncate text-text-main font-medium">{s.title}</span>
-                            <span className="font-mono text-emerald-400 shrink-0">
-                              FREE · {Number(s.review_count || 0).toLocaleString()} rev
-                            </span>
-                          </button>
-                        ))}
+                    <div className="bg-input-bg border border-border-subtle rounded-lg p-3">
+                      <div className="text-[11px] text-text-muted">Rating &amp; Reviews</div>
+                      <div className="text-xs font-semibold text-text-main mt-0.5 tabular-nums flex items-center gap-1">
+                        <AtlasIcon name="star" size={12} className="text-sem-warning" />
+                        <span>{activeGameDrawer.rating ?? "—"}</span>
+                        <span className="text-text-muted font-normal">({Number(activeGameDrawer.review_count || 0).toLocaleString()})</span>
+                      </div>
+                    </div>
+                    <div className="bg-input-bg border border-border-subtle rounded-lg p-3">
+                      <div className="text-[11px] text-text-muted">Launch Date</div>
+                      <div className="text-xs font-mono font-semibold text-text-main mt-0.5 tabular-nums">
+                        {activeGameDrawer.release_date ? String(activeGameDrawer.release_date).slice(0, 10) : "Unknown"}
                       </div>
                     </div>
                   </div>
-                );
-              })()}
+
+                  <a
+                    href={
+                      activeGameDrawer.url ||
+                      `https://www.amazon.com/dp/${encodeURIComponent(activeGameDrawer.asin)}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="h-10 w-full rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold transition flex items-center justify-center gap-2"
+                  >
+                    Open Listing on Amazon Appstore
+                    <AtlasIcon name="open_in_new" size={15} />
+                  </a>
+
+                  {(() => {
+                    const siblings = gamesByPublisher.get(activeGameDrawer.publisher_name) || [];
+                    const paidSiblings = siblings.filter((g) => g.pricing === "paid" && g.asin !== activeGameDrawer.asin);
+                    const freeSiblings = siblings.filter((g) => g.pricing === "free" && g.asin !== activeGameDrawer.asin);
+                    const dispPub = getDisplayName(activeGameDrawer.publisher_name);
+                    return (
+                      <div className="flex flex-col gap-4 border-t border-border-subtle pt-4">
+                        <div>
+                          <h4 className="text-xs font-semibold text-sem-warning">
+                            {dispPub}&rsquo;s Paid Titles ({paidSiblings.length})
+                          </h4>
+                          <p className="text-xs text-text-muted mb-2 mt-0.5">
+                            Candidate paid games potentially promoted by this publisher&rsquo;s free catalogue:
+                          </p>
+                          <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+                            {paidSiblings.slice(0, 15).map((s) => (
+                              <button
+                                key={s.asin}
+                                type="button"
+                                onClick={() => setActiveGameDrawer(s)}
+                                className="p-2.5 rounded-lg bg-input-bg hover:bg-surface-solid border border-transparent hover:border-border-subtle flex items-center justify-between gap-2 text-left text-xs transition"
+                              >
+                                <span className="truncate text-text-main font-medium">{s.title}</span>
+                                <span className="font-mono text-sem-warning shrink-0 tabular-nums">
+                                  ${Number(s.price || 0).toFixed(2)} · {s.review_count || 0} rev
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="text-xs font-semibold text-sem-success">
+                            {dispPub}&rsquo;s Top Free Titles ({freeSiblings.length})
+                          </h4>
+                          <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto mt-1.5">
+                            {freeSiblings.slice(0, 15).map((s) => (
+                              <button
+                                key={s.asin}
+                                type="button"
+                                onClick={() => setActiveGameDrawer(s)}
+                                className="p-2.5 rounded-lg bg-input-bg hover:bg-surface-solid border border-transparent hover:border-border-subtle flex items-center justify-between gap-2 text-left text-xs transition"
+                              >
+                                <span className="truncate text-text-main font-medium">{s.title}</span>
+                                <span className="font-mono text-sem-success shrink-0 tabular-nums">
+                                  FREE · {Number(s.review_count || 0).toLocaleString()} rev
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </motion.aside>
             </motion.div>
@@ -3301,7 +3218,7 @@ function AmazonIntelligenceView({ isAdmin = false }) {
               exit={{ opacity: 0 }}
               transition={{ duration: 0.16, ease: "easeOut" }}
               onClick={() => setGroupModal(null)}
-              className="atlas-google-shell fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+              className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
             >
               <motion.div
                 initial={{ opacity: 0, scale: 0.97, y: 8 }}
@@ -3309,278 +3226,278 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 exit={{ opacity: 0, scale: 0.98, y: 4 }}
                 transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 onClick={(e) => e.stopPropagation()}
-                className="bg-surface-solid border border-border-subtle rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+                className="bg-surface-solid border border-border-subtle rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
               >
-              <div className="p-5 border-b border-border-subtle flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-text-main flex items-center gap-2">
-                    <span className="material-symbols-outlined text-amber-500">folder_special</span>
-                    {groupModal.mode === "create" ? "Create Competitor Batch" : `Edit Batch: ${groupModal.name}`}
-                  </h3>
-                  <p className="text-xs text-text-muted mt-0.5">
-                    Group multiple competitors into a unified batch. Each competitor can only belong to one batch.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setGroupModal(null)}
-                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
-                >
-                  <span className="material-symbols-outlined text-[20px]">close</span>
-                </button>
-              </div>
-
-              <form onSubmit={handleSaveBatch} className="p-5 overflow-y-auto flex-1 flex flex-col gap-4">
-                {groupModal.error && (
-                  <div className="p-3 rounded-xl bg-urgent-red/10 border border-urgent-red/30 text-urgent-red text-xs flex items-center gap-2">
-                    <span className="material-symbols-outlined text-[16px]">error</span>
-                    <span className="flex-1 font-medium">{groupModal.error}</span>
-                  </div>
-                )}
-
-                {/* Existing Batches Overview & Switcher */}
-                {(overview.competitorGroups || []).length > 0 && (
-                  <div className="p-3 rounded-2xl bg-input-bg/70 border border-border-subtle flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px] text-amber-500">layers</span>
-                        Existing Batches ({(overview.competitorGroups || []).length}) — Click to View / Edit
-                      </span>
-                      {groupModal.mode === "edit" && (
-                        <button
-                          type="button"
-                          onClick={() => openBatchManager(null)}
-                          className="text-[11px] font-semibold text-amber-500 hover:underline flex items-center gap-0.5"
-                        >
-                          <span className="material-symbols-outlined text-[13px]">add</span>
-                          Create New Batch
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                      {(overview.competitorGroups || []).map((grp) => {
-                        const isActiveBatch = groupModal.mode === "edit" && Number(groupModal.groupId) === Number(grp.id);
-                        const members = Array.isArray(grp.competitor_names) ? grp.competitor_names : [];
-                        return (
-                          <button
-                            key={grp.id}
-                            type="button"
-                            onClick={() => handleSelectBatchInModal(grp.id)}
-                            className={`px-2.5 py-1.5 rounded-xl border text-left transition flex flex-col gap-0.5 max-w-full ${
-                              isActiveBatch
-                                ? "bg-amber-500/15 border-amber-500 text-amber-500 shadow-sm"
-                                : "bg-surface-solid border-border-subtle text-text-main hover:border-amber-500/40"
-                            }`}
-                          >
-                            <div className="flex items-center gap-1.5 text-xs font-semibold">
-                              <span className="material-symbols-outlined text-[13px]">folder_special</span>
-                              <span>{grp.name}</span>
-                              <span className="text-[10px] text-text-muted font-normal">
-                                ({members.length} {members.length === 1 ? "competitor" : "competitors"} · {grp.account_count || 0} accts)
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-text-muted truncate max-w-[260px]">
-                              {members.length > 0 ? members.join(", ") : "No competitors assigned"}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-5 border-b border-border-subtle flex items-center justify-between">
                   <div>
-                    <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
-                      Batch Name
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={groupModal.name}
-                      onChange={(e) => setGroupModal({ ...groupModal, name: e.target.value })}
-                      placeholder="e.g. Bahria"
-                      className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-amber-400 outline-none"
-                    />
+                    <h3 className="text-[15px] font-semibold text-text-main flex items-center gap-2">
+                      <AtlasIcon name="folder_special" size={18} className="text-link" />
+                      {groupModal.mode === "create" ? "Create Competitor Batch" : `Edit Batch: ${groupModal.name}`}
+                    </h3>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      Group multiple competitors into a unified batch. Each competitor can only belong to one batch.
+                    </p>
                   </div>
-
-                  <div>
-                    <label className="text-xs font-semibold text-text-muted uppercase tracking-wider block mb-1">
-                      Description (Optional)
-                    </label>
-                    <input
-                      type="text"
-                      value={groupModal.description}
-                      onChange={(e) => setGroupModal({ ...groupModal, description: e.target.value })}
-                      placeholder="e.g. Trenzy and Gaminator studio network"
-                      className="w-full h-10 px-3.5 rounded-xl bg-input-bg border border-border-subtle text-sm text-text-main placeholder:text-text-muted focus:border-amber-400 outline-none"
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGroupModal(null)}
+                    aria-label="Close batch modal"
+                    className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main"
+                  >
+                    <AtlasIcon name="close" size={18} />
+                  </button>
                 </div>
 
-                <div>
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                    <label className="text-xs font-semibold text-text-muted uppercase tracking-wider">
-                      Select Member Competitors ({groupModal.competitorIds.length} selected)
-                    </label>
-                    {groupModal.competitorIds.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setGroupModal({ ...groupModal, competitorIds: [] })}
-                        className="text-[11px] text-text-muted hover:text-urgent-red font-semibold transition"
-                      >
-                        Clear Selection
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Selected Competitors Pills */}
-                  {groupModal.competitorIds.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-1.5 mb-2.5 p-2 rounded-xl bg-amber-500/5 border border-amber-500/20">
-                      {(overview.lists || [])
-                        .filter((c) => groupModal.competitorIds.includes(Number(c.competitor_id)))
-                        .map((comp) => (
-                          <span
-                            key={comp.id}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-500 border border-amber-500/30 text-[11px] font-semibold"
-                          >
-                            <span>{comp.name}</span>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setGroupModal({
-                                  ...groupModal,
-                                  competitorIds: groupModal.competitorIds.filter((id) => id !== Number(comp.competitor_id))
-                                })
-                              }
-                              className="hover:text-urgent-red ml-0.5 flex items-center"
-                              title={`Remove ${comp.name}`}
-                            >
-                              <span className="material-symbols-outlined text-[13px]">close</span>
-                            </button>
-                          </span>
-                        ))}
+                <form onSubmit={handleSaveBatch} className="p-5 overflow-y-auto flex-1 flex flex-col gap-4">
+                  {groupModal.error && (
+                    <div className="p-3 rounded-xl atlas-badge-danger border text-xs flex items-center gap-2">
+                      <AtlasIcon name="error" size={15} />
+                      <span className="flex-1 font-medium">{groupModal.error}</span>
                     </div>
                   )}
 
-                  {/* Search Competitors Input */}
-                  <div className="relative mb-2">
-                    <span className="material-symbols-outlined text-[16px] text-text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
-                      search
-                    </span>
-                    <input
-                      type="text"
-                      value={groupModal.searchQuery || ""}
-                      onChange={(e) => setGroupModal({ ...groupModal, searchQuery: e.target.value })}
-                      placeholder="Search competitors by name..."
-                      className="w-full h-9 pl-9 pr-8 rounded-xl bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:border-amber-400 outline-none"
-                    />
-                    {groupModal.searchQuery && (
+                  {/* Existing Batches Overview & Switcher */}
+                  {(overview.competitorGroups || []).length > 0 && (
+                    <div className="p-3 rounded-xl bg-input-bg/70 border border-border-subtle flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-text-muted uppercase tracking-wider flex items-center gap-1">
+                          <AtlasIcon name="layers" size={14} className="text-link" />
+                          Existing Batches ({(overview.competitorGroups || []).length}) — Click to View / Edit
+                        </span>
+                        {groupModal.mode === "edit" && (
+                          <button
+                            type="button"
+                            onClick={() => openBatchManager(null)}
+                            className="text-xs font-medium text-link hover:underline flex items-center gap-0.5"
+                          >
+                            <AtlasIcon name="add" size={13} />
+                            Create New Batch
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                        {(overview.competitorGroups || []).map((grp) => {
+                          const isActiveBatch = groupModal.mode === "edit" && Number(groupModal.groupId) === Number(grp.id);
+                          const members = Array.isArray(grp.competitor_names) ? grp.competitor_names : [];
+                          return (
+                            <button
+                              key={grp.id}
+                              type="button"
+                              onClick={() => handleSelectBatchInModal(grp.id)}
+                              className={`px-2.5 py-1.5 rounded-lg border text-left transition flex flex-col gap-0.5 max-w-full ${
+                                isActiveBatch
+                                  ? "atlas-badge-accent border font-semibold"
+                                  : "bg-surface-solid border-border-subtle text-text-main hover:border-border-strong"
+                              }`}
+                            >
+                              <div className="flex items-center gap-1.5 text-xs font-semibold">
+                                <AtlasIcon name="folder_special" size={13} />
+                                <span>{grp.name}</span>
+                                <span className="text-[11px] text-text-muted font-normal tabular-nums">
+                                  ({members.length} {members.length === 1 ? "competitor" : "competitors"} · {grp.account_count || 0} accts)
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-text-muted truncate max-w-[260px]">
+                                {members.length > 0 ? members.join(", ") : "No competitors assigned"}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider block mb-1">
+                        Batch Name
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={groupModal.name}
+                        onChange={(e) => setGroupModal({ ...groupModal, name: e.target.value })}
+                        placeholder="e.g. Bahria"
+                        className="w-full h-9 px-3 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:border-accent outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider block mb-1">
+                        Description (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={groupModal.description}
+                        onChange={(e) => setGroupModal({ ...groupModal, description: e.target.value })}
+                        placeholder="e.g. Trenzy and Gaminator studio network"
+                        className="w-full h-9 px-3 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:border-accent outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                      <label className="text-[11px] font-semibold text-text-muted uppercase tracking-wider tabular-nums">
+                        Select Member Competitors ({groupModal.competitorIds.length} selected)
+                      </label>
+                      {groupModal.competitorIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setGroupModal({ ...groupModal, competitorIds: [] })}
+                          className="text-xs text-text-muted hover:text-sem-danger font-medium transition"
+                        >
+                          Clear Selection
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Selected Competitors Badges */}
+                    {groupModal.competitorIds.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 mb-2.5 p-2 rounded-lg bg-input-bg/60 border border-border-subtle">
+                        {(overview.lists || [])
+                          .filter((c) => groupModal.competitorIds.includes(Number(c.competitor_id)))
+                          .map((comp) => (
+                            <Badge key={comp.id} tone="accent">
+                              <span>{comp.name}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setGroupModal({
+                                    ...groupModal,
+                                    competitorIds: groupModal.competitorIds.filter((id) => id !== Number(comp.competitor_id))
+                                  })
+                                }
+                                className="hover:text-sem-danger ml-0.5 flex items-center"
+                                title={`Remove ${comp.name}`}
+                              >
+                                <AtlasIcon name="close" size={12} />
+                              </button>
+                            </Badge>
+                          ))}
+                      </div>
+                    )}
+
+                    {/* Search Competitors Input */}
+                    <div className="relative mb-2">
+                      <AtlasIcon
+                        name="search"
+                        size={15}
+                        className="text-text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                      />
+                      <input
+                        type="text"
+                        value={groupModal.searchQuery || ""}
+                        onChange={(e) => setGroupModal({ ...groupModal, searchQuery: e.target.value })}
+                        placeholder="Search competitors by name..."
+                        className="w-full h-9 pl-9 pr-8 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:border-accent outline-none"
+                      />
+                      {groupModal.searchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setGroupModal({ ...groupModal, searchQuery: "" })}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main"
+                        >
+                          <AtlasIcon name="close" size={14} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1.5 bg-input-bg rounded-xl border border-border-subtle">
+                      {(overview.lists || [])
+                        .filter((comp) => {
+                          const q = (groupModal.searchQuery || "").trim().toLowerCase();
+                          if (!q) return true;
+                          const assigned = competitorBatchAssignmentMap.get(Number(comp.competitor_id));
+                          return (
+                            String(comp.name || "").toLowerCase().includes(q) ||
+                            String(assigned?.name || "").toLowerCase().includes(q)
+                          );
+                        })
+                        .map((comp) => {
+                          const targetId = Number(comp.competitor_id);
+                          const isChecked = Number.isInteger(targetId) && targetId > 0 && groupModal.competitorIds.includes(targetId);
+                          const assignedBatch = competitorBatchAssignmentMap.get(targetId);
+                          const isAssignedToOtherBatch =
+                            Boolean(assignedBatch) &&
+                            (groupModal.mode === "create" || Number(assignedBatch.id) !== Number(groupModal.groupId));
+
+                          return (
+                            <label
+                              key={comp.id}
+                              title={
+                                isAssignedToOtherBatch
+                                  ? `${comp.name} is already assigned to batch "${assignedBatch.name}". Remove it from "${assignedBatch.name}" first.`
+                                  : `${comp.name} (${comp.account_count || 0} accounts)`
+                              }
+                              className={`flex items-center gap-2.5 p-2 rounded-lg text-xs font-medium transition ${
+                                isAssignedToOtherBatch
+                                  ? "bg-surface-solid/50 text-text-muted border border-border-subtle/50 opacity-60 cursor-not-allowed"
+                                  : isChecked
+                                  ? "bg-accent/10 text-text-main border border-accent cursor-pointer"
+                                  : "bg-surface-solid text-text-main border border-border-subtle hover:border-border-strong cursor-pointer"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                disabled={isAssignedToOtherBatch || !targetId}
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  if (isAssignedToOtherBatch || !targetId) return;
+                                  const next = e.target.checked
+                                    ? [...groupModal.competitorIds.filter((id) => id !== targetId), targetId]
+                                    : groupModal.competitorIds.filter((id) => id !== targetId);
+                                  setGroupModal({ ...groupModal, competitorIds: next });
+                                }}
+                                className="rounded w-4 h-4 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate font-semibold">{comp.name}</div>
+                                {isAssignedToOtherBatch && (
+                                  <div className="text-[11px] text-sem-warning truncate">
+                                    In &ldquo;{assignedBatch.name}&rdquo;
+                                  </div>
+                                )}
+                              </div>
+                              <span className="text-[11px] text-text-muted shrink-0 tabular-nums">({comp.account_count || 0})</span>
+                            </label>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-3 border-t border-border-subtle mt-auto">
+                    {groupModal.mode === "edit" ? (
                       <button
                         type="button"
-                        onClick={() => setGroupModal({ ...groupModal, searchQuery: "" })}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main"
+                        onClick={() => handleDeleteBatch(groupModal.groupId)}
+                        className="h-9 px-3.5 rounded-lg atlas-badge-danger border text-xs font-semibold hover:opacity-90 transition"
                       >
-                        <span className="material-symbols-outlined text-[15px]">close</span>
+                        Delete Batch
                       </button>
-                    )}
+                    ) : <div />}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={groupModal.saving}
+                        onClick={() => setGroupModal(null)}
+                        className="h-9 px-4 rounded-lg bg-input-bg border border-border-subtle text-xs font-medium text-text-muted hover:text-text-main disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={groupModal.saving}
+                        className="h-9 px-5 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold disabled:opacity-50 flex items-center gap-1.5 transition"
+                      >
+                        {groupModal.saving && (
+                          <AtlasIcon name="progress_activity" size={14} className="animate-spin" />
+                        )}
+                        <span>{groupModal.saving ? "Saving..." : "Save Batch"}</span>
+                      </button>
+                    </div>
                   </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1.5 bg-input-bg rounded-xl border border-border-subtle">
-                    {(overview.lists || [])
-                      .filter((comp) => {
-                        const q = (groupModal.searchQuery || "").trim().toLowerCase();
-                        if (!q) return true;
-                        const assigned = competitorBatchAssignmentMap.get(Number(comp.competitor_id));
-                        return (
-                          String(comp.name || "").toLowerCase().includes(q) ||
-                          String(assigned?.name || "").toLowerCase().includes(q)
-                        );
-                      })
-                      .map((comp) => {
-                        const targetId = Number(comp.competitor_id);
-                        const isChecked = Number.isInteger(targetId) && targetId > 0 && groupModal.competitorIds.includes(targetId);
-                        const assignedBatch = competitorBatchAssignmentMap.get(targetId);
-                        const isAssignedToOtherBatch =
-                          Boolean(assignedBatch) &&
-                          (groupModal.mode === "create" || Number(assignedBatch.id) !== Number(groupModal.groupId));
-
-                        return (
-                          <label
-                            key={comp.id}
-                            title={
-                              isAssignedToOtherBatch
-                                ? `${comp.name} is already assigned to batch "${assignedBatch.name}". Remove it from "${assignedBatch.name}" first.`
-                                : `${comp.name} (${comp.account_count || 0} accounts)`
-                            }
-                            className={`flex items-center gap-2.5 p-2 rounded-lg text-xs font-medium transition ${
-                              isAssignedToOtherBatch
-                                ? "bg-surface-solid/50 text-text-muted border border-border-subtle/50 opacity-60 cursor-not-allowed"
-                                : isChecked
-                                ? "bg-amber-500/15 text-amber-500 border border-amber-500/30 cursor-pointer"
-                                : "bg-surface-solid text-text-main border border-border-subtle hover:bg-surface-glass cursor-pointer"
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              disabled={isAssignedToOtherBatch || !targetId}
-                              checked={isChecked}
-                              onChange={(e) => {
-                                if (isAssignedToOtherBatch || !targetId) return;
-                                const next = e.target.checked
-                                  ? [...groupModal.competitorIds.filter((id) => id !== targetId), targetId]
-                                  : groupModal.competitorIds.filter((id) => id !== targetId);
-                                setGroupModal({ ...groupModal, competitorIds: next });
-                              }}
-                              className="accent-amber-500 rounded w-4 h-4 cursor-pointer disabled:cursor-not-allowed shrink-0"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate font-semibold">{comp.name}</div>
-                              {isAssignedToOtherBatch && (
-                                <div className="text-[10px] text-amber-500 truncate">
-                                  In "{assignedBatch.name}"
-                                </div>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-text-muted shrink-0">({comp.account_count || 0})</span>
-                          </label>
-                        );
-                      })}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between pt-3 border-t border-border-subtle mt-auto">
-                  {groupModal.mode === "edit" ? (
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteBatch(groupModal.groupId)}
-                      className="px-3.5 py-2 rounded-xl bg-urgent-red/10 border border-urgent-red/20 text-urgent-red text-xs font-semibold hover:bg-urgent-red hover:text-white transition"
-                    >
-                      Delete Batch
-                    </button>
-                  ) : <div />}
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={groupModal.saving}
-                      onClick={() => setGroupModal(null)}
-                      className="px-4 py-2 rounded-xl bg-input-bg border border-border-subtle text-xs font-semibold text-text-main hover:bg-surface-glass disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={groupModal.saving}
-                      className="px-5 py-2 rounded-xl bg-amber-500 text-slate-950 text-xs font-bold hover:opacity-95 shadow-sm disabled:opacity-50 flex items-center gap-1.5 transition"
-                    >
-                      {groupModal.saving && (
-                        <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
-                      )}
-                      <span>{groupModal.saving ? "Saving..." : "Save Batch"}</span>
-                    </button>
-                  </div>
-                </div>
-              </form>
+                </form>
               </motion.div>
             </motion.div>
           )}

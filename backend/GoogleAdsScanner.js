@@ -301,7 +301,7 @@ async function scanCompetitor(
     if (detectedChallengeReason) {
       console.error(`🛑 [DEBUG] ${detectedChallengeReason}`);
       scanStopReason = "blocked";
-      reportProgress({ log: `> 🛑 ${detectedChallengeReason}` });
+      reportProgress({ log: detectedChallengeReason });
       return [];
     }
 
@@ -344,7 +344,7 @@ async function scanCompetitor(
     if (!resolvedAdvertiserId) {
       console.log("⚠️ [DEBUG] Could not resolve Advertiser AR ID.");
       scanStopReason = "no_matching_advertiser";
-      reportProgress({ log: `> ⚠️ Could not resolve advertiser page for "${searchQuery}".` });
+      reportProgress({ log: `Could not resolve advertiser page for "${searchQuery}".` });
       return [];
     }
 
@@ -518,7 +518,7 @@ async function scanCompetitor(
       if (detectedChallengeReason) {
         console.error(`🛑 [DEBUG] Stopping scan: ${detectedChallengeReason}`);
         scanStopReason = "blocked";
-        reportProgress({ log: `> 🛑 ${detectedChallengeReason}. Wait a few minutes before retrying.` });
+        reportProgress({ log: `${detectedChallengeReason}. Wait a few minutes before retrying.` });
         return;
       }
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import AtlasIcon from "./components/ui/AtlasIcon.jsx";
 
 export default function AtlasSelect({
   value,
@@ -201,37 +202,33 @@ export default function AtlasSelect({
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
         onKeyDown={handleMenuKeyDown}
-        className={`h-9 px-3 rounded-xl bg-input-bg border border-border-subtle hover:border-electric-blue/40 text-text-main text-xs font-semibold shadow-xs transition flex items-center justify-between gap-2 cursor-pointer select-none ${buttonClassName} ${
-          open ? "border-electric-blue ring-1 ring-electric-blue/20" : ""
+        className={`h-9 px-3 rounded-lg bg-surface-solid border border-border-subtle hover:border-border-strong text-text-main text-xs font-medium transition-colors flex items-center justify-between gap-2 cursor-pointer select-none ${buttonClassName} ${
+          open ? "border-accent ring-1 ring-accent/20" : ""
         }`}
       >
         <div className="flex items-center gap-1.5 truncate">
           {icon && (
-            <span className="material-symbols-outlined text-[15px] text-text-muted shrink-0">
-              {icon}
-            </span>
+            <AtlasIcon name={icon} size={15} className="text-text-muted shrink-0" />
           )}
           {selected?.icon && (
-            <span className="material-symbols-outlined text-[15px] text-electric-blue shrink-0">
-              {selected.icon}
-            </span>
+            <AtlasIcon name={selected.icon} size={15} className="text-accent shrink-0" />
           )}
           <span className="truncate">{selected ? selected.label : placeholder}</span>
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0 ml-1">
           {selected?.badge && (
-            <span className="px-1.5 py-0.5 rounded-md text-[10px] font-mono bg-surface-glass text-text-muted">
+            <span className="px-1.5 py-0.5 rounded-md text-xs font-mono bg-input-bg text-text-muted tabular-nums">
               {selected.badge}
             </span>
           )}
-          <span
-            className={`material-symbols-outlined text-[15px] text-text-muted transition-transform duration-150 ${
+          <AtlasIcon
+            name="expand_more"
+            size={15}
+            className={`text-text-muted transition-transform duration-150 ${
               open ? "rotate-180" : ""
             }`}
-          >
-            expand_more
-          </span>
+          />
         </div>
       </button>
 
@@ -248,16 +245,18 @@ export default function AtlasSelect({
             transition={{ duration: 0.13, ease: [0.16, 1, 0.3, 1] }}
             className={`absolute ${
               resolvedAlign === "right" ? "right-0" : "left-0"
-            } top-full mt-1.5 z-[100] min-w-[220px] max-w-[min(340px,calc(100vw-24px))] max-h-80 overflow-y-auto bg-surface-solid border border-border-subtle rounded-2xl shadow-2xl p-1.5 flex flex-col gap-1 backdrop-blur-md ${menuClassName}`}
+            } top-full mt-1.5 z-[100] min-w-[220px] max-w-[min(340px,calc(100vw-24px))] max-h-80 overflow-y-auto bg-surface-solid border border-border-subtle rounded-xl shadow-lg p-1.5 flex flex-col gap-1 ${menuClassName}`}
             onClick={(e) => e.stopPropagation()}
           >
           {/* Quick Search */}
           {shouldSearch && (
             <div className="p-1 pb-1.5 border-b border-border-subtle sticky top-0 bg-surface-solid z-10">
               <div className="relative">
-                <span className="material-symbols-outlined text-[15px] text-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none">
-                  search
-                </span>
+                <AtlasIcon
+                  name="search"
+                  size={14}
+                  className="text-text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                />
                 <input
                   ref={searchInputRef}
                   type="text"
@@ -265,7 +264,7 @@ export default function AtlasSelect({
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={handleMenuKeyDown}
                   placeholder={searchPlaceholder}
-                  className="w-full h-8 pl-8 pr-7 rounded-xl bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:border-electric-blue"
+                  className="w-full h-8 pl-8 pr-7 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:border-accent"
                 />
                 {query && (
                   <button
@@ -277,7 +276,7 @@ export default function AtlasSelect({
                     className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-main p-0.5"
                     aria-label="Clear search"
                   >
-                    <span className="material-symbols-outlined text-[14px]">close</span>
+                    <AtlasIcon name="close" size={13} />
                   </button>
                 )}
               </div>
@@ -293,9 +292,9 @@ export default function AtlasSelect({
             renderedGroups.map(({ group, items }) => (
               <div key={group || "default"} className="flex flex-col gap-0.5">
                 {group && (
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-text-muted uppercase tracking-wider bg-surface-glass/40 rounded-lg mt-1 select-none flex items-center justify-between">
+                  <div className="px-2.5 py-1 text-[11px] font-medium text-text-muted uppercase tracking-wider bg-surface-glass rounded-md mt-1 select-none flex items-center justify-between">
                     <span>{group}</span>
-                    <span className="text-[9px] font-mono opacity-70">({items.length})</span>
+                    <span className="text-xs font-mono opacity-80">({items.length})</span>
                   </div>
                 )}
                 {items.map((opt) => {
@@ -314,19 +313,17 @@ export default function AtlasSelect({
                         setOpen(false);
                         triggerRef.current?.focus({ preventScroll: true });
                       }}
-                      className={`w-full rounded-xl px-2.5 py-1.5 text-left text-xs font-medium transition flex items-center justify-between gap-2 cursor-pointer ${
+                      className={`w-full rounded-lg px-2.5 py-1.5 text-left text-xs font-medium transition-colors flex items-center justify-between gap-2 cursor-pointer ${
                         active
-                          ? "bg-electric-blue/15 text-electric-blue font-semibold"
+                          ? "bg-primary-container text-on-primary-container"
                           : isHighlighted
-                            ? "bg-surface-glass text-text-main ring-1 ring-electric-blue/30"
-                            : "text-text-main hover:bg-surface-glass"
+                            ? "bg-input-bg text-text-main"
+                            : "text-text-main hover:bg-input-bg"
                       }`}
                     >
                       <div className="flex items-center gap-2 truncate">
                         {opt.icon && (
-                          <span className="material-symbols-outlined text-[15px] text-text-muted shrink-0">
-                            {opt.icon}
-                          </span>
+                          <AtlasIcon name={opt.icon} size={15} className="text-text-muted shrink-0" />
                         )}
                         <span className="truncate">{opt.label}</span>
                       </div>
@@ -334,9 +331,9 @@ export default function AtlasSelect({
                       <div className="flex items-center gap-1.5 shrink-0 ml-1">
                         {opt.badge && (
                           <span
-                            className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${
+                            className={`px-1.5 py-0.5 rounded-md text-xs font-mono tabular-nums ${
                               active
-                                ? "bg-electric-blue/20 text-electric-blue"
+                                ? "bg-surface-solid/60 text-on-primary-container"
                                 : "bg-input-bg text-text-muted"
                             }`}
                           >
@@ -344,9 +341,7 @@ export default function AtlasSelect({
                           </span>
                         )}
                         {active && (
-                          <span className="material-symbols-outlined text-[15px] text-electric-blue">
-                            check
-                          </span>
+                          <AtlasIcon name="check" size={14} className="text-on-primary-container shrink-0" />
                         )}
                       </div>
                     </button>

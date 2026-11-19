@@ -1,24 +1,29 @@
 const THEME_KEY = "atlas_theme";
+const ACCENT_KEY = "atlas_accent";
 const ROOT = document.documentElement;
 
-// Apply the persisted theme before React mounts so Atlas never paints the
-// opposite theme first and then corrects itself a frame later.
 try {
   const savedTheme = localStorage.getItem(THEME_KEY);
-  if (savedTheme === "light") ROOT.classList.remove("dark");
-  else if (savedTheme === "dark") ROOT.classList.add("dark");
+  const theme =
+    savedTheme === "light" || savedTheme === "light-warm"
+      ? "light-warm"
+      : savedTheme === "light-crisp"
+      ? "light-crisp"
+      : "dark";
+  const savedAccent = localStorage.getItem(ACCENT_KEY);
+  const accent = savedAccent === "mono" ? "mono" : "cobalt";
+  ROOT.dataset.theme = theme;
+  ROOT.dataset.accent = accent;
+  if (theme === "dark") ROOT.classList.add("dark");
+  else ROOT.classList.remove("dark");
 } catch {}
 
-let lastDark = ROOT.classList.contains("dark");
+let lastSignature = `${ROOT.dataset.theme || ""}:${ROOT.dataset.accent || ""}`;
 let settleTimer = null;
 
 function markThemeSwitch() {
   ROOT.classList.add("atlas-theme-switching");
   if (settleTimer) window.clearTimeout(settleTimer);
-
-  // Keep the transition guard around just long enough for the new CSS custom
-  // properties and dark selectors to commit in one paint. Existing component
-  // transitions then resume without each card/input independently tweening.
   settleTimer = window.setTimeout(() => {
     ROOT.classList.remove("atlas-theme-switching");
     settleTimer = null;
@@ -26,10 +31,10 @@ function markThemeSwitch() {
 }
 
 const observer = new MutationObserver(() => {
-  const nextDark = ROOT.classList.contains("dark");
-  if (nextDark === lastDark) return;
-  lastDark = nextDark;
+  const nextSignature = `${ROOT.dataset.theme || ""}:${ROOT.dataset.accent || ""}`;
+  if (nextSignature === lastSignature) return;
+  lastSignature = nextSignature;
   markThemeSwitch();
 });
 
-observer.observe(ROOT, { attributes: true, attributeFilter: ["class"] });
+observer.observe(ROOT, { attributes: true, attributeFilter: ["class", "data-theme", "data-accent"] });

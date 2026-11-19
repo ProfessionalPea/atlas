@@ -1989,14 +1989,14 @@ async function processCountryBatchLoop(pool) {
         countryBatchQueue.state = 'cancelled';
         countryBatchQueue.running = false;
         countryBatchQueue.finishedAt = new Date().toISOString();
-        countryBatchQueue.log = `> 🛑 Country batch scan cancelled. Completed ${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages} games.`;
+        countryBatchQueue.log = `Country batch scan cancelled. Completed ${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages} games.`;
         return;
       }
 
       if (countryBatchQueue.paused) {
         countryBatchQueue.state = 'paused';
         countryBatchQueue.running = false;
-        countryBatchQueue.log = `> ⏸ Country batch scan paused (${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages} done, ${countryBatchQueue.pendingPackages.length} remaining).`;
+        countryBatchQueue.log = `Country batch scan paused (${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages} done, ${countryBatchQueue.pendingPackages.length} remaining).`;
         return;
       }
 
@@ -2009,7 +2009,7 @@ async function processCountryBatchLoop(pool) {
       countryBatchQueue.currentAppTitle = title;
       countryBatchQueue.currentCountryChecked = 0;
       countryBatchQueue.currentCountryTotal = COUNTRY_CODES.length;
-      countryBatchQueue.log = `> 🌍 [${countryBatchQueue.completedPackages + 1}/${countryBatchQueue.totalPackages}] Scanning countries for ${title} (${pkg})...`;
+      countryBatchQueue.log = `[${countryBatchQueue.completedPackages + 1}/${countryBatchQueue.totalPackages}] Scanning countries for ${title} (${pkg})...`;
 
       try {
         const res = await executeAndSaveSingleCountryScan(pool, pkg, (p) => {
@@ -2019,7 +2019,7 @@ async function processCountryBatchLoop(pool) {
         });
         countryBatchQueue.completedPackages += 1;
         invalidatePlayOverviewCache();
-        countryBatchQueue.log = `> ✔ [${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title}: Live in ${res.counts.live}/${COUNTRY_CODES.length} countries.`;
+        countryBatchQueue.log = `[${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title}: Live in ${res.counts.live}/${COUNTRY_CODES.length} countries.`;
       } catch (err) {
         countryBatchQueue.completedPackages += 1;
         countryBatchQueue.failedPackages.push({
@@ -2027,7 +2027,7 @@ async function processCountryBatchLoop(pool) {
           title,
           error: err.message || 'Scan failed'
         });
-        countryBatchQueue.log = `> ⚠ [${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title} failed: ${err.message}`;
+        countryBatchQueue.log = `[${countryBatchQueue.completedPackages}/${countryBatchQueue.totalPackages}] ${title} failed: ${err.message}`;
       }
     }
 
@@ -2037,13 +2037,13 @@ async function processCountryBatchLoop(pool) {
     countryBatchQueue.state = 'complete';
     countryBatchQueue.finishedAt = new Date().toISOString();
     invalidatePlayOverviewCache();
-    countryBatchQueue.log = `> 🎉 Batch country scan complete! Scanned ${countryBatchQueue.completedPackages} games (${countryBatchQueue.skippedPackages} skipped as fresh, ${countryBatchQueue.failedPackages.length} failed).`;
+    countryBatchQueue.log = `Batch country scan complete. Scanned ${countryBatchQueue.completedPackages} games (${countryBatchQueue.skippedPackages} skipped as fresh, ${countryBatchQueue.failedPackages.length} failed).`;
   } catch (err) {
     countryBatchQueue.running = false;
     countryBatchQueue.state = 'error';
     countryBatchQueue.finishedAt = new Date().toISOString();
     invalidatePlayOverviewCache();
-    countryBatchQueue.log = `> ❌ Batch country scan error: ${err.message}`;
+    countryBatchQueue.log = `Batch country scan error: ${err.message}`;
   }
 }
 
@@ -2633,7 +2633,7 @@ function registerPlayStoreRoutes({ app, pool }) {
                 gamesFound
               }
             ].slice(-100),
-            log: `> ${isFailure ? '⚠' : '✔'} [${i + 1}/${scanTargets.length}] ${result.publisher || item.publisher}: ${gamesFound} games synced.`
+            log: `${isFailure ? '[Warning] ' : ''}[${i + 1}/${scanTargets.length}] ${result.publisher || item.publisher}: ${gamesFound} games synced.`
           };
           invalidatePlayOverviewCache();
         } catch (scanErr) {
@@ -2652,7 +2652,7 @@ function registerPlayStoreRoutes({ app, pool }) {
                 gamesFound: 0
               }
             ].slice(-100),
-            log: `> ⚠ [${i + 1}/${scanTargets.length}] ${item.publisher || target.publisher} failed: ${scanErr?.message || 'Scan error'}`
+            log: `[${i + 1}/${scanTargets.length}] ${item.publisher || target.publisher} failed: ${scanErr?.message || 'Scan error'}`
           };
         }
       }
@@ -3003,7 +3003,7 @@ function registerPlayStoreRoutes({ app, pool }) {
     playScanStatus = {
       ...playScanStatus,
       state: 'cancelling',
-      log: '> 🛑 Abort requested. Finishing current publisher and saving all Play Store games collected so far...'
+      log: 'Abort requested. Finishing current publisher and saving all Play Store games collected so far...'
     };
     res.json({ status: 'success', message: 'Abort signal sent.' });
   });
@@ -3111,7 +3111,7 @@ function registerPlayStoreRoutes({ app, pool }) {
       finishedAt: null,
       resultsSummary: [],
       failedLinks: [],
-      log: `> 🚀 Starting Play Store catalogue scan for ${validTargets.length} publisher(s)...`
+      log: `Starting Play Store catalogue scan for ${validTargets.length} publisher(s)...`
     };
 
     res.json({
@@ -3246,7 +3246,7 @@ function registerPlayStoreRoutes({ app, pool }) {
               newGamesDiscovered: newGamesTotal,
               resultsSummary: [...resultsSummary].slice(-100),
               failedLinks: [...failedLinks],
-              log: `> ${result.status === 'complete' ? '✔' : '⚠'} [${doneCount}/${validTargets.length}] ${result.publisher}: ${gamesCount} games (${newCount} newly discovered).`
+              log: `${result.status === 'complete' ? '' : '[Warning] '}[${doneCount}/${validTargets.length}] ${result.publisher}: ${gamesCount} games (${newCount} newly discovered).`
             };
             invalidatePlayOverviewCache();
           } catch (itemErr) {
@@ -3269,7 +3269,7 @@ function registerPlayStoreRoutes({ app, pool }) {
               completedPublishers: doneCount,
               resultsSummary: [...resultsSummary].slice(-100),
               failedLinks: [...failedLinks],
-              log: `> ⚠ [${doneCount}/${validTargets.length}] ${target.publisher || target.raw} error: ${itemErr?.message || 'Scan failed'}`
+              log: `[${doneCount}/${validTargets.length}] ${target.publisher || target.raw} error: ${itemErr?.message || 'Scan failed'}`
             };
             invalidatePlayOverviewCache();
           }
@@ -3284,7 +3284,7 @@ function registerPlayStoreRoutes({ app, pool }) {
             phase: 'cancelled',
             isCancelled: true,
             finishedAt: new Date().toISOString(),
-            log: `> 🛑 Scan stopped by user. Synchronized ${savedGamesTotal} games (${newGamesTotal} new) across ${doneCount}/${validTargets.length} publisher(s).`
+            log: `Scan stopped by user. Synchronized ${savedGamesTotal} games (${newGamesTotal} new) across ${doneCount}/${validTargets.length} publisher(s).`
           };
         } else {
           const failedCount = failedLinks.length;
@@ -3298,8 +3298,8 @@ function registerPlayStoreRoutes({ app, pool }) {
             finishedAt: new Date().toISOString(),
             log:
               failedCount > 0
-                ? `> ⚠ Scan finished: ${validTargets.length - failedCount}/${validTargets.length} succeeded (${savedGamesTotal} games, ${newGamesTotal} newly discovered, ${failedCount} failed).`
-                : `> 🎉 Play Store scan complete! Synchronized ${savedGamesTotal} games (${newGamesTotal} newly discovered) across ${doneCount} publisher(s).`
+                ? `Scan finished: ${validTargets.length - failedCount}/${validTargets.length} succeeded (${savedGamesTotal} games, ${newGamesTotal} newly discovered, ${failedCount} failed).`
+                : `Play Store scan complete. Synchronized ${savedGamesTotal} games (${newGamesTotal} newly discovered) across ${doneCount} publisher(s).`
           };
         }
       } catch (err) {
@@ -3312,7 +3312,7 @@ function registerPlayStoreRoutes({ app, pool }) {
           phase: 'failed',
           isError: true,
           finishedAt: new Date().toISOString(),
-          log: `> ❌ Play Store scan error: ${err.message}`
+          log: `Play Store scan error: ${err.message}`
         };
       }
     })();
@@ -3569,7 +3569,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         pendingPackages: queueItems,
         startedAt: new Date().toISOString(),
         finishedAt: null,
-        log: `> 🌍 Queued ${queueItems.length} game(s) for ${scopeLabel} (${skippedCount} skipped as fresh)...`
+        log: `Queued ${queueItems.length} game(s) for ${scopeLabel} (${skippedCount} skipped as fresh)...`
       };
 
       void processCountryBatchLoop(pool);

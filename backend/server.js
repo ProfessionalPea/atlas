@@ -584,7 +584,7 @@ app.post("/api/cancel-scan", (_req, res) => {
   activeScanCancelled = true;
   updateScanStatus({
     state: "cancelling",
-    log: "> 🛑 Abort requested. Finishing the current step, then saving everything collected so far..."
+    log: "Abort requested. Finishing the current step, then saving everything collected so far..."
   });
 
   res.json({ status: "success", message: "Abort signal sent." });
@@ -1731,7 +1731,7 @@ app.post("/api/scan", async (req, res) => {
           fatalError: true,
           finishedAt: new Date().toISOString(),
           timeRemaining: "00:00",
-          log: "> ❌ No scan targets specified."
+          log: "No scan targets specified."
         });
         return;
       }
@@ -1799,7 +1799,7 @@ app.post("/api/scan", async (req, res) => {
           maxAdsToInspect: resolveMaxAdsToInspect(),
           scanStopReason: null,
           timeRemaining: "Calculating...",
-          log: `> 🎯 Starting target ${tIndex + 1}/${targets.length}: ${targetDisplayName} (Target: ${desiredUniqueGames} unique games)`
+          log: `Starting target ${tIndex + 1}/${targets.length}: ${targetDisplayName} (Target: ${desiredUniqueGames} unique games)`
         });
 
         const scanResults = await scanCompetitor(
@@ -1902,7 +1902,7 @@ app.post("/api/scan", async (req, res) => {
           timeRemaining: "00:00",
           adCounts: mergedAdCounts,
           adCountsByCompetitor: mergedAdCountsByCompetitor,
-          log: `> 🗄️ Ingesting ${uniqueDiscoveredCount} unique games to Atlas database...`
+          log: `Ingesting ${uniqueDiscoveredCount} unique games to Atlas database...`
         });
 
         const packageEntries = Object.entries(creativeIdsByPackage);
@@ -1910,7 +1910,7 @@ app.post("/api/scan", async (req, res) => {
         let metadataCompleted = 0;
 
         updateScanStatus({
-          log: `> 🗄️ Ingesting ${packageEntries.length} Android packages; fetching Play Store metadata with bounded concurrency...`
+          log: `Ingesting ${packageEntries.length} Android packages; fetching Play Store metadata with bounded concurrency...`
         });
 
         await mapWithConcurrency(
@@ -1922,7 +1922,7 @@ app.post("/api/scan", async (req, res) => {
             enrichmentByPackage.set(pkg, enrichment);
             metadataCompleted += 1;
             updateScanStatus({
-              log: `> 🗄️ Ingesting: Play Store metadata ${metadataCompleted}/${packageEntries.length} packages...`
+              log: `Ingesting: Play Store metadata ${metadataCompleted}/${packageEntries.length} packages...`
             });
             return enrichment;
           },
@@ -2204,7 +2204,7 @@ app.post("/api/scan", async (req, res) => {
         }
 
         updateScanStatus({
-          log: `> 📊 Syncing ${Object.keys(creativeIdsByPackage).length} Android packages to Google Sheets (with a 12-second limit per sync)...`
+          log: `Syncing ${Object.keys(creativeIdsByPackage).length} Android packages to Google Sheets (with a 12-second limit per sync)...`
         });
 
         const sheetSyncResults = await Promise.allSettled([
@@ -2226,8 +2226,8 @@ app.post("/api/scan", async (req, res) => {
         }
         updateScanStatus({
           log: sheetSyncResults.some(result => result.status === "rejected")
-            ? "> ⚠️ Google Sheets sync timed out; Atlas database records were saved."
-            : "> 📊 Google Sheets sync finished."
+            ? "Google Sheets sync timed out; Atlas database records were saved."
+            : "Google Sheets sync finished."
         });
         
         allResults.push(...results);
@@ -2245,8 +2245,8 @@ app.post("/api/scan", async (req, res) => {
           packages: Array.from(interceptedPackageSet),
           competitorId: lastResolvedCompetitorId,
           log: interceptedPackageSet.size > 0
-            ? `> 🛑 Scan stopped by user. Saved ${interceptedPackageSet.size} games collected so far into Atlas.`
-            : `> 🛑 Process cleanly terminated by user. No games had been collected yet.`
+            ? `Scan stopped by user. Saved ${interceptedPackageSet.size} games collected so far into Atlas.`
+            : `Process cleanly terminated by user. No games had been collected yet.`
         });
         return;
       }
@@ -2292,8 +2292,8 @@ app.post("/api/scan", async (req, res) => {
         competitorId: lastResolvedCompetitorId,
         finishedAt: new Date().toISOString(),
         log: totalPackages > 0
-          ? `> 🎉 Ingest complete. Synchronized ${totalPackages} unique games (${allResults.length} total creative hits).`
-          : `> ℹ️ Scan finished. No mobile game ad campaigns found for this target.`
+          ? `Ingest complete. Synchronized ${totalPackages} unique games (${allResults.length} total creative hits).`
+          : `Scan finished. No mobile game ad campaigns found for this target.`
       });
       invalidatePlayOverviewCache();
 
@@ -2307,7 +2307,7 @@ app.post("/api/scan", async (req, res) => {
         fatalError: true,
         timeRemaining: "00:00",
         finishedAt: new Date().toISOString(),
-        log: `> ❌ Scan failed: ${error.message}`
+        log: `Scan failed: ${error.message}`
       });
       invalidatePlayOverviewCache();
     }

@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="referrer" content="no-referrer" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)" />
     <meta
       name="description"
       content="Atlas is a competitive game intelligence workspace for tracking publishers, games, ads, markets, and creative activity."
@@ -15,29 +15,39 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
-    <title>Atlas — Competitive Game Intelligence</title>
+    <title>Atlas — Game Market Intelligence</title>
     <link rel="icon" type="image/png" href="/atlas-logo.png" />
 
-    <link rel="preload" href="/fonts/material-symbols-outlined.woff2?v=2" as="font" type="font/woff2" crossorigin />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
       media="print"
       onload="this.media='all'"
     />
     <noscript>
       <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet"
       />
     </noscript>
     <script>
       try {
-        const theme = localStorage.getItem("atlas_theme");
-        if (theme === "light") document.documentElement.classList.remove("dark");
-        else document.documentElement.classList.add("dark");
+        const savedTheme = localStorage.getItem("atlas_theme");
+        const theme =
+          savedTheme === "light" || savedTheme === "light-warm"
+            ? "light-warm"
+            : savedTheme === "light-crisp"
+            ? "light-crisp"
+            : "dark";
+        const savedAccent = localStorage.getItem("atlas_accent");
+        const accent = savedAccent === "mono" ? "mono" : "cobalt";
+        const root = document.documentElement;
+        root.dataset.theme = theme;
+        root.dataset.accent = accent;
+        if (theme === "dark") root.classList.add("dark");
+        else root.classList.remove("dark");
       } catch (_) {}
     </script>
   </head>

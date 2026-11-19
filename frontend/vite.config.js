@@ -171,7 +171,7 @@ function atlasProductPolishBridge() {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [atlasBrowserDialogBridge(), atlasProductPolishBridge(), react()],
+  plugins: [atlasBrowserDialogBridge(), react()],
   build: {
     chunkSizeWarningLimit: 650,
     rollupOptions: {

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import AtlasIcon from "./components/ui/AtlasIcon.jsx";
 
 const AtlasFeedbackContext = createContext(null);
 const POPOVER_WIDTH = 320;
@@ -292,10 +293,10 @@ export function AtlasFeedbackProvider({ children }) {
   );
 
   const toastToneMeta = {
-    success: { icon: "check_circle", iconClass: "text-emerald-500" },
-    info: { icon: "info", iconClass: "text-electric-blue" },
-    amber: { icon: "warning", iconClass: "text-amber-500" },
-    danger: { icon: "error", iconClass: "text-urgent-red" }
+    success: { icon: "check_circle", iconClass: "text-sem-success" },
+    info: { icon: "info", iconClass: "text-link" },
+    amber: { icon: "warning", iconClass: "text-sem-warning" },
+    danger: { icon: "error", iconClass: "text-sem-danger" }
   };
 
   return (
@@ -309,15 +310,15 @@ export function AtlasFeedbackProvider({ children }) {
             aria-modal="false"
             aria-labelledby="atlas-feedback-title"
             aria-describedby="atlas-feedback-message"
-            className="atlas-feedback-card fixed w-[320px] max-w-[calc(100vw-24px)] pointer-events-auto rounded-[14px] border shadow-xl px-3.5 py-3"
+            className="atlas-feedback-card fixed w-[320px] max-w-[calc(100vw-24px)] pointer-events-auto rounded-xl border shadow-xl px-3.5 py-3"
             style={popoverStyle}
           >
             <div className="flex items-start gap-2.5">
               <div className="min-w-0 flex-1">
-                <h2 id="atlas-feedback-title" className="atlas-feedback-title text-[16px] leading-5 font-semibold tracking-[-0.01em]">
+                <h2 id="atlas-feedback-title" className="atlas-feedback-title text-[15px] leading-5 font-semibold tracking-[-0.01em]">
                   {dialog.title}
                 </h2>
-                <p id="atlas-feedback-message" className="atlas-feedback-message mt-1 text-[14px] leading-5 break-words">
+                <p id="atlas-feedback-message" className="atlas-feedback-message mt-1 text-[13px] leading-5 break-words">
                   {dialog.message}
                 </p>
               </div>
@@ -327,7 +328,7 @@ export function AtlasFeedbackProvider({ children }) {
                 className="atlas-feedback-close w-7 h-7 -mt-0.5 -mr-0.5 rounded-lg flex items-center justify-center flex-shrink-0"
                 aria-label="Close"
               >
-                <span className="material-symbols-outlined text-[18px]">close</span>
+                <AtlasIcon name="close" size={16} />
               </button>
             </div>
 
@@ -371,9 +372,7 @@ export function AtlasFeedbackProvider({ children }) {
                 data-tone={item.tone}
                 className="atlas-toast-card pointer-events-auto flex items-center gap-2.5 max-w-[380px] rounded-xl border px-3.5 py-2.5 shadow-lg text-[13px] font-medium"
               >
-                <span className={`material-symbols-outlined text-[18px] shrink-0 ${meta.iconClass}`}>
-                  {meta.icon}
-                </span>
+                <AtlasIcon name={meta.icon} size={17} className={`shrink-0 ${meta.iconClass}`} />
                 <span className="leading-snug break-words flex-1">{item.message}</span>
                 <button
                   type="button"
@@ -381,7 +380,7 @@ export function AtlasFeedbackProvider({ children }) {
                   className="atlas-feedback-close w-6 h-6 -mr-1 rounded-md flex items-center justify-center shrink-0"
                   aria-label="Dismiss notification"
                 >
-                  <span className="material-symbols-outlined text-[15px]">close</span>
+                  <AtlasIcon name="close" size={14} />
                 </button>
               </div>
             );

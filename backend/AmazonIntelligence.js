@@ -696,7 +696,7 @@ function registerAmazonRoutes({ app, pool }) {
     amazonScanStatus = {
       ...amazonScanStatus,
       state: 'cancelling',
-      log: '> 🛑 Abort requested. Saving all Amazon games collected so far...'
+      log: 'Abort requested. Saving all Amazon games collected so far...'
     };
     res.json({ status: 'success', message: 'Abort signal sent.' });
   });
@@ -758,7 +758,7 @@ function registerAmazonRoutes({ app, pool }) {
       finishedAt: null,
       resultsSummary: [],
       failedLinks: [],
-      log: `> 🚀 Starting Amazon batch scan for ${validTargets.length} publisher(s)...`
+      log: `Starting Amazon batch scan for ${validTargets.length} publisher(s)...`
     };
 
     res.json({
@@ -792,8 +792,8 @@ function registerAmazonRoutes({ app, pool }) {
                 currentPage: p.page,
                 gamesFoundInCurrent: p.found,
                 log: isRetry
-                  ? `> ↻ [${p.publisher}] Retrying page ${p.page} (attempt ${p.attempt})...`
-                  : `> [${p.publisher}] Page ${p.page}: extracted ${p.found}${p.reportedTotal ? '/' + p.reportedTotal : ''} unique games...`
+                  ? `[${p.publisher}] Retrying page ${p.page} (attempt ${p.attempt})...`
+                  : `[${p.publisher}] Page ${p.page}: extracted ${p.found}${p.reportedTotal ? '/' + p.reportedTotal : ''} unique games...`
               };
             },
             onPublisherDone: async (r) => {
@@ -843,7 +843,7 @@ function registerAmazonRoutes({ app, pool }) {
                 totalGamesSaved: savedGamesTotal,
                 resultsSummary: [...resultsSummary],
                 failedLinks: [...failedLinks],
-                log: `> ${r.status === 'complete' || gamesCount > 0 ? '✔' : '⚠'} ${r.publisher} (${r.status}${r.statusDetail ? ': ' + r.statusDetail : ''}): saved ${gamesCount} games (${r.stats?.free || 0} free, ${r.stats?.paid || 0} paid).`
+                log: `${r.status === 'complete' || gamesCount > 0 ? '' : '[Warning] '}${r.publisher} (${r.status}${r.statusDetail ? ': ' + r.statusDetail : ''}): saved ${gamesCount} games (${r.stats?.free || 0} free, ${r.stats?.paid || 0} paid).`
               };
               invalidateAmazonOverviewCache();
             }
@@ -858,7 +858,7 @@ function registerAmazonRoutes({ app, pool }) {
             phase: 'cancelled',
             isCancelled: true,
             finishedAt: new Date().toISOString(),
-            log: `> 🛑 Scan stopped by user. Saved ${savedGamesTotal} Amazon games across ${doneCount}/${validTargets.length} publisher(s).`
+            log: `Scan stopped by user. Saved ${savedGamesTotal} Amazon games across ${doneCount}/${validTargets.length} publisher(s).`
           };
         } else {
           const failedCount = failedLinks.length;
@@ -872,8 +872,8 @@ function registerAmazonRoutes({ app, pool }) {
             finishedAt: new Date().toISOString(),
             log:
               failedCount > 0
-                ? `> ⚠ Scan finished: ${validTargets.length - failedCount}/${validTargets.length} succeeded (${savedGamesTotal} games saved, ${failedCount} failed/blocked).`
-                : `> 🎉 Amazon scan complete! Synchronized ${savedGamesTotal} games across ${doneCount} publisher(s).`
+                ? `Scan finished: ${validTargets.length - failedCount}/${validTargets.length} succeeded (${savedGamesTotal} games saved, ${failedCount} failed/blocked).`
+                : `Amazon scan complete. Synchronized ${savedGamesTotal} games across ${doneCount} publisher(s).`
           };
         }
         invalidateAmazonOverviewCache();
@@ -886,7 +886,7 @@ function registerAmazonRoutes({ app, pool }) {
           phase: 'failed',
           isError: true,
           finishedAt: new Date().toISOString(),
-          log: `> ❌ Amazon scan error: ${err.message} (Saved ${savedGamesTotal} games before error)`
+          log: `Amazon scan error: ${err.message} (Saved ${savedGamesTotal} games before error)`
         };
       }
     })();
