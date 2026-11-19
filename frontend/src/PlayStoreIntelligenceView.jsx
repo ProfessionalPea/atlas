@@ -228,13 +228,38 @@ function PlayStoreIntelligenceView({
   const [isSyncingCampaigns, setIsSyncingCampaigns] = useState(false);
   const [campaignSyncResult, setCampaignSyncResult] = useState(null);
 
-  // Google Sheet Preview & One-Way Importer state
+  // Google Sheet Preview & New-Only Importer state
   const [sheetPreview, setSheetPreview] = useState(null);
   const [isLoadingSheet, setIsLoadingSheet] = useState(false);
+  const [sheetPreviewError, setSheetPreviewError] = useState("");
   const [sheetSelectedLists, setSheetSelectedLists] = useState([]);
   const [sheetAutoScanNew, setSheetAutoScanNew] = useState(true);
-  const [isImportingSheet, setIsImportingSheet] = useState(false);
-  const [sheetImportResult, setSheetImportResult] = useState(null);
+  const [sheetShowOnlyNewCols, setSheetShowOnlyNewCols] = useState(true);
+  const [sheetBannerDismissed, setSheetBannerDismissed] = useState(false);
+  const [sheetElapsedSec, setSheetElapsedSec] = useState(0);
+  const [isStartingSheetImport, setIsStartingSheetImport] = useState(false);
+  const [sheetImportStatus, setSheetImportStatus] = useState({
+    running: false,
+    state: "idle",
+    phase: "idle",
+    autoScanNew: true,
+    totalColumnsChecked: 0,
+    totalInSheet: 0,
+    skippedExisting: 0,
+    totalNewAccounts: 0,
+    importedCount: 0,
+    scannedCount: 0,
+    failedCount: 0,
+    listsCreated: 0,
+    membershipsAdded: 0,
+    gamesDiscovered: 0,
+    currentAccount: null,
+    currentCompetitor: null,
+    startedAt: null,
+    finishedAt: null,
+    failedLinks: [],
+    log: ""
+  });
 
   // Resumable Batch Country Scanner Queue state
   const [countryQueueStatus, setCountryQueueStatus] = useState({
@@ -551,6 +576,116 @@ function PlayStoreIntelligenceView({
     return () => clearInterval(iv);
   }, [scanStatus.running, scanStatus.startedAt, scanStatus.finishedAt]);
 
+  // Fetch Google Sheets import status once on mount (in case an import is already running)
+  useEffect(() => {
+    let active = true;
+    fetcher(`${API_BASE}/api/play/sheet-import-status`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && data.state && data.state !== "idle") {
+          setSheetImportStatus(data);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [fetcher]);
+
+  const wasSheetImportRunningRef = useRef(false);
+  const lastSheetOverviewSyncRef = useRef(0);
+  const showSheetModalRef = useRef(showSheetModal);
+  showSheetModalRef.current = showSheetModal;
+
+  // Dedicated polling loop active ONLY while Google Sheets import/scan is running
+  useEffect(() => {
+    if (!sheetImportStatus.running) {
+      if (wasSheetImportRunningRef.current) {
+        wasSheetImportRunningRef.current = false;
+      }
+      return undefined;
+    }
+
+    wasSheetImportRunningRef.current = true;
+    let disposed = false;
+    let inFlight = false;
+    let timerId = null;
+
+    const pollSheetImport = async () => {
+      if (disposed || document.hidden || inFlight) return;
+      inFlight = true;
+      let stillRunning = true;
+      try {
+        const res = await fetcher(`${API_BASE}/api/play/sheet-import-status`);
+        if (res.ok && !disposed) {
+          const nextStatus = await res.json();
+          setSheetImportStatus(nextStatus);
+          stillRunning = Boolean(nextStatus?.running);
+
+          if (!stillRunning) {
+            wasSheetImportRunningRef.current = false;
+            void loadOverview({ fresh: true });
+            if (showSheetModalRef.current) {
+              fetcher(`${API_BASE}/api/play/sheet-preview`)
+                .then((pRes) => (pRes.ok ? pRes.json() : null))
+                .then((pData) => {
+                  if (!disposed && pData) {
+                    setSheetPreview(pData);
+                    setSheetSelectedLists((pData.columns || []).filter((c) => c.newAccountCount > 0).map((c) => c.listName));
+                  }
+                })
+                .catch(() => {});
+            }
+          } else if (nextStatus.phase === "scanning" && Date.now() - lastSheetOverviewSyncRef.current >= 20000) {
+            lastSheetOverviewSyncRef.current = Date.now();
+            void loadOverview({ fresh: true });
+          }
+        }
+      } catch {
+      } finally {
+        inFlight = false;
+        if (!disposed && stillRunning && !document.hidden) {
+          clearTimeout(timerId);
+          timerId = setTimeout(pollSheetImport, 1200);
+        }
+      }
+    };
+
+    const handleVisibility = () => {
+      if (!document.hidden && !disposed) {
+        clearTimeout(timerId);
+        void pollSheetImport();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    timerId = setTimeout(pollSheetImport, 900);
+
+    return () => {
+      disposed = true;
+      clearTimeout(timerId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [sheetImportStatus.running, fetcher, loadOverview]);
+
+  // Live elapsed timer during Google Sheets import/scan
+  useEffect(() => {
+    if (!sheetImportStatus.running || !sheetImportStatus.startedAt) {
+      if (sheetImportStatus.startedAt && sheetImportStatus.finishedAt) {
+        const diff = (new Date(sheetImportStatus.finishedAt).getTime() - new Date(sheetImportStatus.startedAt).getTime()) / 1000;
+        setSheetElapsedSec(Math.max(0, Math.round(diff)));
+      }
+      return undefined;
+    }
+    const updateElapsed = () => {
+      const diff = (Date.now() - new Date(sheetImportStatus.startedAt).getTime()) / 1000;
+      setSheetElapsedSec(Math.max(0, Math.round(diff)));
+    };
+    updateElapsed();
+    const iv = setInterval(updateElapsed, 1000);
+    return () => clearInterval(iv);
+  }, [sheetImportStatus.running, sheetImportStatus.startedAt, sheetImportStatus.finishedAt]);
+
   // Reset visible row count when filters change
   useEffect(() => {
     setVisibleRowCount(100);
@@ -568,22 +703,25 @@ function PlayStoreIntelligenceView({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showDateFilterPopover]);
 
-  // Keyboard Escape dismissal & body scroll lock when modals/drawer are open
+  // Keyboard Escape dismissal & body scroll lock ONLY for full-screen modals/drawer (floating Sheet panel stays non-blocking)
   useEffect(() => {
-    const anyOpen = Boolean(
+    const anyBlockingOpen = Boolean(
       activeGameDrawer ||
         keywordTarget ||
         showScannerModal ||
-        showSheetModal ||
         showCountryBatchModal ||
         listModal ||
         groupModal ||
         editingPublisher ||
         confirmDeletePub
     );
-    if (!anyOpen) return;
+    const anyDismissibleOpen = anyBlockingOpen || showSheetModal || showDateFilterPopover;
+    if (!anyDismissibleOpen) return;
+
     const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    if (anyBlockingOpen) {
+      document.body.style.overflow = "hidden";
+    }
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
         if (showDateFilterPopover) setShowDateFilterPopover(false);
@@ -600,7 +738,9 @@ function PlayStoreIntelligenceView({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.style.overflow = prevOverflow;
+      if (anyBlockingOpen) {
+        document.body.style.overflow = prevOverflow;
+      }
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [
@@ -1477,28 +1617,48 @@ function PlayStoreIntelligenceView({
     }
   };
 
-  // Google Sheet Preview & Import
-  const openSheetImporter = async () => {
-    setShowSheetModal(true);
-    setSheetImportResult(null);
+  // Google Sheet Preview & New-Only Import
+  const loadSheetPreview = useCallback(async () => {
+    setSheetPreviewError("");
     setIsLoadingSheet(true);
     try {
       const res = await fetcher(`${API_BASE}/api/play/sheet-preview`);
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json();
         setSheetPreview(data);
-        setSheetSelectedLists((data.columns || []).map((c) => c.listName));
+        const colsWithNew = (data.columns || [])
+          .filter((c) => Number(c.newAccountCount) > 0)
+          .map((c) => c.listName);
+        setSheetSelectedLists(colsWithNew);
+        setSheetShowOnlyNewCols(colsWithNew.length > 0);
+      } else {
+        setSheetPreviewError(data?.error || "Could not load Google Sheet preview.");
       }
     } catch (err) {
       console.error("Sheet preview error:", err);
+      setSheetPreviewError(err?.message || "Could not reach backend to read Google Sheets.");
     } finally {
       setIsLoadingSheet(false);
     }
+  }, [fetcher]);
+
+  const openSheetImporter = async () => {
+    if (showSheetModal) {
+      setShowSheetModal(false);
+      return;
+    }
+    setShowSheetModal(true);
+    await loadSheetPreview();
   };
 
   const handleConfirmSheetImport = async () => {
-    if (!sheetPreview) return;
-    setIsImportingSheet(true);
+    if (!sheetPreview || isStartingSheetImport || sheetImportStatus.running) return;
+    if (sheetSelectionSummary.newCount === 0) {
+      AtlasFeedback.toast("All accounts in the selected sheet columns are already in Atlas.", { tone: "info" });
+      return;
+    }
+    setIsStartingSheetImport(true);
+    setSheetPreviewError("");
     try {
       const res = await fetcher(`${API_BASE}/api/play/sheet-import`, {
         method: "POST",
@@ -1507,22 +1667,66 @@ function PlayStoreIntelligenceView({
           autoScanNew: sheetAutoScanNew
         })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const data = await res.json();
-        setSheetImportResult(data);
-        await loadOverview({ fresh: true });
-        if (sheetAutoScanNew && Array.isArray(data.newPublisherUrls) && data.newPublisherUrls.length > 0) {
-          await handleStartScan({
-            mode: "batch",
-            links: data.newPublisherUrls
-          });
-          setShowSheetModal(false);
+        if (data?.sheetImportStatus) {
+          setSheetImportStatus(data.sheetImportStatus);
         }
+        setSheetBannerDismissed(false);
+        AtlasFeedback.toast(
+          sheetAutoScanNew
+            ? `Importing & scanning ${sheetSelectionSummary.newCount} new account(s)...`
+            : `Importing ${sheetSelectionSummary.newCount} new account(s)...`,
+          { tone: "info" }
+        );
+      } else {
+        const msg = data?.error || "Failed to start Google Sheets import.";
+        setSheetPreviewError(msg);
+        AtlasFeedback.toast(msg, { tone: "danger" });
       }
     } catch (err) {
       console.error("Sheet import failed:", err);
+      const msg = err?.message || "Failed to start Google Sheets import.";
+      setSheetPreviewError(msg);
+      AtlasFeedback.toast(msg, { tone: "danger" });
     } finally {
-      setIsImportingSheet(false);
+      setIsStartingSheetImport(false);
+    }
+  };
+
+  const handleCancelSheetImport = async () => {
+    try {
+      await fetcher(`${API_BASE}/api/play/sheet-import-cancel`, { method: "POST" });
+    } catch (err) {
+      console.error("Cancel sheet import failed:", err);
+    }
+  };
+
+  const handleRetrySheetFailed = async () => {
+    if (isStartingSheetImport || sheetImportStatus.running) return;
+    const links = Array.isArray(sheetImportStatus.failedLinks) ? sheetImportStatus.failedLinks : [];
+    if (links.length === 0) return;
+    setIsStartingSheetImport(true);
+    try {
+      const res = await fetcher(`${API_BASE}/api/play/sheet-import`, {
+        method: "POST",
+        body: JSON.stringify({
+          retryLinks: links,
+          autoScanNew: true
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.sheetImportStatus) {
+        setSheetImportStatus(data.sheetImportStatus);
+        setSheetBannerDismissed(false);
+        AtlasFeedback.toast(`Retrying scan for ${links.length} failed account(s)...`, { tone: "info" });
+      } else {
+        AtlasFeedback.toast(data?.error || "Failed to retry failed sheet scans.", { tone: "danger" });
+      }
+    } catch (err) {
+      AtlasFeedback.toast(err?.message || "Failed to retry failed sheet scans.", { tone: "danger" });
+    } finally {
+      setIsStartingSheetImport(false);
     }
   };
 
@@ -1836,6 +2040,55 @@ function PlayStoreIntelligenceView({
     return Math.min(98, Math.round(((completed + activeFraction) / total) * 100));
   }, [scanStatus]);
 
+  const sheetSelectionSummary = useMemo(() => {
+    const cols = sheetPreview?.columns || [];
+    const selectedSet = new Set(sheetSelectedLists);
+    const uniqueNewUrls = new Set();
+    let existingInSelected = 0;
+    for (const col of cols) {
+      if (!selectedSet.has(col.listName)) continue;
+      existingInSelected += Number(col.existingAccountCount || 0);
+      for (const acc of col.newAccounts || []) {
+        if (acc?.normalizedUrl) uniqueNewUrls.add(acc.normalizedUrl);
+      }
+    }
+    return {
+      selectedColsCount: cols.filter((c) => selectedSet.has(c.listName)).length,
+      newCount: uniqueNewUrls.size,
+      existingCount: existingInSelected
+    };
+  }, [sheetPreview, sheetSelectedLists]);
+
+  const sheetVisibleColumns = useMemo(() => {
+    const cols = [...(sheetPreview?.columns || [])];
+    cols.sort((a, b) => {
+      const aNew = Number(a.newAccountCount) || 0;
+      const bNew = Number(b.newAccountCount) || 0;
+      if ((bNew > 0) !== (aNew > 0)) return bNew > 0 ? 1 : -1;
+      return bNew - aNew;
+    });
+    if (sheetShowOnlyNewCols) {
+      return cols.filter((c) => Number(c.newAccountCount) > 0);
+    }
+    return cols;
+  }, [sheetPreview, sheetShowOnlyNewCols]);
+
+  const sheetProgressPct = useMemo(() => {
+    const { running, state, phase, autoScanNew, totalNewAccounts, importedCount, scannedCount } = sheetImportStatus;
+    if (!running && (state === "complete" || state === "cancelled" || state === "error")) return 100;
+    if (!running) return 0;
+    if (phase === "reading_sheet") return 10;
+    const total = Math.max(1, Number(totalNewAccounts) || 1);
+    if (phase === "importing") {
+      const weight = autoScanNew ? 35 : 95;
+      return Math.min(weight, 10 + Math.round((Number(importedCount || 0) / total) * (weight - 10)));
+    }
+    if (phase === "scanning") {
+      return Math.min(98, 35 + Math.round(((Number(scannedCount || 0) + 0.3) / total) * 63));
+    }
+    return 15;
+  }, [sheetImportStatus]);
+
   const countryQueuePct = useMemo(() => {
     const total = Number(countryQueueStatus.totalPackages) || 0;
     if (!total) return 0;
@@ -1933,10 +2186,18 @@ function PlayStoreIntelligenceView({
               <button
                 type="button"
                 onClick={openSheetImporter}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-electric-blue/50 hover:bg-input-bg transition"
+                title="Import new accounts from Google Sheets and scan them"
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-medium transition ${
+                  showSheetModal || sheetImportStatus.running
+                    ? "bg-sky-500/10 border-sky-500/40 text-sky-700 dark:text-sky-300"
+                    : "bg-surface-solid border-border-subtle text-text-main hover:border-electric-blue/50 hover:bg-input-bg"
+                }`}
               >
-                <span className="material-symbols-outlined text-[16px] text-sky-400">table_view</span>
-                Google Sheets
+                <span className="material-symbols-outlined text-[16px] text-sky-600 dark:text-sky-400">table_view</span>
+                <span>Google Sheets</span>
+                {sheetImportStatus.running && (
+                  <span className="w-2 h-2 rounded-full bg-sky-500 animate-pulse" />
+                )}
               </button>
 
               <button
@@ -2076,6 +2337,109 @@ function PlayStoreIntelligenceView({
                 />
               </div>
             )}
+          </div>
+        )}
+
+      {/* LIVE PROGRESS BAR 1B: DEDICATED GOOGLE SHEETS IMPORT & SCAN PROGRESS */}
+      {!sheetBannerDismissed &&
+        (sheetImportStatus.running ||
+          sheetImportStatus.state === "complete" ||
+          sheetImportStatus.state === "cancelled" ||
+          sheetImportStatus.state === "error") &&
+        sheetImportStatus.log && (
+          <div className="bg-surface-solid border border-sky-500/30 rounded-2xl p-4 flex flex-col gap-3 shadow-sm">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-sky-500/15 text-sky-700 dark:text-sky-400 flex items-center justify-center shrink-0">
+                  <span className={`material-symbols-outlined text-[18px] ${sheetImportStatus.running ? "animate-pulse" : ""}`}>
+                    table_view
+                  </span>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-text-main flex flex-wrap items-center gap-2">
+                    <span>
+                      {sheetImportStatus.running
+                        ? sheetImportStatus.phase === "reading_sheet"
+                          ? "Google Sheets: Reading Competitor Analysis..."
+                          : sheetImportStatus.phase === "importing"
+                          ? `Importing New Accounts (${sheetImportStatus.importedCount || 0}/${sheetImportStatus.totalNewAccounts || 0})`
+                          : `Scanning New Accounts (${sheetImportStatus.scannedCount || 0}/${sheetImportStatus.totalNewAccounts || 0})`
+                        : sheetImportStatus.state === "cancelled"
+                        ? "Google Sheets Import Aborted"
+                        : sheetImportStatus.state === "error"
+                        ? "Google Sheets Import Finished with Errors"
+                        : "Google Sheets Import Complete"}
+                    </span>
+                    {sheetImportStatus.phase && (
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                          sheetImportStatus.state === "error"
+                            ? "bg-urgent-red/15 text-urgent-red"
+                            : sheetImportStatus.running
+                            ? "bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                            : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                        }`}
+                      >
+                        {String(sheetImportStatus.phase).replace(/_/g, " ")}
+                      </span>
+                    )}
+                    <span className="text-[11px] font-mono text-text-muted">
+                      · Elapsed: {formatDurationSec(sheetElapsedSec)} · New Imported: {sheetImportStatus.importedCount || 0}
+                      {sheetImportStatus.skippedExisting > 0 ? ` · Skipped Existing: ${sheetImportStatus.skippedExisting}` : ""}
+                      {sheetImportStatus.gamesDiscovered > 0 ? ` · Games Synced: ${sheetImportStatus.gamesDiscovered}` : ""}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-text-muted font-mono truncate mt-0.5">{sheetImportStatus.log}</div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {isAdmin && !sheetImportStatus.running && Array.isArray(sheetImportStatus.failedLinks) && sheetImportStatus.failedLinks.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={isStartingSheetImport}
+                    onClick={handleRetrySheetFailed}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-600/35 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 text-xs font-semibold hover:bg-amber-500/25 transition inline-flex items-center gap-1 disabled:opacity-50"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">refresh</span>
+                    Retry Failed ({sheetImportStatus.failedLinks.length})
+                  </button>
+                )}
+                {isAdmin && sheetImportStatus.running && (
+                  <button
+                    type="button"
+                    onClick={handleCancelSheetImport}
+                    className="px-3.5 py-1.5 rounded-xl bg-urgent-red/15 border border-urgent-red/30 text-urgent-red text-xs font-semibold hover:bg-urgent-red/25 transition"
+                  >
+                    Abort Import
+                  </button>
+                )}
+                {!sheetImportStatus.running && (
+                  <button
+                    type="button"
+                    onClick={() => setSheetBannerDismissed(true)}
+                    className="p-1 rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main transition"
+                    title="Dismiss status"
+                    aria-label="Dismiss Google Sheets progress banner"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">close</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="w-full h-2 rounded-full bg-input-bg overflow-hidden">
+              <div
+                style={{ width: `${sheetProgressPct}%` }}
+                className={`h-full transition-all duration-300 ${
+                  sheetImportStatus.state === "error"
+                    ? "bg-urgent-red"
+                    : sheetImportStatus.running
+                    ? "bg-sky-500"
+                    : "bg-emerald-500"
+                }`}
+              />
+            </div>
           </div>
         )}
 
@@ -4136,174 +4500,6 @@ function PlayStoreIntelligenceView({
             </motion.div>
           )}
 
-          {/* MODAL 3: ONE-WAY GOOGLE SHEET IMPORTER (z-[100]) */}
-          {showSheetModal && (
-            <motion.div
-              key="play-sheet-modal"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.16, ease: "easeOut" }}
-              onClick={() => setShowSheetModal(false)}
-              className="atlas-google-shell fixed inset-0 z-[100] bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-            >
-              <motion.div
-                initial={{ opacity: 0, y: 10, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 8, scale: 0.985 }}
-                transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-                onClick={(e) => e.stopPropagation()}
-                className="w-full max-w-xl bg-surface-solid border border-border-subtle rounded-2xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto"
-              >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-text-main">
-                    One-Way Google Sheet Importer ("Competitor Analysis")
-                  </h3>
-                  <p className="text-xs text-text-muted">
-                    Import competitor columns and Play Store publisher links from Google Sheets into PostgreSQL.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowSheetModal(false)}
-                  className="p-1 rounded-lg hover:bg-input-bg text-text-muted"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              {/* Dedicated Campaign Transparency Center Sync Box */}
-              <div className="bg-sky-500/10 border border-sky-500/30 rounded-xl p-3.5 flex flex-col gap-2.5">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-sky-400 text-[20px]">campaign</span>
-                    <div>
-                      <div className="text-xs font-semibold text-text-main">Google Ads Transparency Center Sync</div>
-                      <div className="text-[11px] text-text-muted">Sync active campaign packages from Sheet1 to tag games with the "Campaign" badge</div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={isSyncingCampaigns}
-                    onClick={handleSyncSheetCampaigns}
-                    className="px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold transition disabled:opacity-50 inline-flex items-center gap-1.5 shrink-0"
-                  >
-                    <span className="material-symbols-outlined text-[15px]">sync</span>
-                    {isSyncingCampaigns ? "Syncing..." : "Sync Active Campaigns"}
-                  </button>
-                </div>
-                {campaignSyncResult && (
-                  <div className="text-[11px] font-mono text-sky-400 bg-sky-500/10 p-2 rounded-lg border border-sky-500/20">
-                    ✓ Synced {campaignSyncResult.matchedCount} campaigns across {campaignSyncResult.uniqueCount} packages from Sheet1 ({campaignSyncResult.unmatchedCount} unmatched).
-                  </div>
-                )}
-              </div>
-
-              {isLoadingSheet ? (
-                <div className="py-10 text-center text-xs text-text-muted">
-                  Reading "Competitor Analysis" tab from Google Sheets...
-                </div>
-              ) : sheetPreview ? (
-                <>
-                  <div className="grid grid-cols-3 gap-2.5 text-center">
-                    <div className="bg-input-bg rounded-xl p-3">
-                      <div className="text-[10px] text-text-muted">Competitor Columns</div>
-                      <div className="text-base font-semibold text-text-main mt-0.5">{sheetPreview.totalColumns}</div>
-                    </div>
-                    <div className="bg-input-bg rounded-xl p-3">
-                      <div className="text-[10px] text-text-muted">Unique Publishers</div>
-                      <div className="text-base font-semibold text-text-main mt-0.5">
-                        {sheetPreview.uniquePublishersCount}
-                      </div>
-                    </div>
-                    <div className="bg-input-bg rounded-xl p-3">
-                      <div className="text-[10px] text-emerald-400">New to Atlas</div>
-                      <div className="text-base font-semibold text-emerald-400 mt-0.5">
-                        +{sheetPreview.newPublishersCount}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="max-h-56 overflow-y-auto border border-border-subtle rounded-xl divide-y divide-border-subtle bg-input-bg/40 text-xs">
-                    {(sheetPreview.columns || []).map((col) => {
-                      const checked = sheetSelectedLists.includes(col.listName);
-                      return (
-                        <label
-                          key={col.listName}
-                          className="px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-input-bg"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() =>
-                                setSheetSelectedLists((prev) =>
-                                  checked ? prev.filter((n) => n !== col.listName) : [...prev, col.listName]
-                                )
-                              }
-                            />
-                            <div className="min-w-0">
-                              <div className="font-semibold text-text-main truncate">{col.listName}</div>
-                              {col.adsId && <div className="text-[10px] font-mono text-text-muted">{col.adsId}</div>}
-                            </div>
-                          </div>
-                          <div className="text-right font-mono text-[11px] shrink-0">
-                            <span className="text-text-main">{col.accountCount} accounts</span>
-                            {col.newAccountCount > 0 && (
-                              <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px]">
-                                +{col.newAccountCount} new
-                              </span>
-                            )}
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-
-                  <label className="inline-flex items-center gap-2 text-xs text-text-main cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={sheetAutoScanNew}
-                      onChange={(e) => setSheetAutoScanNew(e.target.checked)}
-                    />
-                    <span>Immediately scan newly imported Play Store publisher accounts</span>
-                  </label>
-
-                  {sheetImportResult && (
-                    <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs">
-                      Imported {sheetImportResult.publishersCreated} new publisher(s) and added{" "}
-                      {sheetImportResult.membershipsAdded} list membership(s).
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-end gap-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowSheetModal(false)}
-                      className="px-4 py-2 rounded-xl bg-input-bg text-text-muted text-xs font-semibold"
-                    >
-                      Close
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isImportingSheet || sheetSelectedLists.length === 0}
-                      onClick={handleConfirmSheetImport}
-                      className="px-4 py-2 rounded-xl bg-electric-blue text-white text-xs font-semibold hover:opacity-95 disabled:opacity-50"
-                    >
-                      {isImportingSheet ? "Importing..." : `Import Selected (${sheetSelectedLists.length} Lists)`}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div className="py-8 text-center text-xs text-urgent-red">
-                  Could not load Google Sheet preview. Check credentials.
-                </div>
-              )}
-              </motion.div>
-            </motion.div>
-          )}
-
           {/* MODAL 4: BATCH COUNTRY AVAILABILITY SCANNER (z-[100]) */}
           {showCountryBatchModal && (
             <motion.div
@@ -4909,6 +5105,379 @@ function PlayStoreIntelligenceView({
                   </button>
                 </div>
               </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
+
+      {/* NON-BLOCKING FLOATING GOOGLE SHEETS IMPORTER POP-UP */}
+      {typeof document !== "undefined" && createPortal(
+        <AnimatePresence>
+          {showSheetModal && (
+            <motion.div
+              key="atlas-play-sheet-floating-panel"
+              initial={{ opacity: 0, y: -10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -10, scale: 0.98 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+              className="atlas-google-shell fixed top-[74px] right-4 sm:right-6 z-[95] w-[calc(100vw-2rem)] max-w-[460px]"
+            >
+              <div className="bg-surface-solid border border-border-subtle rounded-2xl p-4 sm:p-5 flex flex-col gap-3.5 shadow-2xl max-h-[calc(100vh-92px)] overflow-y-auto custom-scrollbar">
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                      <h3 className="text-[15px] font-semibold text-text-main truncate">
+                        Google Sheets Importer
+                      </h3>
+                    </div>
+                    <p className="text-[11px] text-text-muted mt-0.5">
+                      Competitor Analysis tab · Only new unimported accounts
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={loadSheetPreview}
+                      disabled={isLoadingSheet}
+                      title="Refresh from Google Sheets"
+                      className="p-1.5 rounded-lg border border-border-subtle bg-input-bg/60 hover:bg-input-bg text-text-muted hover:text-text-main transition-colors disabled:opacity-50"
+                    >
+                      <svg
+                        className={`w-3.5 h-3.5 ${isLoadingSheet ? "animate-spin" : ""}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                        <path d="M3 3v5h5" />
+                        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                        <path d="M16 16h5v5" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowSheetModal(false)}
+                      aria-label="Close Google Sheets importer"
+                      className="w-7 h-7 rounded-lg flex items-center justify-center text-text-muted hover:text-text-main hover:bg-input-bg transition-colors text-base leading-none"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+
+                {/* Compact Active Ad Campaigns Sync */}
+                <div className="rounded-xl border border-border-subtle bg-input-bg/50 p-2.5 flex items-center justify-between gap-2.5">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-text-main">
+                      Active Ad Campaigns Sync (Sheet1)
+                    </div>
+                    <div className="text-[10px] text-text-muted truncate">
+                      {campaignSyncResult
+                        ? `Matched ${campaignSyncResult.matchedCount ?? 0}/${campaignSyncResult.uniqueCount ?? 0} packages (${campaignSyncResult.unmatchedCount ?? 0} unmatched)`
+                        : "Mark Atlas games listed in Sheet1 as running active Google Ads"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSyncSheetCampaigns}
+                    disabled={isSyncingCampaigns}
+                    className="shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border border-border-subtle bg-surface-solid hover:bg-input-bg text-text-main transition-colors disabled:opacity-50"
+                  >
+                    {isSyncingCampaigns ? "Syncing..." : "Sync Campaigns"}
+                  </button>
+                </div>
+
+                {/* Preview Error */}
+                {sheetPreviewError && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300">
+                    {sheetPreviewError}
+                  </div>
+                )}
+
+                {/* Loading State */}
+                {isLoadingSheet && !sheetPreview && (
+                  <div className="py-6 flex flex-col items-center justify-center gap-2 text-text-muted">
+                    <svg
+                      className="w-5 h-5 animate-spin text-sky-600 dark:text-sky-400"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <circle cx="12" cy="12" r="10" className="opacity-20" />
+                      <path d="M22 12a10 10 0 0 0-10-10" />
+                    </svg>
+                    <span className="text-xs">Reading Competitor Analysis tab...</span>
+                  </div>
+                )}
+
+                {/* Sheet Preview Content */}
+                {sheetPreview && (
+                  <>
+                    {/* 3 Compact Stat Tiles */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="rounded-xl border border-border-subtle bg-input-bg/50 px-2.5 py-2">
+                        <div className="text-[10px] text-text-muted">Sheet Columns</div>
+                        <div className="text-sm font-semibold text-text-main mt-0.5 tabular-nums">
+                          {sheetPreview.totalColumns ?? 0}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border-subtle bg-input-bg/50 px-2.5 py-2">
+                        <div className="text-[10px] text-text-muted">Already in Atlas</div>
+                        <div className="text-sm font-semibold text-text-main mt-0.5 tabular-nums">
+                          {sheetPreview.existingPublishersCount ?? 0}
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-border-subtle bg-input-bg/50 px-2.5 py-2">
+                        <div className="text-[10px] text-text-muted">New to Import</div>
+                        <div className={`text-sm font-semibold mt-0.5 tabular-nums ${(sheetPreview.newPublishersCount ?? 0) > 0 ? "text-emerald-700 dark:text-emerald-400" : "text-text-main"}`}>
+                          +{sheetPreview.newPublishersCount ?? 0}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Filter & Selection Controls */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <label className="inline-flex items-center gap-1.5 text-text-main cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={sheetShowOnlyNewCols}
+                          onChange={(e) => setSheetShowOnlyNewCols(e.target.checked)}
+                          className="rounded border-border-subtle accent-sky-500"
+                        />
+                        <span>Only columns with new</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const colsWithNew = (sheetPreview.columns || sheetVisibleColumns || [])
+                              .filter((c) => (c.newAccountCount || 0) > 0)
+                              .map((c) => c.listName);
+                            setSheetSelectedLists(colsWithNew);
+                          }}
+                          className="text-sky-700 dark:text-sky-300 hover:underline font-medium"
+                        >
+                          Select new
+                        </button>
+                        <span className="text-border-subtle">|</span>
+                        <button
+                          type="button"
+                          onClick={() => setSheetSelectedLists([])}
+                          className="text-text-muted hover:text-text-main"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Columns List */}
+                    <div className="max-h-56 overflow-y-auto custom-scrollbar space-y-1.5 pr-1">
+                      {sheetVisibleColumns.length === 0 ? (
+                        <div className="rounded-xl border border-border-subtle bg-input-bg/40 px-3 py-4 text-center text-[11px] text-text-muted flex flex-col items-center gap-2">
+                          <span>
+                            {sheetShowOnlyNewCols
+                              ? "No columns with unimported accounts."
+                              : "No columns found in the sheet."}
+                          </span>
+                          {sheetShowOnlyNewCols && (
+                            <button
+                              type="button"
+                              onClick={() => setSheetShowOnlyNewCols(false)}
+                              className="text-sky-700 dark:text-sky-300 hover:underline font-medium"
+                            >
+                              Show all columns
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        sheetVisibleColumns.map((col) => {
+                          const hasNoNew = (col.newAccountCount || 0) === 0;
+                          const isChecked = !hasNoNew && sheetSelectedLists.includes(col.listName);
+                          const newList = Array.isArray(col.newAccounts) ? col.newAccounts : [];
+                          const previewNames = newList
+                            .slice(0, 3)
+                            .map((acc) =>
+                              typeof acc === "string"
+                                ? acc
+                                : (acc?.publisher || acc?.normalizedUrl || "Account")
+                            )
+                            .join(", ");
+                          const extraCount = newList.length > 3 ? newList.length - 3 : 0;
+
+                          return (
+                            <label
+                              key={col.listName}
+                              className={`flex items-start gap-2.5 p-2.5 rounded-xl border transition-colors ${
+                                hasNoNew
+                                  ? "border-border-subtle bg-input-bg/35 opacity-70 cursor-default"
+                                  : isChecked
+                                  ? "border-sky-500/40 bg-sky-500/5 cursor-pointer"
+                                  : "border-border-subtle bg-input-bg/35 hover:bg-input-bg/65 cursor-pointer"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                disabled={hasNoNew}
+                                onChange={() => {
+                                  if (hasNoNew) return;
+                                  setSheetSelectedLists((prev) =>
+                                    prev.includes(col.listName)
+                                      ? prev.filter((item) => item !== col.listName)
+                                      : [...prev, col.listName]
+                                  );
+                                }}
+                                className="mt-0.5 rounded border-border-subtle accent-sky-500 shrink-0 disabled:opacity-50"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-medium text-text-main truncate">
+                                    {col.listName}
+                                  </span>
+                                  {!hasNoNew ? (
+                                    <span className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-medium border border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 tabular-nums">
+                                      +{col.newAccountCount} new
+                                    </span>
+                                  ) : (
+                                    <span className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-medium border border-border-subtle bg-input-bg text-text-muted">
+                                      All in Atlas
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-text-muted mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  <span className="tabular-nums">{col.accountCount ?? 0} total</span>
+                                  {col.adsId && <span className="truncate">Ads ID: {col.adsId}</span>}
+                                </div>
+                                {previewNames && (
+                                  <div className="text-[10px] text-text-muted mt-1 truncate">
+                                    {previewNames}
+                                    {extraCount > 0 ? ` +${extraCount} more` : ""}
+                                  </div>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* All Already in Atlas Message */}
+                    {(sheetPreview.newPublishersCount ?? 0) === 0 && (
+                      <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-700 dark:text-emerald-400">
+                        All {sheetPreview.existingPublishersCount ?? 0} account(s) in Google Sheets are already in Atlas.
+                      </div>
+                    )}
+
+                    {/* Auto-Scan Checkbox */}
+                    <label className="flex items-center gap-2 text-[11px] text-text-main cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={sheetAutoScanNew}
+                        onChange={(e) => setSheetAutoScanNew(e.target.checked)}
+                        className="rounded border-border-subtle accent-sky-500"
+                      />
+                      <span>Immediately scan newly imported accounts on Google Play</span>
+                    </label>
+                  </>
+                )}
+
+                {/* Dedicated Inline Compact Progress Bar inside Popup */}
+                {(sheetImportStatus?.running || Boolean(sheetImportStatus?.log)) && (
+                  <div className="rounded-xl border border-border-subtle bg-input-bg/60 p-2.5 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-medium text-text-main flex items-center gap-1.5">
+                        {sheetImportStatus?.running && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse" />
+                        )}
+                        {sheetImportStatus?.running
+                          ? "Sheets Import & Scan Active"
+                          : sheetImportStatus?.state === "cancelled"
+                          ? "Sheets Import Aborted"
+                          : sheetImportStatus?.state === "error"
+                          ? "Sheets Import Finished with Errors"
+                          : "Sheets Import Complete"}
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-text-muted tabular-nums">
+                          {sheetProgressPct}%{sheetImportStatus?.running ? ` · ${formatDurationSec(sheetElapsedSec)}` : ""}
+                        </span>
+                        {!sheetImportStatus?.running &&
+                          Array.isArray(sheetImportStatus?.failedLinks) &&
+                          sheetImportStatus.failedLinks.length > 0 && (
+                            <button
+                              type="button"
+                              disabled={isStartingSheetImport}
+                              onClick={handleRetrySheetFailed}
+                              className="px-2 py-0.5 rounded-md text-[10px] font-medium border border-amber-600/35 dark:border-amber-500/30 bg-amber-500/15 text-amber-800 dark:text-amber-300 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+                            >
+                              Retry Failed ({sheetImportStatus.failedLinks.length})
+                            </button>
+                          )}
+                        {sheetImportStatus?.running && (
+                          <button
+                            type="button"
+                            onClick={handleCancelSheetImport}
+                            className="px-2 py-0.5 rounded-md text-[10px] font-medium border border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300 hover:bg-rose-500/20 transition-colors"
+                          >
+                            Abort
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-input-bg overflow-hidden border border-border-subtle/50">
+                      <div
+                        className={`h-full transition-all duration-300 ease-out ${
+                          sheetImportStatus?.state === "error"
+                            ? "bg-urgent-red"
+                            : sheetImportStatus?.running
+                            ? "bg-sky-500"
+                            : "bg-emerald-500"
+                        }`}
+                        style={{ width: `${Math.min(100, Math.max(0, sheetProgressPct || 0))}%` }}
+                      />
+                    </div>
+                    {sheetImportStatus?.log && (
+                      <div className="text-[10px] text-text-muted truncate" title={sheetImportStatus.log}>
+                        {sheetImportStatus.log}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Footer Actions */}
+                <div className="flex items-center justify-end gap-2 pt-1 border-t border-border-subtle">
+                  <button
+                    type="button"
+                    onClick={() => setShowSheetModal(false)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border-subtle bg-input-bg/60 hover:bg-input-bg text-text-muted hover:text-text-main transition-colors"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmSheetImport}
+                    disabled={
+                      isStartingSheetImport ||
+                      Boolean(sheetImportStatus?.running) ||
+                      (sheetSelectionSummary?.newCount ?? 0) === 0
+                    }
+                    className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isStartingSheetImport
+                      ? "Starting..."
+                      : sheetAutoScanNew
+                      ? `Import & Scan ${sheetSelectionSummary?.newCount ?? 0} New`
+                      : `Import ${sheetSelectionSummary?.newCount ?? 0} New`}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>,

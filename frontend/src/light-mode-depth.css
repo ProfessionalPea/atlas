@@ -103,7 +103,7 @@ html:not(.dark) .bg-primary-container {
 }
 
 /* Video Library follows the same cream canvas / porcelain card hierarchy. */
-html:not(.dark) .atlas-google-shell.fixed {
+html:not(.dark) .atlas-google-shell.fixed.bg-bg-base {
   background: rgb(var(--bg-base)) !important;
 }
 

@@ -92,6 +92,33 @@ let playScanStatus = {
 };
 let activePlayScanCancelled = false;
 
+let sheetImportStatus = {
+  running: false,
+  state: 'idle', // 'idle' | 'reading_sheet' | 'importing' | 'scanning' | 'cancelling' | 'complete' | 'cancelled' | 'error'
+  phase: 'idle',
+  autoScanNew: true,
+  totalColumnsChecked: 0,
+  totalInSheet: 0,
+  skippedExisting: 0,
+  totalNewAccounts: 0,
+  importedCount: 0,
+  scannedCount: 0,
+  failedCount: 0,
+  listsCreated: 0,
+  membershipsAdded: 0,
+  gamesDiscovered: 0,
+  currentAccount: null,
+  currentCompetitor: null,
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+  results: [],
+  failedLinks: [],
+  ambiguousPublishers: [],
+  log: ''
+};
+let activeSheetImportCancelled = false;
+
 // Resumable Batch Country Scanner Queue State
 let countryBatchQueue = {
   running: false,
@@ -1671,14 +1698,35 @@ async function fetchSheetCompetitorAnalysis(pool) {
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: sheetId,
-    range: "'Competitor Analysis'!A1:Z300"
+    range: "'Competitor Analysis'"
   });
 
   const rows = res.data.values || [];
   const headers = rows[0] || [];
 
-  const existingPubsRes = await pool.query(`SELECT id, publisher_name, normalized_name FROM play_publishers`);
-  const existingPubByKey = new Map(existingPubsRes.rows.map((p) => [p.normalized_name, p]));
+  const existingPubsRes = await pool.query(
+    `SELECT id, publisher_name, normalized_name, developer_id, source_url, last_scan_status FROM play_publishers`
+  );
+  const existingByNormName = new Map();
+  const existingByDevId = new Map();
+  const existingByUrl = new Map();
+  const existingByAlphaKey = new Map();
+
+  for (const p of existingPubsRes.rows) {
+    const norm = String(p.normalized_name || '').trim().toLowerCase();
+    if (norm && !existingByNormName.has(norm)) existingByNormName.set(norm, p);
+
+    const devIdKey = String(p.developer_id || '').trim().toLowerCase();
+    if (devIdKey && !existingByDevId.has(devIdKey)) existingByDevId.set(devIdKey, p);
+
+    const urlKey = String(p.source_url || '').trim().toLowerCase();
+    if (urlKey && !existingByUrl.has(urlKey)) existingByUrl.set(urlKey, p);
+
+    const alphaKey = String(p.publisher_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (alphaKey && !/^\d+$/.test(alphaKey) && !existingByAlphaKey.has(alphaKey)) {
+      existingByAlphaKey.set(alphaKey, p);
+    }
+  }
 
   const existingListsRes = await pool.query(`SELECT id, name, ads_id, competitor_id FROM play_lists`);
   const existingListByName = new Map(
@@ -1723,28 +1771,37 @@ async function fetchSheetCompetitorAnalysis(pool) {
       if (seenInCol.has(v.normalizedKey)) continue;
       seenInCol.add(v.normalizedKey);
 
-      const existsInDb = existingPubByKey.has(v.normalizedKey);
+      const alphaKey = v.publisher.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const matchedExisting =
+        existingByNormName.get(v.normalizedKey) ||
+        (v.developerId && existingByDevId.get(String(v.developerId).trim().toLowerCase())) ||
+        existingByUrl.get(v.normalizedUrl.toLowerCase()) ||
+        (alphaKey && !/^\d+$/.test(alphaKey) ? existingByAlphaKey.get(alphaKey) : null) ||
+        null;
+
       colPublishers.push({
         publisher: v.publisher,
         normalizedKey: v.normalizedKey,
         normalizedUrl: v.normalizedUrl,
         developerId: v.developerId,
-        alreadyInAtlas: existsInDb,
-        existingPublisherId: existsInDb ? existingPubByKey.get(v.normalizedKey).id : null
+        alreadyInAtlas: Boolean(matchedExisting),
+        existingPublisherId: matchedExisting?.id || null
       });
 
-      if (!uniqueSheetPublishers.has(v.normalizedKey)) {
-        uniqueSheetPublishers.set(v.normalizedKey, {
+      const dedupeKey = matchedExisting ? `id:${matchedExisting.id}` : v.normalizedKey;
+      if (!uniqueSheetPublishers.has(dedupeKey)) {
+        uniqueSheetPublishers.set(dedupeKey, {
           ...v,
-          alreadyInAtlas: existsInDb,
+          alreadyInAtlas: Boolean(matchedExisting),
           lists: [listName]
         });
       } else {
-        const entry = uniqueSheetPublishers.get(v.normalizedKey);
+        const entry = uniqueSheetPublishers.get(dedupeKey);
         if (!entry.lists.includes(listName)) entry.lists.push(listName);
       }
     }
 
+    const newAccountsInCol = colPublishers.filter((p) => !p.alreadyInAtlas);
     columns.push({
       rawHeader,
       listName,
@@ -1752,7 +1809,12 @@ async function fetchSheetCompetitorAnalysis(pool) {
       alreadyExistsAsList: Boolean(existingList),
       existingListId: existingList?.id || null,
       accountCount: colPublishers.length,
-      newAccountCount: colPublishers.filter((p) => !p.alreadyInAtlas).length,
+      newAccountCount: newAccountsInCol.length,
+      existingAccountCount: colPublishers.length - newAccountsInCol.length,
+      newAccounts: newAccountsInCol.map((p) => ({
+        publisher: p.publisher,
+        normalizedUrl: p.normalizedUrl
+      })),
       accounts: colPublishers
     });
   }
@@ -2363,7 +2425,7 @@ function registerPlayStoreRoutes({ app, pool }) {
     }
   });
 
-  // 3. Google Sheet 'Competitor Analysis' Preview & One-Way Import
+  // 3. Google Sheet 'Competitor Analysis' Preview, Dedicated Status & New-Only Importer
   app.get('/api/play/sheet-preview', async (_req, res) => {
     try {
       const preview = await fetchSheetCompetitorAnalysis(pool);
@@ -2374,156 +2436,492 @@ function registerPlayStoreRoutes({ app, pool }) {
     }
   });
 
+  app.get('/api/play/sheet-import-status', (_req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(sheetImportStatus);
+  });
+
+  app.post('/api/play/sheet-import-cancel', (_req, res) => {
+    if (!sheetImportStatus.running) {
+      return res.json({ status: 'idle', message: 'No Google Sheets import is currently running.' });
+    }
+    activeSheetImportCancelled = true;
+    sheetImportStatus = {
+      ...sheetImportStatus,
+      state: 'cancelling',
+      log: '> Abort requested. Finishing current account and preserving imported records...'
+    };
+    res.json({ status: 'success', message: 'Abort signal sent.', sheetImportStatus });
+  });
+
   app.post('/api/play/sheet-import', async (req, res) => {
-    try {
-      const preview = await fetchSheetCompetitorAnalysis(pool);
-      const selectedLists = Array.isArray(req.body?.listNames) ? new Set(req.body.listNames) : null;
-      const autoScanNew = req.body?.autoScanNew === true;
+    if (sheetImportStatus.running) {
+      return res.status(409).json({ error: 'A Google Sheets import is already running.' });
+    }
 
-      let listsCreated = 0;
-      let publishersCreated = 0;
-      let membershipsAdded = 0;
-      const newPublisherUrls = [];
-      const ambiguousPublishers = [];
+    const selectedLists = Array.isArray(req.body?.listNames) ? new Set(req.body.listNames) : null;
+    const autoScanNew = req.body?.autoScanNew !== false;
+    const retryLinks = Array.isArray(req.body?.retryLinks) ? req.body.retryLinks.filter(Boolean) : null;
 
-      for (const col of preview.columns) {
-        if (selectedLists && !selectedLists.has(col.listName)) continue;
+    if ((autoScanNew || (retryLinks && retryLinks.length > 0)) && playScanStatus.running) {
+      return res.status(409).json({
+        error: 'A Play Store publisher scan is currently running. Wait for it to finish or uncheck auto-scan.'
+      });
+    }
 
-        // 1. Ensure list exists in `competitors` and `play_lists` (match by ads_id first, then name)
-        let listRes = await pool.query(
-          `SELECT id, name, ads_id, competitor_id
-           FROM play_lists
-           WHERE ($2::text IS NOT NULL AND ads_id = $2)
-              OR LOWER(TRIM(name)) = LOWER(TRIM($1))
-           ORDER BY CASE WHEN ($2::text IS NOT NULL AND ads_id = $2) THEN 0 ELSE 1 END, id ASC
-           LIMIT 1`,
+    let retryTargets = [];
+    if (retryLinks && retryLinks.length > 0) {
+      retryTargets = retryLinks
+        .map((url) => validatePlayStoreUrl(url))
+        .filter((v) => v.valid);
+      if (retryTargets.length === 0) {
+        return res.status(400).json({ error: 'No valid publisher links found to retry.' });
+      }
+    }
+
+    activeSheetImportCancelled = false;
+    sheetImportStatus = {
+      running: true,
+      state: retryTargets.length > 0 ? 'scanning' : 'reading_sheet',
+      phase: retryTargets.length > 0 ? 'scanning' : 'reading_sheet',
+      autoScanNew: retryTargets.length > 0 ? true : autoScanNew,
+      totalColumnsChecked: 0,
+      totalInSheet: retryTargets.length,
+      skippedExisting: 0,
+      totalNewAccounts: retryTargets.length,
+      importedCount: retryTargets.length,
+      scannedCount: 0,
+      failedCount: 0,
+      listsCreated: 0,
+      membershipsAdded: 0,
+      gamesDiscovered: 0,
+      currentAccount: retryTargets[0]?.publisher || null,
+      currentCompetitor: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      error: null,
+      results: [],
+      failedLinks: [],
+      ambiguousPublishers: [],
+      log:
+        retryTargets.length > 0
+          ? `> Retrying Play Store scan for ${retryTargets.length} failed imported account(s)...`
+          : '> Reading "Competitor Analysis" tab from Google Sheets...'
+    };
+
+    res.status(202).json({
+      status: 'initiated',
+      sheetImportStatus
+    });
+
+    const ensureSheetListRecord = async (col) => {
+      let listRes = await pool.query(
+        `SELECT id, name, ads_id, competitor_id
+         FROM play_lists
+         WHERE ($2::text IS NOT NULL AND ads_id = $2)
+            OR LOWER(TRIM(name)) = LOWER(TRIM($1))
+         ORDER BY CASE WHEN ($2::text IS NOT NULL AND ads_id = $2) THEN 0 ELSE 1 END, id ASC
+         LIMIT 1`,
+        [col.listName, col.adsId]
+      );
+      let listId = listRes.rows[0]?.id || null;
+      let competitorId = listRes.rows[0]?.competitor_id || null;
+
+      if (listId && listRes.rows[0]?.name !== col.listName) {
+        await pool.query(
+          `UPDATE play_lists SET name = $2, ads_id = COALESCE($3, ads_id), updated_at = now() WHERE id = $1`,
+          [listId, col.listName, col.adsId]
+        );
+        if (competitorId) {
+          await pool.query(`UPDATE competitors SET name = $2 WHERE id = $1`, [competitorId, col.listName]);
+        }
+      }
+
+      if (!listId) {
+        let compRes = await pool.query(
+          `SELECT id FROM competitors WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) OR ($2::text IS NOT NULL AND ads_id = $2) LIMIT 1`,
           [col.listName, col.adsId]
         );
-        let listId = listRes.rows[0]?.id || null;
-        let competitorId = listRes.rows[0]?.competitor_id || null;
-
-        if (listId && listRes.rows[0]?.name !== col.listName) {
-          await pool.query(
-            `UPDATE play_lists SET name = $2, ads_id = COALESCE($3, ads_id), updated_at = now() WHERE id = $1`,
-            [listId, col.listName, col.adsId]
-          );
-          if (competitorId) {
-            await pool.query(`UPDATE competitors SET name = $2 WHERE id = $1`, [competitorId, col.listName]);
-          }
-        }
-
-        if (!listId) {
-          let compRes = await pool.query(
-            `SELECT id FROM competitors WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) OR ($2::text IS NOT NULL AND ads_id = $2) LIMIT 1`,
+        competitorId = compRes.rows[0]?.id || null;
+        if (!competitorId) {
+          const insComp = await pool.query(
+            `INSERT INTO competitors (name, ads_id, country) VALUES ($1, $2, 'ALL') RETURNING id`,
             [col.listName, col.adsId]
           );
-          competitorId = compRes.rows[0]?.id || null;
-          if (!competitorId) {
-            const insComp = await pool.query(
-              `INSERT INTO competitors (name, ads_id, country) VALUES ($1, $2, 'ALL') RETURNING id`,
-              [col.listName, col.adsId]
-            );
-            competitorId = insComp.rows[0].id;
-          }
-
-          const insList = await pool.query(
-            `INSERT INTO play_lists (name, ads_id, description, competitor_id)
-             VALUES ($1, $2, $3, $4)
-             RETURNING id`,
-            [
-              col.listName,
-              col.adsId,
-              col.adsId ? `Imported from Google Sheet [${col.adsId}]` : 'Imported from Google Sheet',
-              competitorId
-            ]
-          );
-          listId = insList.rows[0].id;
-          listsCreated += 1;
+          competitorId = insComp.rows[0].id;
         }
 
-        // 2. Ensure each publisher account exists and is linked to `listId`
-        for (const acc of col.accounts) {
-          let pubRes = await pool.query(
-            `SELECT id FROM play_publishers WHERE normalized_name = $1 LIMIT 1`,
-            [acc.normalizedKey]
-          );
-          let pubId = pubRes.rows[0]?.id || null;
+        const insList = await pool.query(
+          `INSERT INTO play_lists (name, ads_id, description, competitor_id)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id`,
+          [
+            col.listName,
+            col.adsId,
+            col.adsId ? `Imported from Google Sheet [${col.adsId}]` : 'Imported from Google Sheet',
+            competitorId
+          ]
+        );
+        listId = insList.rows[0].id;
+        sheetImportStatus = {
+          ...sheetImportStatus,
+          listsCreated: sheetImportStatus.listsCreated + 1
+        };
+      }
 
-          if (!pubId) {
-            // Also create in `accounts` so legacy views remain synchronized
-            let legacyRes = await pool.query(
-              `SELECT id FROM accounts WHERE LOWER(TRIM(publisher_name)) = $1 LIMIT 1`,
-              [acc.normalizedKey]
-            );
-            let legacyAccId = legacyRes.rows[0]?.id || null;
-            if (!legacyAccId) {
-              const insAcc = await pool.query(
-                `INSERT INTO accounts (competitor_id, publisher_name, normalized_name)
-                 VALUES ($1, $2, $3)
-                 RETURNING id`,
-                [competitorId, acc.publisher, acc.publisher.toLowerCase().replace(/[^a-z0-9]/g, '')]
-              );
-              legacyAccId = insAcc.rows[0].id;
+      return { listId, competitorId };
+    };
+
+    const runSheetTargetScans = async (scanTargets) => {
+      for (let i = 0; i < scanTargets.length; i++) {
+        if (activeSheetImportCancelled) break;
+        const item = scanTargets[i];
+        const target = item.validatedTarget || validatePlayStoreUrl(item.normalizedUrl || item.publisher);
+        if (!target.valid) {
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            scannedCount: sheetImportStatus.scannedCount + 1,
+            failedCount: sheetImportStatus.failedCount + 1,
+            failedLinks: [...sheetImportStatus.failedLinks, item.normalizedUrl || item.raw].filter(Boolean)
+          };
+          continue;
+        }
+        if (item.pubId) target.publisherId = item.pubId;
+        if (item.developerId && !target.developerId) target.developerId = item.developerId;
+
+        sheetImportStatus = {
+          ...sheetImportStatus,
+          phase: 'scanning',
+          state: activeSheetImportCancelled ? 'cancelling' : 'scanning',
+          currentAccount: item.publisher || target.publisher,
+          currentCompetitor: item.competitorName || null,
+          log: `> [${i + 1}/${scanTargets.length}] Scanning Google Play catalogue for "${item.publisher || target.publisher}"...`
+        };
+
+        try {
+          const result = await scanAndSavePlayPublisher(pool, target, {
+            isCancelled: () => activeSheetImportCancelled,
+            onProgress: (p) => {
+              sheetImportStatus = {
+                ...sheetImportStatus,
+                currentAccount: p.publisher || item.publisher || target.publisher,
+                log:
+                  p.phase === 'enriching_games'
+                    ? `> [${i + 1}/${scanTargets.length}] Enriching telemetry & release dates for "${p.publisher}" (${p.enriched}/${p.totalToEnrich})...`
+                    : `> [${i + 1}/${scanTargets.length}] Fetching developer catalogue for "${p.publisher}"...`
+              };
             }
+          });
 
-            const insPub = await pool.query(
-              `INSERT INTO play_publishers (
-                 id, publisher_name, normalized_name, developer_id, source_url, last_scan_status
-               ) VALUES ($1, $2, $3, $4, $5, 'unscanned')
-               ON CONFLICT (normalized_name) DO UPDATE SET
-                 source_url = COALESCE(play_publishers.source_url, EXCLUDED.source_url)
-               RETURNING id`,
-              [legacyAccId, acc.publisher, acc.normalizedKey, acc.developerId || null, acc.normalizedUrl]
-            );
-            pubId = insPub.rows[0].id;
-            publishersCreated += 1;
-            newPublisherUrls.push(acc.normalizedUrl);
-          }
+          const gamesFound = Number(result.totalGames) || 0;
+          const isFailure = result.status === 'error' && gamesFound === 0;
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            scannedCount: sheetImportStatus.scannedCount + 1,
+            failedCount: sheetImportStatus.failedCount + (isFailure ? 1 : 0),
+            gamesDiscovered: sheetImportStatus.gamesDiscovered + gamesFound,
+            failedLinks:
+              isFailure && (result.sourceUrl || item.normalizedUrl)
+                ? [...sheetImportStatus.failedLinks, result.sourceUrl || item.normalizedUrl]
+                : sheetImportStatus.failedLinks,
+            results: [
+              ...sheetImportStatus.results,
+              {
+                publisher: result.publisher || item.publisher,
+                competitor: item.competitorName || null,
+                status: result.status,
+                gamesFound
+              }
+            ].slice(-100),
+            log: `> ${isFailure ? '⚠' : '✔'} [${i + 1}/${scanTargets.length}] ${result.publisher || item.publisher}: ${gamesFound} games synced.`
+          };
+          invalidatePlayOverviewCache();
+        } catch (scanErr) {
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            scannedCount: sheetImportStatus.scannedCount + 1,
+            failedCount: sheetImportStatus.failedCount + 1,
+            failedLinks: [...sheetImportStatus.failedLinks, item.normalizedUrl || item.raw].filter(Boolean),
+            results: [
+              ...sheetImportStatus.results,
+              {
+                publisher: item.publisher || target.publisher,
+                competitor: item.competitorName || null,
+                status: 'error',
+                error: scanErr?.message || 'Scan failed',
+                gamesFound: 0
+              }
+            ].slice(-100),
+            log: `> ⚠ [${i + 1}/${scanTargets.length}] ${item.publisher || target.publisher} failed: ${scanErr?.message || 'Scan error'}`
+          };
+        }
+      }
+    };
 
-          // Enforce 1 Parent Competitor per Publisher Account unless explicitly overridden
-          const existingListLinks = await pool.query(
-            `SELECT plp.list_id, pl.name AS list_name
-             FROM play_list_publishers plp
-             JOIN play_lists pl ON pl.id = plp.list_id
-             WHERE plp.publisher_id = $1`,
-            [pubId]
+    (async () => {
+      try {
+        if (retryTargets.length > 0) {
+          await runSheetTargetScans(
+            retryTargets.map((t) => ({
+              validatedTarget: t,
+              publisher: t.publisher,
+              developerId: t.developerId,
+              normalizedUrl: t.normalizedUrl,
+              raw: t.raw
+            }))
           );
-          const alreadyInOtherList = existingListLinks.rows.find((r) => Number(r.list_id) !== Number(listId));
-          if (alreadyInOtherList && req.body?.allowMultiCompetitor !== true) {
-            ambiguousPublishers.push({
-              publisherId: pubId,
-              publisher: acc.publisher,
-              existingCompetitor: alreadyInOtherList.list_name,
-              conflictingCompetitor: col.listName
-            });
+
+          invalidatePlayOverviewCache();
+          const finalState = activeSheetImportCancelled
+            ? 'cancelled'
+            : sheetImportStatus.failedCount > 0 && sheetImportStatus.scannedCount === sheetImportStatus.failedCount
+            ? 'error'
+            : 'complete';
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            running: false,
+            state: finalState,
+            phase: finalState,
+            currentAccount: null,
+            finishedAt: new Date().toISOString(),
+            log: activeSheetImportCancelled
+              ? `> Retry aborted after scanning ${sheetImportStatus.scannedCount}/${retryTargets.length} account(s).`
+              : `> Retry complete: ${sheetImportStatus.scannedCount - sheetImportStatus.failedCount}/${retryTargets.length} account(s) succeeded (${sheetImportStatus.gamesDiscovered} games synced).`
+          };
+          return;
+        }
+
+        const preview = await fetchSheetCompetitorAnalysis(pool);
+        if (activeSheetImportCancelled) {
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            running: false,
+            state: 'cancelled',
+            phase: 'cancelled',
+            finishedAt: new Date().toISOString(),
+            log: '> Google Sheets import cancelled before importing accounts.'
+          };
+          return;
+        }
+
+        const scopedCols = preview.columns.filter((col) => !selectedLists || selectedLists.has(col.listName));
+        let totalInSheet = 0;
+        let skippedExisting = 0;
+        const newAccountsToImport = [];
+        const seenNewKeys = new Map();
+        const ambiguousPublishers = [];
+
+        for (const col of scopedCols) {
+          for (const acc of col.accounts) {
+            totalInSheet += 1;
+            if (acc.alreadyInAtlas) {
+              skippedExisting += 1;
+              continue;
+            }
+            const firstOwner = seenNewKeys.get(acc.normalizedKey);
+            if (firstOwner) {
+              ambiguousPublishers.push({
+                publisher: acc.publisher,
+                existingCompetitor: firstOwner,
+                conflictingCompetitor: col.listName
+              });
+              continue;
+            }
+            seenNewKeys.set(acc.normalizedKey, col.listName);
+            newAccountsToImport.push({ col, acc });
+          }
+        }
+
+        sheetImportStatus = {
+          ...sheetImportStatus,
+          totalColumnsChecked: scopedCols.length,
+          totalInSheet,
+          skippedExisting,
+          totalNewAccounts: newAccountsToImport.length,
+          ambiguousPublishers: ambiguousPublishers.slice(0, 50)
+        };
+
+        if (newAccountsToImport.length === 0) {
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            running: false,
+            state: 'complete',
+            phase: 'complete',
+            finishedAt: new Date().toISOString(),
+            log: `> All ${skippedExisting} account(s) in selected columns are already in Atlas. Nothing new to import.`
+          };
+          return;
+        }
+
+        sheetImportStatus = {
+          ...sheetImportStatus,
+          state: 'importing',
+          phase: 'importing',
+          log: `> Importing ${newAccountsToImport.length} new account(s) (skipping ${skippedExisting} already in Atlas)...`
+        };
+
+        const listCache = new Map();
+        const importedTargets = [];
+
+        for (let i = 0; i < newAccountsToImport.length; i++) {
+          if (activeSheetImportCancelled) break;
+          const { col, acc } = newAccountsToImport[i];
+
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            currentAccount: acc.publisher,
+            currentCompetitor: col.listName,
+            log: `> Importing new account ${i + 1}/${newAccountsToImport.length}: "${acc.publisher}" (${col.listName})...`
+          };
+
+          const dupCheck = await pool.query(
+            `SELECT id FROM play_publishers
+             WHERE normalized_name = $1
+                OR ($2::text IS NOT NULL AND LOWER(TRIM(developer_id)) = LOWER(TRIM($2)))
+             LIMIT 1`,
+            [acc.normalizedKey, acc.developerId || null]
+          );
+          if (dupCheck.rows[0]) {
+            sheetImportStatus = {
+              ...sheetImportStatus,
+              skippedExisting: sheetImportStatus.skippedExisting + 1,
+              totalNewAccounts: Math.max(0, sheetImportStatus.totalNewAccounts - 1)
+            };
             continue;
           }
+
+          let listMeta = listCache.get(col.listName);
+          if (!listMeta) {
+            listMeta = await ensureSheetListRecord(col);
+            listCache.set(col.listName, listMeta);
+          }
+
+          const alphaName = acc.publisher.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const unusedLegacy = await pool.query(
+            `SELECT a.id
+             FROM accounts a
+             LEFT JOIN play_publishers pp ON pp.id = a.id
+             WHERE pp.id IS NULL
+               AND (LOWER(TRIM(a.publisher_name)) = $1 OR a.normalized_name = $2)
+             ORDER BY a.id ASC
+             LIMIT 1`,
+            [acc.normalizedKey, alphaName]
+          );
+
+          let accountId = unusedLegacy.rows[0]?.id || null;
+          if (!accountId) {
+            const insAcc = await pool.query(
+              `INSERT INTO accounts (competitor_id, publisher_name, normalized_name)
+               VALUES ($1, $2, $3)
+               RETURNING id`,
+              [listMeta.competitorId, acc.publisher, alphaName]
+            );
+            accountId = insAcc.rows[0].id;
+          }
+
+          const insPub = await pool.query(
+            `INSERT INTO play_publishers (
+               id, publisher_name, normalized_name, developer_id, source_url, last_scan_status
+             ) VALUES ($1, $2, $3, $4, $5, 'unscanned')
+             ON CONFLICT (normalized_name) DO UPDATE SET
+               source_url = COALESCE(play_publishers.source_url, EXCLUDED.source_url),
+               developer_id = COALESCE(play_publishers.developer_id, EXCLUDED.developer_id)
+             RETURNING id`,
+            [accountId, acc.publisher, acc.normalizedKey, acc.developerId || null, acc.normalizedUrl]
+          );
+          const pubId = insPub.rows[0].id;
 
           const linkRes = await pool.query(
             `INSERT INTO play_list_publishers (list_id, publisher_id)
              VALUES ($1, $2)
              ON CONFLICT DO NOTHING
              RETURNING list_id`,
-            [listId, pubId]
+            [listMeta.listId, pubId]
           );
-          if (linkRes.rowCount > 0) membershipsAdded += 1;
-        }
-      }
 
-      invalidatePlayOverviewCache();
-      res.json({
-        status: 'imported',
-        listsCreated,
-        publishersCreated,
-        membershipsAdded,
-        newPublisherUrls,
-        ambiguousPublishers,
-        autoScanTriggered: Boolean(autoScanNew && newPublisherUrls.length > 0)
-      });
-    } catch (err) {
-      console.error('[Play Sheet Import Error]:', err);
-      res.status(500).json({ error: err.message || 'Failed to import from Google Sheet.' });
-    }
+          importedTargets.push({
+            pubId,
+            publisher: acc.publisher,
+            developerId: acc.developerId || null,
+            normalizedUrl: acc.normalizedUrl,
+            competitorName: col.listName
+          });
+
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            importedCount: sheetImportStatus.importedCount + 1,
+            membershipsAdded: sheetImportStatus.membershipsAdded + (linkRes.rowCount > 0 ? 1 : 0)
+          };
+        }
+
+        if (importedTargets.length > 0) {
+          await pool.query(
+            `SELECT setval(
+               'play_publishers_id_seq',
+               GREATEST(
+                 (SELECT COALESCE(MAX(id), 1) FROM play_publishers),
+                 (SELECT COALESCE(MAX(id), 1) FROM accounts)
+               )
+             )`
+          );
+        }
+
+        invalidatePlayOverviewCache();
+
+        if (autoScanNew && !activeSheetImportCancelled && importedTargets.length > 0) {
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            state: 'scanning',
+            phase: 'scanning',
+            log: `> Starting Play Store scan for ${importedTargets.length} newly imported account(s)...`
+          };
+          await runSheetTargetScans(importedTargets);
+          invalidatePlayOverviewCache();
+        }
+
+        if (activeSheetImportCancelled) {
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            running: false,
+            state: 'cancelled',
+            phase: 'cancelled',
+            currentAccount: null,
+            finishedAt: new Date().toISOString(),
+            log: `> Google Sheets import stopped: imported ${sheetImportStatus.importedCount} new account(s), scanned ${sheetImportStatus.scannedCount}.`
+          };
+        } else {
+          const allFailed =
+            autoScanNew &&
+            importedTargets.length > 0 &&
+            sheetImportStatus.failedCount > 0 &&
+            sheetImportStatus.failedCount >= sheetImportStatus.scannedCount &&
+            sheetImportStatus.gamesDiscovered === 0;
+          sheetImportStatus = {
+            ...sheetImportStatus,
+            running: false,
+            state: allFailed ? 'error' : 'complete',
+            phase: sheetImportStatus.failedCount > 0 ? 'completed_with_warnings' : 'complete',
+            currentAccount: null,
+            finishedAt: new Date().toISOString(),
+            log: autoScanNew
+              ? `> Imported ${sheetImportStatus.importedCount} new account(s) (skipped ${sheetImportStatus.skippedExisting} existing); scanned ${sheetImportStatus.scannedCount - sheetImportStatus.failedCount}/${importedTargets.length} (${sheetImportStatus.gamesDiscovered} games synced).`
+              : `> Imported ${sheetImportStatus.importedCount} new account(s) into Atlas (skipped ${sheetImportStatus.skippedExisting} existing).`
+          };
+        }
+      } catch (err) {
+        console.error('[Play Sheet Import Error]:', err);
+        invalidatePlayOverviewCache();
+        sheetImportStatus = {
+          ...sheetImportStatus,
+          running: false,
+          state: 'error',
+          phase: 'failed',
+          error: err.message || 'Failed to import from Google Sheet.',
+          finishedAt: new Date().toISOString(),
+          log: `> Google Sheets import error: ${err.message || 'Unknown failure'}`
+        };
+      }
+    })();
   });
 
   // 3b. Sync Active Campaign flags from Google Sheet ("Sheet1" Transparency Centre rows)
