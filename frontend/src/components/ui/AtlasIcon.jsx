@@ -32,6 +32,7 @@ import {
   Eraser,
   ExternalLink,
   Eye,
+  EyeOff,
   FilePenLine,
   FileText,
   Film,
@@ -97,6 +98,7 @@ import {
   Target,
   Terminal,
   Trash2,
+  TrendingDown,
   TrendingUp,
   User,
   UserPlus,
@@ -217,11 +219,13 @@ const ICON_MAP = {
   terminal: Terminal,
   track_changes: Target,
   travel_explore: Compass,
+  trending_down: TrendingDown,
   trending_up: TrendingUp,
   tune: SlidersHorizontal,
   video_library: Video,
   view_list: List,
   visibility: Eye,
+  visibility_off: EyeOff,
   warning: AlertTriangle
 };
 

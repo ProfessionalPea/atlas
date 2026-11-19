@@ -39,6 +39,10 @@ const {
   initializeCompetitorGroupsStorage,
   registerCompetitorGroupRoutes
 } = require('./CompetitorGroups');
+const {
+  registerMarketSummaryRoutes,
+  invalidateMarketSummaryCache
+} = require('./MarketSummary');
 
 const extensionPool = getDatabasePool();
 
@@ -77,10 +81,18 @@ if (!express.application[SCAN_STATUS_BRIDGE]) {
     if (options?.cascade !== false && typeof invalidatePlayOverviewCache === 'function') {
       invalidatePlayOverviewCache({ cascade: false });
     }
+    if (typeof invalidateMarketSummaryCache === 'function') {
+      invalidateMarketSummaryCache();
+    }
   }
 
   if (typeof registerPlayCacheInvalidator === 'function') {
-    registerPlayCacheInvalidator(() => invalidateDirectoryCache({ cascade: false }));
+    registerPlayCacheInvalidator(() => {
+      invalidateDirectoryCache({ cascade: false });
+      if (typeof invalidateMarketSummaryCache === 'function') {
+        invalidateMarketSummaryCache();
+      }
+    });
   }
   if (typeof registerTelemetryCacheInvalidator === 'function') {
     registerTelemetryCacheInvalidator(() => invalidateDirectoryCache());
@@ -424,6 +436,7 @@ express.application.listen = function atlasExtensionListen(...args) {
     registerAmazonRoutes({ app: this, pool: extensionPool });
     registerPlayStoreRoutes({ app: this, pool: extensionPool });
     registerCompetitorGroupRoutes({ app: this, pool: extensionPool });
+    registerMarketSummaryRoutes({ app: this, pool: extensionPool });
   }
   void initialize();
   return originalListen.apply(this, args);

@@ -10,9 +10,10 @@ import { getCachedCatalogue, getMemoryCatalogue, setCachedCatalogue } from "./li
 import { AtlasFeedback } from "./AtlasFeedback.jsx";
 
 const AmazonIntelligenceView = lazy(() => import("./AmazonIntelligenceView.jsx"));
+const MarketSummaryView = lazy(() => import("./MarketSummaryView.jsx"));
 
 // Atlas Build Marker: forces new content hash for cache busting
-export const ATLAS_BUILD_REV = "2026.11.19-authentic-ui-system";
+export const ATLAS_BUILD_REV = "2026.11.19-summary-v1";
 
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {
@@ -2967,6 +2968,7 @@ function App() {
 
         <nav className="flex-1 overflow-y-auto custom-scrollbar p-2 flex flex-col gap-1">
           {[
+            { id: "summary", icon: "monitoring", label: "Summary" },
             { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
             { id: "automated", icon: "track_changes", label: "Targets" }
@@ -3910,6 +3912,27 @@ function App() {
             </div>
           )}
 
+          {/* SUMMARY MARKET PULSE TAB */}
+          {activeTab === "summary" && (
+            <Suspense
+              fallback={
+                <div className="py-16 text-center text-xs text-text-muted flex items-center justify-center gap-2">
+                  <AtlasIcon name="progress_activity" size={16} className="animate-spin" />
+                  <span>Loading Summary...</span>
+                </div>
+              }
+            >
+              <MarketSummaryView
+                onOpenCountryScan={(pkg) => handleViewSavedCountryScan(pkg)}
+                onSearchInPlayStore={(query) => {
+                  setPlayStoreSearchQuery(query);
+                  setActiveTab("playStore");
+                }}
+                isAdmin={isAdmin}
+              />
+            </Suspense>
+          )}
+
           {/* PLAY STORE INTELLIGENCE TAB */}
           {activeTab === "playStore" && (
             <PlayStoreIntelligenceView
@@ -3942,6 +3965,7 @@ function App() {
       <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-surface-solid/95 backdrop-blur-md border-t border-border-subtle px-2 pb-[env(safe-area-inset-bottom)]">
         <div className="h-16 flex items-center justify-around">
           {[
+            { id: "summary", icon: "monitoring", label: "Summary" },
             { id: "playStore", customIcon: GooglePlayIcon, label: "Play Store" },
             { id: "amazon", customIcon: AmazonAppstoreIcon, label: "Amazon" },
             { id: "automated", icon: "track_changes", label: "Targets" },
