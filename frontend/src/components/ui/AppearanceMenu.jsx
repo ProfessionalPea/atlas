@@ -12,8 +12,8 @@ const THEME_OPTIONS = [
   {
     id: "light-warm",
     label: "Light — Warm Paper",
-    swatchBg: "#F7F6F3",
-    swatchBorder: "#CFCAC0"
+    swatchBg: "#F4EFE6",
+    swatchBorder: "#C7BCAB"
   },
   {
     id: "light-crisp",

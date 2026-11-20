@@ -9,17 +9,17 @@
      --------------------------------------------------------------------------- */
   :root,
   html[data-theme="light-warm"] {
-    --bg-base: 247 246 243;         /* #F7F6F3 */
-    --surface-solid: 255 255 255;   /* #FFFFFF */
-    --surface-glass: 251 250 247;   /* #FBFAF7 */
-    --input-bg: 240 238 233;        /* #F0EEE9 */
+    --bg-base: 244 239 230;         /* #F4EFE6 */
+    --surface-solid: 253 251 247;   /* #FDFBF7 */
+    --surface-glass: 249 245 238;   /* #F9F5EE */
+    --input-bg: 236 229 218;        /* #ECE5DA */
 
-    --text-main: 28 27 24;          /* #1C1B18 */
-    --text-muted: 99 96 90;         /* #63605A */
-    --border-subtle: 228 225 218;   /* #E4E1DA */
-    --border-strong: 207 202 192;   /* #CFCAC0 */
+    --text-main: 32 28 23;          /* #201C17 */
+    --text-muted: 100 92 81;        /* #645C51 */
+    --border-subtle: 222 213 199;   /* #DED5C7 */
+    --border-strong: 199 188 171;   /* #C7BCAB */
 
-    --sem-success: 4 120 87;        /* #047857 */
+    --sem-success: 4 108 78;        /* #046C4E */
     --sem-warning: 146 64 14;       /* #92400E */
     --sem-danger: 185 28 28;        /* #B91C1C */
 

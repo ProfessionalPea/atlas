@@ -42,6 +42,8 @@ const SAMPLE_LINKS = [
   "https://www.amazon.com/s?i=mobile-apps&rh=p_4%3AGaming%2BPills&search-type=ss"
 ];
 
+const AMAZON_PUB_COMPARISON_STORAGE_KEY = "atlas_amazon_publisher_comparison_open_v1";
+
 function formatRelativeTime(iso) {
   if (!iso) return "Never";
   const d = new Date(iso);
@@ -213,6 +215,24 @@ function AmazonIntelligenceView({ isAdmin = false }) {
   const [removingPublisherId, setRemovingPublisherId] = useState(null);
   const [copiedAsin, setCopiedAsin] = useState(null);
   const [showAllPublishers, setShowAllPublishers] = useState(false);
+  const [publisherComparisonOpen, setPublisherComparisonOpen] = useState(() => {
+    try {
+      return localStorage.getItem(AMAZON_PUB_COMPARISON_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const togglePublisherComparison = useCallback(() => {
+    setPublisherComparisonOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AMAZON_PUB_COMPARISON_STORAGE_KEY, String(next));
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  }, []);
   const [visibleRowCount, setVisibleRowCount] = useState(() => initialCacheSnap.ui.visibleRowCount ?? 150);
   const catalogSectionRef = useRef(null);
   const overviewLengthRef = useRef(
@@ -1878,18 +1898,47 @@ function AmazonIntelligenceView({ isAdmin = false }) {
         ]}
       />
 
-      {/* PUBLISHER COMPARISON */}
+      {/* PUBLISHER COMPARISON (COLLAPSIBLE) */}
       <div className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden flex flex-col">
-        <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border-subtle">
-          <div>
-            <h2 className="text-[15px] font-semibold text-text-main">Publisher Comparison</h2>
-            <p className="text-xs text-text-muted mt-0.5">
-              Click any publisher account, Free bar, or Paid bar to inspect its games below.
-              {dateWindow.active ? ` Showing games launched in: ${dateWindow.label}.` : ""}
-            </p>
-          </div>
+        <div
+          className={`px-4 py-3 flex flex-wrap items-center justify-between gap-2 ${
+            publisherComparisonOpen ? "border-b border-border-subtle" : ""
+          }`}
+        >
+          <button
+            type="button"
+            aria-expanded={publisherComparisonOpen}
+            onClick={togglePublisherComparison}
+            className="flex items-center gap-2.5 text-left min-w-0 flex-1 group cursor-pointer"
+          >
+            <AtlasIcon
+              name={publisherComparisonOpen ? "expand_less" : "expand_more"}
+              size={16}
+              className="text-text-muted group-hover:text-text-main shrink-0 transition-colors"
+            />
+            <span className="text-sm font-semibold text-text-main shrink-0">
+              Publisher Comparison
+            </span>
+            <span className="text-xs text-text-muted tabular-nums shrink-0">
+              {comparisonPublishers.length} accounts
+            </span>
+            {!publisherComparisonOpen &&
+              (selectedPublisher !== "all" || selectedPricing !== "all" || dateWindow.active) && (
+                <div className="hidden sm:flex items-center gap-1.5 min-w-0 flex-wrap pl-1">
+                  {selectedPublisher !== "all" && (
+                    <Badge tone="accent">{getDisplayName(selectedPublisher)}</Badge>
+                  )}
+                  {selectedPricing !== "all" && (
+                    <Badge tone={selectedPricing === "free" ? "success" : "warning"}>
+                      {selectedPricing === "free" ? "Free" : "Paid"}
+                    </Badge>
+                  )}
+                  {dateWindow.active && <Badge tone="neutral">{dateWindow.label}</Badge>}
+                </div>
+              )}
+          </button>
 
-          <div className="flex items-center gap-4 text-xs">
+          <div className="flex items-center gap-3 text-xs shrink-0">
             {(selectedPublisher !== "all" || selectedPricing !== "all" || durationPreset !== "all") && (
               <button
                 type="button"
@@ -1898,21 +1947,41 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                   setSelectedPricing("all");
                   setDurationPreset("all");
                 }}
-                className="text-link font-medium hover:underline"
+                className="text-link font-medium hover:underline cursor-pointer"
               >
                 Reset Filters
               </button>
             )}
-            <span className="inline-flex items-center gap-1.5 text-text-muted">
-              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 inline-block" /> Free
-            </span>
-            <span className="inline-flex items-center gap-1.5 text-text-muted">
-              <span className="w-2.5 h-2.5 rounded-sm bg-amber-600 inline-block" /> Paid
-            </span>
+            {publisherComparisonOpen && (
+              <>
+                <span className="inline-flex items-center gap-1.5 text-text-muted">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 inline-block" /> Free
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-text-muted">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-amber-600 inline-block" /> Paid
+                </span>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={togglePublisherComparison}
+              className="text-xs text-text-muted hover:text-text-main font-medium cursor-pointer hidden sm:inline"
+            >
+              {publisherComparisonOpen ? "Collapse" : "Expand"}
+            </button>
           </div>
         </div>
 
-        {comparisonPublishers.length === 0 ? (
+        {publisherComparisonOpen && (
+          <div className="px-4 py-2 bg-input-bg/25 border-b border-border-subtle text-xs text-text-muted">
+            Click any publisher account, Free bar, or Paid bar to inspect its games below.
+            {dateWindow.active ? ` Showing games launched in: ${dateWindow.label}.` : ""}
+          </div>
+        )}
+
+        {publisherComparisonOpen && (
+          <>
+            {comparisonPublishers.length === 0 ? (
           <div className="py-10 px-4 text-center text-xs text-text-muted flex flex-col items-center gap-3">
             <span>
               {visiblePublishers.length === 0
@@ -2137,6 +2206,8 @@ function AmazonIntelligenceView({ isAdmin = false }) {
                 : `Show all ${comparisonPublishers.length} accounts (+${comparisonPublishers.length - 12} more)`}
             </button>
           </div>
+        )}
+          </>
         )}
       </div>
 

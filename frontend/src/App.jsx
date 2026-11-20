@@ -13,7 +13,7 @@ const AmazonIntelligenceView = lazy(() => import("./AmazonIntelligenceView.jsx")
 const MarketSummaryView = lazy(() => import("./MarketSummaryView.jsx"));
 
 // Atlas Build Marker: forces new content hash for cache busting
-export const ATLAS_BUILD_REV = "2026.11.19-summary-v1";
+export const ATLAS_BUILD_REV = "2026.11.20-calm-ui-v1";
 
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {
@@ -675,10 +675,6 @@ function App() {
   const [countryScanLibrary, setCountryScanLibrary] = useState(() => initialDashCache?.countryScanLibrary || []);
   const [countryLibrarySearch, setCountryLibrarySearch] = useState("");
   const deferredCountryLibrarySearch = useDeferredValue(countryLibrarySearch);
-
-  const [activeStatPanel, setActiveStatPanel] = useState(null);
-  const [statPanelSearch, setStatPanelSearch] = useState("");
-  const deferredStatPanelSearch = useDeferredValue(statPanelSearch);
   const [scanProgress, setScanProgress] = useState({
     target: "",
     currentAd: 0,
@@ -863,23 +859,6 @@ function App() {
       localStorage.setItem("atlas_accent", accent);
     } catch {}
   }, [theme, accent]);
-
-  useEffect(() => {
-    if (!activeStatPanel) return;
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-
-    const handleKeyDown = (event) => {
-      if (event.key === "Escape") setActiveStatPanel(null);
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [activeStatPanel]);
 
   const hasFreshDashLoadRef = useRef(false);
 
@@ -1520,77 +1499,6 @@ function App() {
       games: visibleTrending.length
     };
   }, [stats, viewMode, visibleCompetitorTree, visibleTrending]);
-
-  const statCompetitors = useMemo(() => {
-    if (activeStatPanel !== "competitors") return [];
-    return visibleCompetitorTree.map((comp) => {
-      const accounts = comp.accounts || [];
-      const games = accounts.flatMap((acc) => acc.games || []);
-
-      return {
-        ...comp,
-        publisherCount: accounts.length,
-        gameCount: games.length,
-        totalInstalls: games.reduce((sum, game) => sum + getInstallCount(game), 0),
-      };
-    }).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  }, [activeStatPanel, visibleCompetitorTree]);
-
-  const statPublishers = useMemo(() => {
-    if (activeStatPanel !== "publishers") return [];
-    const publishers = [];
-
-    visibleCompetitorTree.forEach((comp) => {
-      (comp.accounts || []).forEach((account) => {
-        const games = account.games || [];
-        publishers.push({
-          ...account,
-          competitorName: comp.name,
-          competitorId: comp.id,
-          totalGames: games.length,
-          totalInstalls: games.reduce((sum, game) => sum + getInstallCount(game), 0),
-        });
-      });
-    });
-
-    return publishers.sort((a, b) => (a.publisher_name || "").localeCompare(b.publisher_name || ""));
-  }, [activeStatPanel, visibleCompetitorTree]);
-
-  const statGames = useMemo(() => {
-    if (activeStatPanel !== "games") return [];
-    return [...visibleTrending].sort((a, b) =>
-      (a.title || "").localeCompare(b.title || "")
-    );
-  }, [activeStatPanel, visibleTrending]);
-
-  const filteredStatItems = useMemo(() => {
-    if (!activeStatPanel) return [];
-
-    const query = deferredStatPanelSearch.trim().toLowerCase();
-    let items = [];
-
-    if (activeStatPanel === "competitors") items = statCompetitors;
-    if (activeStatPanel === "publishers") items = statPublishers;
-    if (activeStatPanel === "games") items = statGames;
-
-    if (!query) return items;
-
-    return items.filter((item) => {
-      if (activeStatPanel === "competitors") {
-        return (item.name || "").toLowerCase().includes(query) ||
-          (item.ads_id || "").toLowerCase().includes(query);
-      }
-
-      if (activeStatPanel === "publishers") {
-        return (item.publisher_name || "").toLowerCase().includes(query) ||
-          (item.competitorName || "").toLowerCase().includes(query);
-      }
-
-      return (item.title || "").toLowerCase().includes(query) ||
-        (item.publisher_name || "").toLowerCase().includes(query) ||
-        (item.package_name || "").toLowerCase().includes(query);
-    });
-  }, [activeStatPanel, deferredStatPanelSearch, statCompetitors, statPublishers, statGames]);
 
   const globalSearchResults = useMemo(() => {
     const query = deferredGlobalSearchQuery.trim().toLowerCase();
@@ -2505,22 +2413,6 @@ function App() {
   }, []);
   const closeDrawer = useCallback(() => {
     setIsDrawerOpen(false);
-  }, []);
-  const openStatPanel = useCallback((panel) => {
-    setStatPanelSearch("");
-    setActiveStatPanel(panel);
-  }, []);
-  const closeStatPanel = useCallback(() => {
-    setActiveStatPanel(null);
-    setStatPanelSearch("");
-  }, []);
-  const openGameFromStatPanel = useCallback((game) => {
-    setActiveStatPanel(null);
-    setStatPanelSearch("");
-    setSelectedGameCountryScan(null);
-    setSelectedGameVideos([]);
-    setSelectedGame(game);
-    setIsDrawerOpen(true);
   }, []);
 
   const openPlayStoreFromSearch = useCallback((value) => {
@@ -3461,23 +3353,17 @@ function App() {
                   {
                     label: "Competitors",
                     value: displayStats.competitors,
-                    note: viewMode === "latest" ? "In latest scan" : "Tracked groups",
-                    badge: <AtlasIcon name="arrow_forward" size={13} className="text-text-muted" />,
-                    onClick: () => openStatPanel("competitors")
+                    note: viewMode === "latest" ? "In latest scan" : "Tracked groups"
                   },
                   {
                     label: "Publishers",
                     value: displayStats.accounts,
-                    note: viewMode === "latest" ? "In latest scan" : "Discovered accounts",
-                    badge: <AtlasIcon name="arrow_forward" size={13} className="text-text-muted" />,
-                    onClick: () => openStatPanel("publishers")
+                    note: viewMode === "latest" ? "In latest scan" : "Discovered accounts"
                   },
                   {
                     label: "Games",
                     value: displayStats.games,
-                    note: viewMode === "latest" ? "In latest scan" : "Unique titles",
-                    badge: <AtlasIcon name="arrow_forward" size={13} className="text-text-muted" />,
-                    onClick: () => openStatPanel("games")
+                    note: viewMode === "latest" ? "In latest scan" : "Unique titles"
                   }
                 ]}
               />
@@ -3993,179 +3879,6 @@ function App() {
           ))}
         </div>
       </nav>
-
-      {/* EXPANDABLE DASHBOARD STAT LISTS */}
-      <AnimatePresence>
-        {activeStatPanel && (() => {
-          const meta = {
-            competitors: {
-              title: "Competitors",
-              subtitle: "Tracked competitor groups",
-              icon: "corporate_fare",
-              total: statCompetitors.length,
-              placeholder: "Search competitors or advertiser IDs...",
-            },
-            publishers: {
-              title: "Publishers",
-              subtitle: "Publisher accounts discovered across groups",
-              icon: "account_box",
-              total: statPublishers.length,
-              placeholder: "Search publishers or competitor groups...",
-            },
-            games: {
-              title: "Games",
-              subtitle: "Unique games discovered by Atlas",
-              icon: "sports_esports",
-              total: statGames.length,
-              placeholder: "Search games, publishers, or package names...",
-            },
-          }[activeStatPanel];
-
-          return (
-            <div className="fixed inset-0 z-[115] flex items-center justify-center p-3 sm:p-5">
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.16 }}
-                onClick={closeStatPanel}
-                className="absolute inset-0 bg-black/60"
-              />
-
-              <motion.div
-                initial={{ opacity: 0, scale: 0.985, y: 8 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.985, y: 8 }}
-                transition={{ duration: 0.16, ease: "easeOut" }}
-                className="relative z-10 w-full max-w-4xl h-[82vh] md:h-[78vh] bg-surface-solid border border-border-subtle rounded-xl shadow-xl overflow-hidden flex flex-col will-change-transform"
-              >
-                <div className="p-4 sm:p-5 border-b border-border-subtle bg-surface-solid flex-shrink-0">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-lg bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0 text-text-muted">
-                        <AtlasIcon name={meta.icon} size={20} />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="text-lg font-semibold text-text-main tracking-tight">{meta.title}</h2>
-                          <Badge tone="neutral">{meta.total}</Badge>
-                          {viewMode === "latest" && <Badge tone="success">Latest scan</Badge>}
-                        </div>
-                        <p className="text-xs text-text-muted mt-0.5 truncate">{meta.subtitle}</p>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={closeStatPanel}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-input-bg text-text-muted hover:text-text-main transition-colors flex-shrink-0"
-                      aria-label={`Close ${meta.title} list`}
-                    >
-                      <AtlasIcon name="close" size={18} />
-                    </button>
-                  </div>
-
-                  <div className="mt-3.5 flex items-center gap-2 bg-input-bg border border-border-subtle rounded-lg px-3 h-9 focus-within:border-accent focus-within:bg-surface-solid transition-colors">
-                    <AtlasIcon name="search" size={15} className="text-text-muted" />
-                    <input
-                      autoFocus
-                      value={statPanelSearch}
-                      onChange={(event) => setStatPanelSearch(event.target.value)}
-                      placeholder={meta.placeholder}
-                      className="w-full bg-transparent text-text-main placeholder:text-text-muted/70 outline-none text-[13px]"
-                    />
-                    {statPanelSearch && (
-                      <button type="button" onClick={() => setStatPanelSearch("")} className="text-text-muted hover:text-text-main flex-shrink-0">
-                        <AtlasIcon name="close" size={15} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar divide-y divide-border-subtle bg-surface-solid">
-                  {filteredStatItems.length === 0 ? (
-                    <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-center text-text-muted px-6">
-                      <AtlasIcon name="search_off" size={28} className="opacity-45 mb-2" />
-                      <p className="text-[13px] font-semibold text-text-main">No matches found</p>
-                      <p className="text-xs mt-1">Try a different search term.</p>
-                    </div>
-                  ) : activeStatPanel === "competitors" ? (
-                    filteredStatItems.map((comp) => (
-                      <div key={`stat-comp-${comp.id ?? comp.name}`} className="flex items-center gap-3 px-4 py-3 hover:bg-input-bg/40 transition-colors">
-                        <div className="w-9 h-9 rounded-lg bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted flex-shrink-0">
-                          <AtlasIcon name="corporate_fare" size={17} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-[13px] font-semibold text-text-main truncate">{comp.name || "Unnamed Competitor"}</h3>
-                          <p className="font-mono text-xs text-text-muted truncate mt-0.5">{comp.ads_id || "No advertiser ID"}</p>
-                        </div>
-                        <div className="hidden sm:flex items-center gap-2 flex-shrink-0 text-xs text-text-muted tabular-nums">
-                          <span>{comp.publisherCount} pubs</span>
-                          <span>·</span>
-                          <span>{comp.gameCount} games</span>
-                        </div>
-                      </div>
-                    ))
-                  ) : activeStatPanel === "publishers" ? (
-                    filteredStatItems.map((publisher, index) => (
-                      <div key={`stat-pub-${publisher.competitorId}-${publisher.id ?? publisher.publisher_name}-${index}`} className="flex items-center gap-3 px-4 py-3 hover:bg-input-bg/40 transition-colors">
-                        <div className="w-9 h-9 rounded-lg bg-input-bg border border-border-subtle flex items-center justify-center text-text-muted flex-shrink-0">
-                          <AtlasIcon name="account_box" size={17} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-[13px] font-semibold text-text-main truncate">{publisher.publisher_name || "Unknown Publisher"}</h3>
-                          <p className="text-xs text-text-muted truncate mt-0.5">
-                            Group: <span className="text-text-main font-medium">{publisher.competitorName || "Unknown"}</span>
-                          </p>
-                        </div>
-                        <div className="hidden sm:flex items-center gap-2 flex-shrink-0 text-xs text-text-muted tabular-nums">
-                          <span>{publisher.totalGames} games</span>
-                          <span>·</span>
-                          <span>{formatInstalls(publisher.totalInstalls)}</span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    filteredStatItems.map((game) => (
-                      <button
-                        type="button"
-                        key={`stat-game-${getGameIdentity(game)}`}
-                        onClick={() => openGameFromStatPanel(game)}
-                        className="w-full text-left group flex items-center gap-3 px-4 py-3 hover:bg-input-bg/50 transition-colors"
-                      >
-                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-input-bg border border-border-subtle flex items-center justify-center flex-shrink-0 text-text-muted">
-                          {game.icon ? <img loading="lazy" decoding="async" src={game.icon} alt={game.title || "Game"} className="w-full h-full object-cover" /> : <AtlasIcon name="sports_esports" size={18} />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-[13px] font-semibold text-text-main truncate">{game.title || "Untitled Game"}</h3>
-                          <p className="text-xs text-text-muted truncate mt-0.5">{game.publisher_name || "Unknown Publisher"}</p>
-                          <p className="font-mono text-xs text-text-muted/80 truncate hidden md:block">{game.package_name}</p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                          {Number(game.ad_count) > 0 && (
-                            <Badge tone="accent">
-                              {viewMode === "latest" ? `+${game.ad_count} Ads` : `${game.ad_count} Detections`}
-                            </Badge>
-                          )}
-                          <div className="flex items-center gap-2 text-xs text-text-muted tabular-nums">
-                            {getInstallCount(game) > 0 && <span>{game.installs || formatInstalls(getInstallCount(game))}</span>}
-                            {getAgeText(getGameReleaseValue(game)) && <span>{getAgeText(getGameReleaseValue(game))}</span>}
-                          </div>
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
-
-                <div className="flex-shrink-0 px-4 py-2.5 border-t border-border-subtle bg-surface-glass flex items-center justify-between gap-3 text-xs text-text-muted">
-                  <span className="tabular-nums">Showing {filteredStatItems.length} of {meta.total}</span>
-                  {activeStatPanel === "games" && <span className="hidden sm:block">Click a game to open details</span>}
-                </div>
-              </motion.div>
-            </div>
-          );
-        })()}
-      </AnimatePresence>
 
       <AnimatePresence>
         {isDrawerOpen && selectedGame && (

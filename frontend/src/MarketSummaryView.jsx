@@ -7,8 +7,6 @@ import AtlasIcon from "./components/ui/AtlasIcon.jsx";
 import {
   Badge,
   EmptyState,
-  KpiStrip,
-  PageHeader,
   TableSkeleton
 } from "./components/ui/UiPrimitives.jsx";
 
@@ -32,17 +30,18 @@ const DATE_BASIS_OPTIONS = [
   { value: "first_seen_at", label: "Discovered in Atlas" }
 ];
 
-const SUB_TABS = [
-  { id: "trends", label: "Title Trends", icon: "trending_up" },
-  { id: "genres", label: "Genre Growth", icon: "layers" },
-  { id: "competitors", label: "Competitors", icon: "groups" },
-  { id: "newcomers", label: "Newcomers", icon: "sports_esports" }
+const SUMMARY_TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "trends", label: "Title Trends" },
+  { id: "genres", label: "Genre Growth" },
+  { id: "competitors", label: "Competitors" },
+  { id: "newcomers", label: "Newcomers" }
 ];
 
-const GENRE_SIGNAL_FILTERS = [
+const GENRE_SIGNAL_OPTIONS = [
   { value: "all", label: "All Signals" },
   { value: "hot_wave", label: "Hot Wave" },
-  { value: "rising_demand", label: "Rising" },
+  { value: "rising_demand", label: "Rising Demand" },
   { value: "opportunity", label: "Opportunity" },
   { value: "declining", label: "Declining" },
   { value: "crowded", label: "Crowded" }
@@ -89,10 +88,19 @@ function getGenreSignalMeta(signal) {
   }
 }
 
-function getCoverageBadgeMeta(status) {
-  if (status === "full") return { tone: "success", label: "Full baseline" };
-  if (status === "partial") return { tone: "warning", label: "Partial baseline" };
-  return { tone: "neutral", label: "Growing history" };
+function getSignalActionLabel(targetTab) {
+  switch (targetTab) {
+    case "trends":
+      return "View matching titles";
+    case "genres":
+      return "View genre analysis";
+    case "competitors":
+      return "View competitor activity";
+    case "newcomers":
+      return "View newcomers";
+    default:
+      return "Inspect details";
+  }
 }
 
 function loadStoredExcludedPhrases() {
@@ -191,7 +199,7 @@ function EvidenceGameCard({ game, onSelect, metricNote = null }) {
           </div>
         )}
         <div className="min-w-0">
-          <div className="text-xs font-medium text-text-main truncate group-hover:text-accent transition-colors">
+          <div className="text-xs font-medium text-text-main truncate group-hover:text-link transition-colors">
             {game.title || game.package_name}
           </div>
           <div className="text-[11px] text-text-muted truncate">
@@ -228,23 +236,43 @@ export default function MarketSummaryView({
   const [error, setError] = useState(null);
   const [fetchNonce, setFetchNonce] = useState(0);
 
-  const [activeSubTab, setActiveSubTab] = useState("trends");
-  const [trendMode, setTrendMode] = useState("emerging"); // 'emerging' | 'repeated'
+  const [activeSubTab, setActiveSubTab] = useState("overview");
+
+  // Popover controls
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+  const [coverageOpen, setCoverageOpen] = useState(false);
+  const [showHiddenPopover, setShowHiddenPopover] = useState(false);
+
+  // Overview state
+  const [showAllSignals, setShowAllSignals] = useState(false);
+  const [expandedSignalIds, setExpandedSignalIds] = useState(() => new Set());
+
+  // Title Trends state
+  const [trendMode, setTrendMode] = useState("emerging");
   const [showSingleCompetitor, setShowSingleCompetitor] = useState(false);
   const [phraseQuery, setPhraseQuery] = useState("");
   const [excludedPhrases, setExcludedPhrases] = useState(loadStoredExcludedPhrases);
-  const [showHiddenPopover, setShowHiddenPopover] = useState(false);
   const [expandedTrendKey, setExpandedTrendKey] = useState(null);
 
-  const [genreMode, setGenreMode] = useState("primary"); // 'primary' | 'subgenres'
+  // Genre Growth state
+  const [genreMode, setGenreMode] = useState("primary");
   const [genreSignalFilter, setGenreSignalFilter] = useState("all");
   const [expandedGenreKey, setExpandedGenreKey] = useState(null);
 
+  // Competitors state
+  const [showAllShifts, setShowAllShifts] = useState(false);
+  const [expandedShiftKeys, setExpandedShiftKeys] = useState(() => new Set());
   const [expandedCompetitorKey, setExpandedCompetitorKey] = useState(null);
+
+  // Newcomers highlight state
   const [highlightedNewcomerPkg, setHighlightedNewcomerPkg] = useState(null);
 
   const [selectedGame, setSelectedGame] = useState(null);
+
   const freshNextRef = useRef(false);
+  const moreFiltersRef = useRef(null);
+  const coverageRef = useRef(null);
+  const hiddenPopoverRef = useRef(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -296,11 +324,58 @@ export default function MarketSummaryView({
     return () => controller.abort();
   }, [windowRange, appType, dateBasis, competitorId, fetchNonce]);
 
+  useEffect(() => {
+    if (!moreFiltersOpen && !coverageOpen && !showHiddenPopover) return;
+    function handleOutside(e) {
+      if (moreFiltersOpen && moreFiltersRef.current && !moreFiltersRef.current.contains(e.target)) {
+        setMoreFiltersOpen(false);
+      }
+      if (coverageOpen && coverageRef.current && !coverageRef.current.contains(e.target)) {
+        setCoverageOpen(false);
+      }
+      if (showHiddenPopover && hiddenPopoverRef.current && !hiddenPopoverRef.current.contains(e.target)) {
+        setShowHiddenPopover(false);
+      }
+    }
+    function handleKey(e) {
+      if (e.key === "Escape") {
+        setMoreFiltersOpen(false);
+        setCoverageOpen(false);
+        setShowHiddenPopover(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [moreFiltersOpen, coverageOpen, showHiddenPopover]);
+
   const handleFilterUpdate = useCallback((setter, nextVal) => {
     setError(null);
     setLoading(true);
     setter(nextVal);
   }, []);
+
+  const handleResetFilters = useCallback(() => {
+    const anyChanged =
+      windowRange !== "30d" ||
+      appType !== "all" ||
+      dateBasis !== "release_date" ||
+      competitorId !== "all";
+    if (!anyChanged) {
+      setMoreFiltersOpen(false);
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    setWindowRange("30d");
+    setAppType("all");
+    setDateBasis("release_date");
+    setCompetitorId("all");
+    setMoreFiltersOpen(false);
+  }, [windowRange, appType, dateBasis, competitorId]);
 
   const handleRefresh = useCallback(() => {
     freshNextRef.current = true;
@@ -321,8 +396,7 @@ export default function MarketSummaryView({
   const handleHidePhrase = useCallback(
     (phrase) => {
       const normalized = String(phrase || "").trim().toLowerCase();
-      if (!normalized) return;
-      if (excludedPhrases.includes(normalized)) return;
+      if (!normalized || excludedPhrases.includes(normalized)) return;
       persistExcluded([...excludedPhrases, normalized]);
       AtlasFeedback.toast(`Hidden "${phrase}" from Title Trends.`, { tone: "info" });
     },
@@ -340,6 +414,24 @@ export default function MarketSummaryView({
     persistExcluded([]);
     setShowHiddenPopover(false);
   }, [persistExcluded]);
+
+  const toggleSignalEvidence = useCallback((obsId) => {
+    setExpandedSignalIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(obsId)) next.delete(obsId);
+      else next.add(obsId);
+      return next;
+    });
+  }, []);
+
+  const toggleShiftEvidence = useCallback((shiftKey) => {
+    setExpandedShiftKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(shiftKey)) next.delete(shiftKey);
+      else next.add(shiftKey);
+      return next;
+    });
+  }, []);
 
   const competitorSelectGroups = useMemo(() => {
     const opts = data?.filterOptions || { groups: [], competitors: [] };
@@ -369,6 +461,18 @@ export default function MarketSummaryView({
     }
     return result;
   }, [data?.filterOptions]);
+
+  const selectedCompetitorLabel = useMemo(() => {
+    if (competitorId === "all") return null;
+    const opts = data?.filterOptions || { groups: [], competitors: [] };
+    if (competitorId.startsWith("group_")) {
+      const gid = Number(competitorId.slice(6));
+      const grp = (opts.groups || []).find((g) => Number(g.id) === gid);
+      return grp ? `Group: ${grp.name}` : competitorId;
+    }
+    const comp = (opts.competitors || []).find((c) => String(c.id) === String(competitorId));
+    return comp ? comp.name : competitorId;
+  }, [competitorId, data?.filterOptions]);
 
   const excludedSet = useMemo(() => new Set(excludedPhrases), [excludedPhrases]);
 
@@ -447,7 +551,7 @@ export default function MarketSummaryView({
     return list.filter((g) => g.signal === genreSignalFilter);
   }, [data?.genreGrowth, genreMode, genreSignalFilter]);
 
-  const handleObservationSelect = useCallback((obs) => {
+  const handleObservationNavigate = useCallback((obs) => {
     if (!obs?.targetTab) return;
     setActiveSubTab(obs.targetTab);
     if (obs.targetTab === "trends") {
@@ -464,75 +568,21 @@ export default function MarketSummaryView({
     }
   }, []);
 
-  const kpiItems = useMemo(() => {
-    if (!data?.kpis) return [];
-    const k = data.kpis;
-    const m = data.meta || {};
-    const relTone =
-      k.releaseDeltaPct == null
-        ? "neutral"
-        : k.releaseDeltaPct >= 10
-        ? "success"
-        : k.releaseDeltaPct <= -15
-        ? "danger"
-        : "neutral";
-    const velTone =
-      k.installVelocityDeltaPct == null
-        ? "neutral"
-        : k.installVelocityDeltaPct >= 10
-        ? "success"
-        : k.installVelocityDeltaPct <= -10
-        ? "danger"
-        : "neutral";
-
-    return [
-      {
-        key: "releases",
-        label: "New Releases",
-        value: Number(k.newReleasesCount || 0).toLocaleString(),
-        badge:
-          k.releaseDeltaPct != null ? (
-            <Badge tone={relTone}>
-              {k.releaseDeltaPct > 0 ? `+${k.releaseDeltaPct}%` : `${k.releaseDeltaPct}%`}
-            </Badge>
-          ) : null,
-        note: `${Number(k.prevReleasesCount || 0).toLocaleString()} in prior ${m.windowDays || 30}d`
-      },
-      {
-        key: "installGrowth",
-        label: "Tracked Install Growth",
-        value: formatSignedCompact(k.trackedInstallGrowth || 0),
-        badge: (
-          <Badge tone={velTone}>
-            {k.installVelocityDeltaPct != null
-              ? `${k.installVelocityDeltaPct > 0 ? `+${k.installVelocityDeltaPct}%` : `${k.installVelocityDeltaPct}%`} pace`
-              : "Baseline building"}
-          </Badge>
-        ),
-        note: `${Number(m.activeSnapshotBackedGames || 0).toLocaleString()} multi-scan titles`
-      },
-      {
-        key: "trends",
-        label: "Emerging Title Trends",
-        value: Number(k.emergingPhrasesCount || 0).toLocaleString(),
-        note: `Across up to ${Number(k.emergingCompetitorsSpread || 0)} competitors`,
-        onClick: () => setActiveSubTab("trends")
-      },
-      {
-        key: "newcomers",
-        label: "Breakout Newcomers",
-        value: Number(k.breakoutNewcomersCount || 0).toLocaleString(),
-        note: `Of ${Number(k.totalNewcomersEvaluated || 0).toLocaleString()} recent launches`,
-        onClick: () => setActiveSubTab("newcomers")
-      }
-    ];
-  }, [data]);
+  const secondaryFilterCount =
+    (dateBasis !== "release_date" ? 1 : 0) + (competitorId !== "all" ? 1 : 0);
+  const anyNonDefaultFilter =
+    secondaryFilterCount > 0 || windowRange !== "30d" || appType !== "all";
 
   const meta = data?.meta;
   const coverage = meta?.coverage;
-  const coverageBadge = getCoverageBadgeMeta(coverage?.comparisonStatus);
+  const k = data?.kpis;
+  const observations = data?.observations || [];
+  const visibleSignals = showAllSignals ? observations : observations.slice(0, 3);
+  const shifts = data?.competitorActivity?.strategyShifts || [];
+  const visibleShifts = showAllShifts ? shifts : shifts.slice(0, 3);
 
-  const subTabCounts = {
+  const tabCounts = {
+    overview: null,
     trends: filteredTrends.length,
     genres: filteredGenres.length,
     competitors: data?.competitorActivity?.activeCompetitorsCount ?? 0,
@@ -541,52 +591,81 @@ export default function MarketSummaryView({
 
   return (
     <div className="atlas-tab-swap flex flex-col gap-5 pb-12">
-      <PageHeader
-        title="Summary"
-        subtitle={
-          meta
-            ? `Tracked Play Store catalogue signals across ${Number(
-                meta.trackedCatalogCount || 0
-              ).toLocaleString()} titles (${meta.windowStart} to ${meta.windowEnd}).`
-            : "Market movement across Atlas's tracked Play Store catalogue."
-        }
-        badge={
-          coverage ? (
-            <Badge tone={coverageBadge.tone} title={coverage.comparisonNote}>
-              <AtlasIcon
-                name={
-                  coverage.comparisonStatus === "full"
-                    ? "check_circle"
-                    : coverage.comparisonStatus === "partial"
-                    ? "warning"
-                    : "info"
-                }
-                size={12}
-              />
-              {coverageBadge.label}
-            </Badge>
-          ) : null
-        }
-        actions={
-          <button
-            type="button"
-            disabled={refreshing}
-            onClick={handleRefresh}
-            className="h-9 px-3.5 rounded-lg bg-surface-solid border border-border-subtle hover:bg-input-bg text-text-main text-xs font-medium transition-colors inline-flex items-center gap-1.5 disabled:opacity-60 cursor-pointer"
-          >
-            <AtlasIcon
-              name="refresh"
-              size={14}
-              className={`text-text-muted ${refreshing ? "animate-spin" : ""}`}
-            />
-            <span>{refreshing ? "Refreshing..." : "Refresh"}</span>
-          </button>
-        }
-      />
+      {/* CALM HEADER & PROGRESSIVE FILTERS */}
+      <header className="flex flex-col lg:flex-row lg:items-end justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="text-[20px] sm:text-[22px] font-semibold tracking-[-0.02em] text-text-main">
+              Summary
+            </h1>
 
-      {/* Inline Filter Bar */}
-      <div className="bg-surface-solid border border-border-subtle rounded-xl p-2.5 flex flex-wrap items-center justify-between gap-2.5">
-        <div className="flex flex-wrap items-center gap-2">
+            {coverage && (
+              <div className="relative" ref={coverageRef}>
+                <button
+                  type="button"
+                  onClick={() => setCoverageOpen((v) => !v)}
+                  title={coverage.comparisonNote}
+                  aria-expanded={coverageOpen}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs text-text-muted hover:text-text-main hover:bg-input-bg/70 transition-colors cursor-pointer"
+                >
+                  <AtlasIcon name="info" size={13} />
+                  <span className="tabular-nums">
+                    {coverage.comparisonStatus === "full"
+                      ? "Full baseline"
+                      : `${coverage.totalSnapshotDays || 0}d history`}
+                  </span>
+                </button>
+
+                {coverageOpen && (
+                  <div className="atlas-popover-in absolute left-0 mt-1.5 w-80 max-w-[calc(100vw-2rem)] bg-surface-solid border border-border-subtle rounded-xl shadow-lg p-3.5 z-40 text-xs flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-text-main">
+                        Tracked Catalogue Coverage
+                      </span>
+                      <Badge
+                        tone={
+                          coverage.comparisonStatus === "full"
+                            ? "success"
+                            : coverage.comparisonStatus === "partial"
+                            ? "warning"
+                            : "neutral"
+                        }
+                      >
+                        {coverage.comparisonStatus === "full"
+                          ? "Full baseline"
+                          : coverage.comparisonStatus === "partial"
+                          ? "Partial"
+                          : "Building history"}
+                      </Badge>
+                    </div>
+                    <p className="text-text-muted leading-relaxed">
+                      {coverage.comparisonNote}
+                    </p>
+                    <div className="pt-2 border-t border-border-subtle text-[11px] text-text-muted tabular-nums flex items-center justify-between gap-2">
+                      <span>{Number(meta?.trackedCatalogCount || 0).toLocaleString()} titles tracked</span>
+                      <span>
+                        {meta?.windowStart} to {meta?.windowEnd}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {loading && data && (
+              <span className="inline-flex items-center gap-1 text-xs text-text-muted">
+                <AtlasIcon name="progress_activity" size={13} className="animate-spin" />
+                <span>Updating</span>
+              </span>
+            )}
+          </div>
+          <p className="text-[13px] text-text-muted mt-0.5">
+            Market intelligence across tracked titles
+          </p>
+        </div>
+
+        {/* Inline primary controls: Time Window, All/Games/Apps, More filters, Refresh */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <SegmentedPills
             ariaLabel="Time window"
             options={WINDOW_OPTIONS}
@@ -599,49 +678,125 @@ export default function MarketSummaryView({
             value={appType}
             onChange={(val) => handleFilterUpdate(setAppType, val)}
           />
-          <SegmentedPills
-            ariaLabel="Date basis"
-            options={DATE_BASIS_OPTIONS}
-            value={dateBasis}
-            onChange={(val) => handleFilterUpdate(setDateBasis, val)}
-          />
-        </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
-          {loading && data && (
-            <span className="inline-flex items-center gap-1.5 text-xs text-text-muted">
-              <AtlasIcon name="progress_activity" size={14} className="animate-spin" />
-              <span>Updating...</span>
-            </span>
-          )}
-          <AtlasSelect
-            value={competitorId}
-            onChange={(val) => handleFilterUpdate(setCompetitorId, String(val))}
-            groups={competitorSelectGroups}
-            icon="groups"
-            ariaLabel="Filter by competitor or group"
-            placeholder="All Competitors"
-            searchPlaceholder="Search competitors or groups..."
-            align="right"
-            buttonClassName="min-w-[180px]"
-          />
-        </div>
-      </div>
-
-      {meta && dateBasis === "release_date" && meta.missingLaunchDateCount > 0 && (
-        <div className="text-xs text-text-muted -mt-2.5 px-1 flex items-center gap-1.5">
-          <AtlasIcon name="info" size={13} className="shrink-0" />
-          <span>
-            {meta.missingLaunchDateCount.toLocaleString()} tracked titles are missing a Play launch date; switch to{" "}
+          <div className="relative" ref={moreFiltersRef}>
             <button
               type="button"
-              onClick={() => handleFilterUpdate(setDateBasis, "first_seen_at")}
-              className="text-accent hover:underline font-medium cursor-pointer"
+              aria-expanded={moreFiltersOpen}
+              onClick={() => setMoreFiltersOpen((v) => !v)}
+              className={`h-8 px-3 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                secondaryFilterCount > 0 || moreFiltersOpen
+                  ? "bg-primary-container text-on-primary-container border-border-subtle"
+                  : "bg-surface-solid border-border-subtle text-text-muted hover:text-text-main hover:bg-input-bg/60"
+              }`}
             >
+              <AtlasIcon name="tune" size={14} />
+              <span>More filters</span>
+              {secondaryFilterCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-surface-solid text-text-main text-[11px] font-mono tabular-nums border border-border-subtle">
+                  {secondaryFilterCount}
+                </span>
+              )}
+            </button>
+
+            {moreFiltersOpen && (
+              <div className="atlas-popover-in absolute right-0 mt-1.5 w-80 max-w-[calc(100vw-2rem)] bg-surface-solid border border-border-subtle rounded-xl shadow-lg p-4 z-40 flex flex-col gap-3.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-text-main">Additional Filters</span>
+                  {anyNonDefaultFilter && (
+                    <button
+                      type="button"
+                      onClick={handleResetFilters}
+                      className="text-link hover:underline font-medium cursor-pointer"
+                    >
+                      Reset filters
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
+                    Date Basis
+                  </span>
+                  <SegmentedPills
+                    ariaLabel="Date basis"
+                    options={DATE_BASIS_OPTIONS}
+                    value={dateBasis}
+                    onChange={(val) => handleFilterUpdate(setDateBasis, val)}
+                  />
+                  {meta && dateBasis === "release_date" && meta.missingLaunchDateCount > 0 && (
+                    <p className="text-[11px] text-text-muted leading-snug pt-0.5">
+                      {meta.missingLaunchDateCount.toLocaleString()} tracked titles lack a Play launch date; switch to{" "}
+                      <button
+                        type="button"
+                        onClick={() => handleFilterUpdate(setDateBasis, "first_seen_at")}
+                        className="text-link hover:underline font-medium cursor-pointer"
+                      >
+                        Discovered in Atlas
+                      </button>{" "}
+                      to include them.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
+                    Competitor / Group Scope
+                  </span>
+                  <AtlasSelect
+                    value={competitorId}
+                    onChange={(val) => handleFilterUpdate(setCompetitorId, String(val))}
+                    groups={competitorSelectGroups}
+                    icon="groups"
+                    ariaLabel="Filter by competitor or group"
+                    placeholder="All Competitors"
+                    searchPlaceholder="Search competitors or groups..."
+                    align="right"
+                    buttonClassName="w-full"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            disabled={refreshing}
+            onClick={handleRefresh}
+            aria-label="Refresh summary data"
+            className="h-8 px-2.5 rounded-lg bg-surface-solid border border-border-subtle hover:bg-input-bg text-text-muted hover:text-text-main text-xs font-medium transition-colors inline-flex items-center gap-1.5 disabled:opacity-60 cursor-pointer"
+          >
+            <AtlasIcon
+              name="refresh"
+              size={14}
+              className={refreshing ? "animate-spin" : ""}
+            />
+            <span className="hidden sm:inline">{refreshing ? "Refreshing" : "Refresh"}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Subtle Active Secondary Filter Indicator */}
+      {secondaryFilterCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted -mt-2">
+          <span>Active filters:</span>
+          {dateBasis === "first_seen_at" && (
+            <span className="px-2 py-0.5 rounded-md bg-input-bg border border-border-subtle text-text-main">
               Discovered in Atlas
-            </button>{" "}
-            to inspect everything newly scanned into Atlas.
-          </span>
+            </span>
+          )}
+          {selectedCompetitorLabel && (
+            <span className="px-2 py-0.5 rounded-md bg-input-bg border border-border-subtle text-text-main">
+              {selectedCompetitorLabel}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleResetFilters}
+            className="text-link hover:underline font-medium cursor-pointer"
+          >
+            Reset filters
+          </button>
         </div>
       )}
 
@@ -649,7 +804,7 @@ export default function MarketSummaryView({
       {loading && !data ? (
         <div className="flex flex-col gap-4">
           <TableSkeleton rows={2} cols={4} />
-          <TableSkeleton rows={6} cols={5} />
+          <TableSkeleton rows={5} cols={4} />
         </div>
       ) : error && !data ? (
         <EmptyState
@@ -668,95 +823,213 @@ export default function MarketSummaryView({
         />
       ) : data ? (
         <>
-          <KpiStrip items={kpiItems} />
-
-          {/* Market Observations */}
-          {Array.isArray(data.observations) && data.observations.length > 0 && (
-            <section className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <AtlasIcon name="monitoring" size={16} className="text-text-muted shrink-0" />
-                  <h2 className="text-sm font-semibold text-text-main truncate">
-                    Market Observations
-                  </h2>
-                </div>
-                <span className="text-xs text-text-muted hidden sm:inline">
-                  Click a signal to inspect supporting titles
-                </span>
-              </div>
-
-              <div className="divide-y divide-border-subtle">
-                {data.observations.map((obs) => (
-                  <div
-                    key={obs.id}
-                    className="px-4 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3 hover:bg-input-bg/35 transition-colors"
-                  >
-                    <div className="min-w-0 flex-1 flex flex-col gap-1.5">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge tone={obs.badgeTone || "neutral"}>{obs.badge}</Badge>
-                        <span className="text-[13px] font-semibold text-text-main">
-                          {obs.subject}
-                        </span>
-                        <span className="text-xs text-text-muted">{obs.summary}</span>
-                      </div>
-
-                      {Array.isArray(obs.evidenceGames) && obs.evidenceGames.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                          {obs.evidenceGames.slice(0, 3).map((g) => (
-                            <GameChipButton
-                              key={g.package_name}
-                              game={g}
-                              onSelect={setSelectedGame}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleObservationSelect(obs)}
-                      className="h-8 px-3 rounded-lg bg-input-bg/70 hover:bg-input-bg border border-border-subtle text-xs font-medium text-text-main inline-flex items-center gap-1 shrink-0 self-start lg:self-center transition-colors cursor-pointer"
-                    >
-                      <span>Inspect</span>
-                      <AtlasIcon name="chevron_right" size={14} className="text-text-muted" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* 4 Sub-Tab Bar */}
-          <div className="flex items-center gap-1.5 border-b border-border-subtle pb-2 overflow-x-auto custom-scrollbar">
-            {SUB_TABS.map((tab) => {
+          {/* CLEAN UNDERLINE 5-TAB NAVIGATION (OVERVIEW DEFAULT) */}
+          <nav
+            aria-label="Summary analysis sections"
+            className="flex items-center gap-5 border-b border-border-subtle overflow-x-auto custom-scrollbar -mb-1"
+          >
+            {SUMMARY_TABS.map((tab) => {
               const active = activeSubTab === tab.id;
+              const count = tabCounts[tab.id];
               return (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveSubTab(tab.id)}
-                  className={`px-3.5 h-9 rounded-lg text-xs font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  className={`pb-2.5 pt-1 text-[13px] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5 border-b-2 cursor-pointer ${
                     active
-                      ? "bg-primary-container text-on-primary-container border border-border-subtle"
-                      : "text-text-muted hover:text-text-main hover:bg-input-bg/60 border border-transparent"
+                      ? "border-btn-primary text-text-main font-semibold"
+                      : "border-transparent text-text-muted hover:text-text-main font-medium"
                   }`}
                 >
-                  <AtlasIcon name={tab.icon} size={15} />
                   <span>{tab.label}</span>
-                  <span className="text-[11px] font-mono opacity-80 tabular-nums">
-                    {subTabCounts[tab.id]}
-                  </span>
+                  {count !== null && (
+                    <span className="text-[11px] font-mono text-text-muted tabular-nums">
+                      {count}
+                    </span>
+                  )}
                 </button>
               );
             })}
-          </div>
+          </nav>
+
+          {/* OVERVIEW DIGEST TAB (DEFAULT) */}
+          {activeSubTab === "overview" && (
+            <div className="flex flex-col gap-5">
+              {/* Compact Low-Emphasis 4-Metric Horizontal Strip */}
+              {k && (
+                <div className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 divide-y lg:divide-y-0 sm:divide-x divide-border-subtle">
+                    <div className="px-4 py-3 flex flex-col justify-between min-w-0">
+                      <span className="text-xs text-text-muted">New releases</span>
+                      <div className="mt-1 flex items-baseline gap-2 min-w-0">
+                        <span className="text-lg sm:text-[20px] font-semibold tracking-[-0.02em] text-text-main tabular-nums">
+                          {Number(k.newReleasesCount || 0).toLocaleString()}
+                        </span>
+                        <span className="text-xs text-text-muted tabular-nums truncate">
+                          {k.releaseDeltaPct != null
+                            ? `${k.releaseDeltaPct > 0 ? `+${k.releaseDeltaPct}%` : `${k.releaseDeltaPct}%`} vs prior`
+                            : `${Number(k.prevReleasesCount || 0).toLocaleString()} prior`}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="px-4 py-3 flex flex-col justify-between min-w-0">
+                      <span className="text-xs text-text-muted">Tracked install growth</span>
+                      <div className="mt-1 flex items-baseline gap-2 min-w-0">
+                        <span className="text-lg sm:text-[20px] font-semibold tracking-[-0.02em] text-text-main tabular-nums">
+                          {formatSignedCompact(k.trackedInstallGrowth || 0)}
+                        </span>
+                        <span className="text-xs text-text-muted tabular-nums truncate">
+                          {k.installVelocityDeltaPct != null
+                            ? `${k.installVelocityDeltaPct > 0 ? `+${k.installVelocityDeltaPct}%` : `${k.installVelocityDeltaPct}%`} pace`
+                            : `${Number(meta?.activeSnapshotBackedGames || 0).toLocaleString()} tracked`}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveSubTab("trends")}
+                      className="px-4 py-3 text-left flex flex-col justify-between min-w-0 hover:bg-input-bg/45 transition-colors cursor-pointer"
+                    >
+                      <span className="text-xs text-text-muted">Title trends</span>
+                      <div className="mt-1 flex items-baseline gap-2 min-w-0">
+                        <span className="text-lg sm:text-[20px] font-semibold tracking-[-0.02em] text-text-main tabular-nums">
+                          {Number(k.emergingPhrasesCount || 0).toLocaleString()}
+                        </span>
+                        <span className="text-xs text-text-muted tabular-nums truncate">
+                          Up to {Number(k.emergingCompetitorsSpread || 0)} comps
+                        </span>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveSubTab("newcomers")}
+                      className="px-4 py-3 text-left flex flex-col justify-between min-w-0 hover:bg-input-bg/45 transition-colors cursor-pointer"
+                    >
+                      <span className="text-xs text-text-muted">Breakout newcomers</span>
+                      <div className="mt-1 flex items-baseline gap-2 min-w-0">
+                        <span className="text-lg sm:text-[20px] font-semibold tracking-[-0.02em] text-text-main tabular-nums">
+                          {Number(k.breakoutNewcomersCount || 0).toLocaleString()}
+                        </span>
+                        <span className="text-xs text-text-muted tabular-nums truncate">
+                          Of {Number(k.totalNewcomersEvaluated || 0).toLocaleString()} launches
+                        </span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Key Signals (Top 3 highlighted by default; View all toggle) */}
+              <section className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-2">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <h2 className="text-sm font-semibold text-text-main">Key signals</h2>
+                    <span className="text-xs text-text-muted tabular-nums">
+                      {showAllSignals || observations.length <= 3
+                        ? `${observations.length} detected`
+                        : "3 highlighted"}
+                    </span>
+                  </div>
+
+                  {observations.length > 3 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllSignals((v) => !v)}
+                      className="text-xs font-medium text-link hover:underline cursor-pointer shrink-0"
+                    >
+                      {showAllSignals ? "Show top 3" : `View all (${observations.length})`}
+                    </button>
+                  )}
+                </div>
+
+                {visibleSignals.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-xs text-text-muted">
+                    No standout market shifts detected in this window. Try expanding the date range or clearing filters.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border-subtle">
+                    {visibleSignals.map((obs) => {
+                      const evidenceList = Array.isArray(obs.evidenceGames) ? obs.evidenceGames : [];
+                      const isEvidenceExpanded = expandedSignalIds.has(obs.id);
+                      return (
+                        <div
+                          key={obs.id}
+                          className="px-4 py-4 flex flex-col gap-2.5"
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-semibold text-text-main">
+                                  {obs.subject}
+                                </span>
+                                <Badge tone={obs.badgeTone || "neutral"}>{obs.badge}</Badge>
+                              </div>
+                              <p className="text-[13px] text-text-muted mt-1 leading-relaxed">
+                                {obs.summary}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-xs">
+                            <div>
+                              {evidenceList.length > 0 && (
+                                <button
+                                  type="button"
+                                  aria-expanded={isEvidenceExpanded}
+                                  onClick={() => toggleSignalEvidence(obs.id)}
+                                  className="inline-flex items-center gap-1 text-text-muted hover:text-text-main font-medium transition-colors cursor-pointer"
+                                >
+                                  <AtlasIcon
+                                    name={isEvidenceExpanded ? "expand_less" : "expand_more"}
+                                    size={14}
+                                  />
+                                  <span className="tabular-nums">
+                                    {evidenceList.length}{" "}
+                                    {evidenceList.length === 1 ? "supporting title" : "supporting titles"}
+                                  </span>
+                                </button>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleObservationNavigate(obs)}
+                              className="inline-flex items-center gap-1 font-medium text-link hover:underline cursor-pointer"
+                            >
+                              <span>{getSignalActionLabel(obs.targetTab)}</span>
+                              <AtlasIcon name="arrow_forward" size={13} />
+                            </button>
+                          </div>
+
+                          {isEvidenceExpanded && evidenceList.length > 0 && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 pt-1">
+                              {evidenceList.map((g) => (
+                                <EvidenceGameCard
+                                  key={g.package_name}
+                                  game={g}
+                                  onSelect={setSelectedGame}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            </div>
+          )}
 
           {/* SUB-TAB 1: TITLE TRENDS */}
           {activeSubTab === "trends" && (
             <div className="flex flex-col gap-4">
-              <div className="bg-surface-solid border border-border-subtle rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5">
-                <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
                   <SegmentedPills
                     ariaLabel="Title trend ranking mode"
                     options={[
@@ -767,25 +1040,7 @@ export default function MarketSummaryView({
                     onChange={setTrendMode}
                   />
 
-                  <button
-                    type="button"
-                    aria-pressed={showSingleCompetitor}
-                    onClick={() => setShowSingleCompetitor((v) => !v)}
-                    className={`h-8 px-3 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
-                      showSingleCompetitor
-                        ? "bg-primary-container text-on-primary-container border-border-subtle"
-                        : "bg-input-bg/60 text-text-muted hover:text-text-main border-border-subtle"
-                    }`}
-                  >
-                    <AtlasIcon name="groups" size={14} />
-                    <span>
-                      Single-competitor clusters ({data.titleTrends?.singleCompetitor?.length || 0})
-                    </span>
-                  </button>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 flex-1 sm:flex-initial justify-end">
-                  <div className="relative min-w-[220px] flex-1 sm:w-64 sm:flex-initial">
+                  <div className="relative min-w-[200px] flex-1 sm:w-64 sm:flex-initial">
                     <AtlasIcon
                       name="search"
                       size={14}
@@ -797,7 +1052,7 @@ export default function MarketSummaryView({
                       onChange={(e) => setPhraseQuery(e.target.value)}
                       placeholder="Quick phrase or title lookup..."
                       aria-label="Quick phrase or title lookup"
-                      className="w-full h-8 pl-8 pr-7 rounded-lg bg-input-bg border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:border-accent"
+                      className="w-full h-8 pl-8 pr-7 rounded-lg bg-surface-solid border border-border-subtle text-xs text-text-main placeholder:text-text-muted focus:outline-none focus:border-accent"
                     />
                     {phraseQuery && (
                       <button
@@ -810,20 +1065,43 @@ export default function MarketSummaryView({
                       </button>
                     )}
                   </div>
+                </div>
+
+                {/* Quiet Secondary Controls */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    aria-pressed={showSingleCompetitor}
+                    onClick={() => setShowSingleCompetitor((v) => !v)}
+                    className={`h-8 px-2.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                      showSingleCompetitor
+                        ? "bg-primary-container text-on-primary-container border-border-subtle"
+                        : "bg-surface-solid text-text-muted hover:text-text-main border-border-subtle"
+                    }`}
+                    title="Toggle single-competitor repetitive clusters"
+                  >
+                    <AtlasIcon name="groups" size={14} />
+                    <span className="tabular-nums">
+                      Single-comp ({data.titleTrends?.singleCompetitor?.length || 0})
+                    </span>
+                  </button>
 
                   {excludedPhrases.length > 0 && (
-                    <div className="relative">
+                    <div className="relative" ref={hiddenPopoverRef}>
                       <button
                         type="button"
+                        aria-expanded={showHiddenPopover}
                         onClick={() => setShowHiddenPopover((v) => !v)}
-                        className="h-8 px-2.5 rounded-lg bg-input-bg border border-border-subtle text-xs font-medium text-text-muted hover:text-text-main inline-flex items-center gap-1.5 cursor-pointer"
+                        title="Manage hidden phrases"
+                        aria-label={`Manage ${excludedPhrases.length} hidden phrases`}
+                        className="h-8 px-2.5 rounded-lg bg-surface-solid border border-border-subtle text-xs font-medium text-text-muted hover:text-text-main inline-flex items-center gap-1.5 cursor-pointer"
                       >
-                        <AtlasIcon name="visibility" size={14} />
-                        <span>Hidden ({excludedPhrases.length})</span>
+                        <AtlasIcon name="visibility_off" size={14} />
+                        <span className="tabular-nums">{excludedPhrases.length}</span>
                       </button>
 
                       {showHiddenPopover && (
-                        <div className="absolute right-0 mt-1.5 w-72 bg-surface-solid border border-border-subtle rounded-xl shadow-lg p-3 z-30 flex flex-col gap-2">
+                        <div className="atlas-popover-in absolute right-0 mt-1.5 w-72 max-w-[calc(100vw-2rem)] bg-surface-solid border border-border-subtle rounded-xl shadow-lg p-3 z-30 flex flex-col gap-2">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-xs font-semibold text-text-main">
                               Hidden Phrases
@@ -831,7 +1109,7 @@ export default function MarketSummaryView({
                             <button
                               type="button"
                               onClick={handleClearExcluded}
-                              className="text-xs text-accent hover:underline cursor-pointer"
+                              className="text-xs text-link hover:underline cursor-pointer"
                             >
                               Restore all
                             </button>
@@ -885,7 +1163,7 @@ export default function MarketSummaryView({
                   <div className="overflow-x-auto custom-scrollbar">
                     <table className="w-full text-left border-collapse min-w-[760px]">
                       <thead>
-                        <tr className="border-b border-border-subtle bg-input-bg/40 text-xs font-medium text-text-muted">
+                        <tr className="border-b border-border-subtle bg-input-bg/35 text-xs font-medium text-text-muted">
                           <th className="py-2.5 px-4">Title Phrase</th>
                           <th className="py-2.5 px-3">Spread</th>
                           <th className="py-2.5 px-3">Matches</th>
@@ -905,7 +1183,7 @@ export default function MarketSummaryView({
                                   setExpandedTrendKey(isExpanded ? null : t.phrase)
                                 }
                                 className={`cursor-pointer transition-colors ${
-                                  isExpanded ? "bg-input-bg/45" : "hover:bg-input-bg/30"
+                                  isExpanded ? "bg-input-bg/40" : "hover:bg-input-bg/25"
                                 }`}
                               >
                                 <td className="py-3 px-4">
@@ -915,7 +1193,9 @@ export default function MarketSummaryView({
                                     </span>
                                     <Badge tone={statusMeta.tone}>{statusMeta.label}</Badge>
                                     {t.hasRepeatedVariations && (
-                                      <Badge tone="warning">Repeated variations</Badge>
+                                      <span className="text-[11px] text-sem-warning font-medium">
+                                        Repeated variations
+                                      </span>
                                     )}
                                   </div>
                                 </td>
@@ -924,7 +1204,7 @@ export default function MarketSummaryView({
                                     {t.distinctCompetitors} competitors
                                   </div>
                                   <div className="text-[11px] text-text-muted">
-                                    {t.distinctPublishers} publisher accounts
+                                    {t.distinctPublishers} accounts
                                   </div>
                                 </td>
                                 <td className="py-3 px-3 tabular-nums whitespace-nowrap">
@@ -932,15 +1212,15 @@ export default function MarketSummaryView({
                                     {t.matchingGamesCount} recent
                                   </div>
                                   <div className="text-[11px] text-text-muted">
-                                    {t.baselineGamesCount} prior baseline
+                                    {t.baselineGamesCount} prior
                                   </div>
                                 </td>
                                 <td className="py-3 px-3 tabular-nums whitespace-nowrap">
                                   <div className="text-text-main font-medium">
-                                    {t.last7dCount} in last 7d
+                                    {t.last7dCount} in 7d
                                   </div>
                                   <div className="text-[11px] text-text-muted">
-                                    vs {t.prev7dCount} prior 7d
+                                    vs {t.prev7dCount} prior
                                   </div>
                                 </td>
                                 <td className="py-3 px-3 tabular-nums whitespace-nowrap">
@@ -1000,9 +1280,12 @@ export default function MarketSummaryView({
                                       <div className="flex flex-wrap items-center justify-between gap-2">
                                         <div className="flex flex-wrap items-center gap-1.5">
                                           {(t.competitorBreakdown || []).map((c) => (
-                                            <Badge key={c.competitorName} tone="neutral">
+                                            <span
+                                              key={c.competitorName}
+                                              className="px-2 py-0.5 rounded-md bg-surface-solid border border-border-subtle text-xs text-text-main tabular-nums"
+                                            >
                                               {c.competitorName} ({c.titleCount})
-                                            </Badge>
+                                            </span>
                                           ))}
                                         </div>
                                         <div className="text-xs text-text-muted tabular-nums">
@@ -1056,34 +1339,28 @@ export default function MarketSummaryView({
                 </div>
               )}
 
-              {/* Optional Separate Single-Competitor Clusters Panel */}
               {showSingleCompetitor && filteredSingleComp.length > 0 && (
                 <section className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
-                  <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-2 bg-input-bg/35">
-                    <div>
-                      <h3 className="text-xs font-semibold text-text-main">
-                        Single-Competitor Repetitive Clusters
-                      </h3>
-                      <p className="text-[11px] text-text-muted mt-0.5">
-                        Terms repeated across multiple titles by a single competitor only (excluded from cross-market trends).
-                      </p>
-                    </div>
+                  <div className="px-4 py-3 border-b border-border-subtle bg-input-bg/30">
+                    <h3 className="text-xs font-semibold text-text-main">
+                      Single-Competitor Repetitive Clusters
+                    </h3>
+                    <p className="text-[11px] text-text-muted mt-0.5">
+                      Terms repeated across multiple titles by a single competitor only (excluded from cross-market trends).
+                    </p>
                   </div>
                   <div className="divide-y divide-border-subtle">
                     {filteredSingleComp.map((t) => (
-                      <div
-                        key={t.phrase}
-                        className="px-4 py-3 flex flex-col gap-2"
-                      >
+                      <div key={t.phrase} className="px-4 py-3 flex flex-col gap-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-xs font-semibold text-text-main">
                               &ldquo;{t.displayPhrase}&rdquo;
                             </span>
-                            <Badge tone="warning">
+                            <span className="text-xs text-text-muted tabular-nums">
                               {t.competitorBreakdown?.[0]?.competitorName || "1 competitor"} ·{" "}
                               {t.matchingGamesCount} titles
-                            </Badge>
+                            </span>
                           </div>
                           <button
                             type="button"
@@ -1109,7 +1386,6 @@ export default function MarketSummaryView({
                 </section>
               )}
 
-              {/* Direct Recent Title Lookup Results (catches 1-off emerging terms like Gugu Gaga before reaching 2+ count) */}
               {phraseQuery.trim().length >= 2 && (
                 <section className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-2">
@@ -1142,18 +1418,8 @@ export default function MarketSummaryView({
 
           {/* SUB-TAB 2: GENRE GROWTH */}
           {activeSubTab === "genres" && (
-            <div className="flex flex-col gap-4">
-              {coverage && coverage.comparisonStatus !== "full" && (
-                <div className="bg-surface-solid border border-border-subtle rounded-xl px-4 py-3 flex items-start gap-2.5 text-xs">
-                  <AtlasIcon name="info" size={15} className="text-text-muted shrink-0 mt-0.5" />
-                  <div className="text-text-muted">
-                    <span className="font-semibold text-text-main">Tracked-catalogue baseline note: </span>
-                    {coverage.comparisonNote} Period velocity change stays blank (&mdash;) for genres without matched multi-day scans in both windows.
-                  </div>
-                </div>
-              )}
-
-              <div className="bg-surface-solid border border-border-subtle rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex flex-col gap-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2.5">
                 <SegmentedPills
                   ariaLabel="Genre grouping mode"
                   options={[
@@ -1167,33 +1433,28 @@ export default function MarketSummaryView({
                   }}
                 />
 
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {GENRE_SIGNAL_FILTERS.map((sig) => {
-                    const active = genreSignalFilter === sig.value;
-                    return (
-                      <button
-                        key={sig.value}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() => setGenreSignalFilter(sig.value)}
-                        className={`h-7 px-2.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
-                          active
-                            ? "bg-primary-container text-on-primary-container border-border-subtle"
-                            : "bg-input-bg/60 text-text-muted hover:text-text-main border-border-subtle"
-                        }`}
-                      >
-                        {sig.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                <AtlasSelect
+                  value={genreSignalFilter}
+                  onChange={(val) => setGenreSignalFilter(String(val))}
+                  options={GENRE_SIGNAL_OPTIONS}
+                  searchable={false}
+                  ariaLabel="Filter genres by signal"
+                  align="right"
+                  buttonClassName="min-w-[160px]"
+                />
               </div>
+
+              {coverage && coverage.comparisonStatus !== "full" && (
+                <p className="text-xs text-text-muted px-0.5">
+                  {coverage.comparisonNote} Period velocity change stays blank (&mdash;) without multi-day scans in both windows.
+                </p>
+              )}
 
               {filteredGenres.length === 0 ? (
                 <EmptyState
                   icon="filter_alt_off"
                   title="No genres match this signal filter"
-                  description="Try switching back to All Signals or switching between Primary Genres and Sub-Genres."
+                  description="Switch back to All Signals or toggle between Primary Genres and Sub-Genres."
                   actions={
                     <button
                       type="button"
@@ -1209,7 +1470,7 @@ export default function MarketSummaryView({
                   <div className="overflow-x-auto custom-scrollbar">
                     <table className="w-full text-left border-collapse min-w-[860px]">
                       <thead>
-                        <tr className="border-b border-border-subtle bg-input-bg/40 text-xs font-medium text-text-muted">
+                        <tr className="border-b border-border-subtle bg-input-bg/35 text-xs font-medium text-text-muted">
                           <th className="py-2.5 px-4">Genre</th>
                           <th className="py-2.5 px-3 text-right">Tracked Install Gain</th>
                           <th className="py-2.5 px-3 text-right">Median / Game / Day</th>
@@ -1238,7 +1499,7 @@ export default function MarketSummaryView({
                                   setExpandedGenreKey(isExpanded ? null : g.genre)
                                 }
                                 className={`cursor-pointer transition-colors ${
-                                  isExpanded ? "bg-input-bg/45" : "hover:bg-input-bg/30"
+                                  isExpanded ? "bg-input-bg/40" : "hover:bg-input-bg/25"
                                 }`}
                               >
                                 <td className="py-3 px-4">
@@ -1362,67 +1623,97 @@ export default function MarketSummaryView({
           {/* SUB-TAB 3: COMPETITORS */}
           {activeSubTab === "competitors" && (
             <div className="flex flex-col gap-4">
-              {Array.isArray(data.competitorActivity?.strategyShifts) &&
-                data.competitorActivity.strategyShifts.length > 0 && (
-                  <section className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
-                    <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-text-main">
-                        Competitor Strategy Shifts
+              {shifts.length > 0 && (
+                <section className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-border-subtle flex items-center justify-between gap-2">
+                    <div className="flex items-baseline gap-2">
+                      <h3 className="text-xs font-semibold text-text-main">
+                        Strategy Shifts
                       </h3>
                       <span className="text-xs text-text-muted tabular-nums">
-                        {data.competitorActivity.strategyShifts.length} detected
+                        {showAllShifts || shifts.length <= 3
+                          ? `${shifts.length} detected`
+                          : `Top 3 of ${shifts.length}`}
                       </span>
                     </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:gap-px bg-border-subtle">
-                      {data.competitorActivity.strategyShifts.map((shift, idx) => {
-                        const shiftTone =
-                          shift.type === "cross_category"
-                            ? "warning"
-                            : shift.type === "new_genre"
-                            ? "accent"
-                            : "neutral";
-                        return (
-                          <div
-                            key={`${shift.competitorKey}:${shift.type}:${idx}`}
-                            className="bg-surface-solid p-3.5 flex flex-col gap-2"
-                          >
-                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                    {shifts.length > 3 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllShifts((v) => !v)}
+                        className="text-xs font-medium text-link hover:underline cursor-pointer"
+                      >
+                        {showAllShifts ? "Show top 3" : `View all (${shifts.length})`}
+                      </button>
+                    )}
+                  </div>
+                  <div className="divide-y divide-border-subtle">
+                    {visibleShifts.map((shift, idx) => {
+                      const shiftTone =
+                        shift.type === "cross_category"
+                          ? "warning"
+                          : shift.type === "new_genre"
+                          ? "accent"
+                          : "neutral";
+                      const shiftKey = `${shift.competitorKey}:${shift.type}:${idx}`;
+                      const shiftExpanded = expandedShiftKeys.has(shiftKey);
+                      const evidence = Array.isArray(shift.evidenceGames) ? shift.evidenceGames : [];
+                      return (
+                        <div key={shiftKey} className="px-4 py-3 flex flex-col gap-2">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-[13px] font-semibold text-text-main">
                                 {shift.competitorName}
                               </span>
                               <Badge tone={shiftTone}>{shift.badge}</Badge>
                             </div>
-                            <p className="text-xs text-text-muted">{shift.summary}</p>
-                            {Array.isArray(shift.evidenceGames) && shift.evidenceGames.length > 0 && (
-                              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                                {shift.evidenceGames.slice(0, 4).map((g) => (
-                                  <GameChipButton
-                                    key={g.package_name}
-                                    game={g}
-                                    onSelect={setSelectedGame}
-                                  />
-                                ))}
-                              </div>
+                            {evidence.length > 0 && (
+                              <button
+                                type="button"
+                                aria-expanded={shiftExpanded}
+                                onClick={() => toggleShiftEvidence(shiftKey)}
+                                className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-text-main font-medium cursor-pointer"
+                              >
+                                <AtlasIcon
+                                  name={shiftExpanded ? "expand_less" : "expand_more"}
+                                  size={14}
+                                />
+                                <span className="tabular-nums">
+                                  {evidence.length} {evidence.length === 1 ? "title" : "titles"}
+                                </span>
+                              </button>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
-                  </section>
-                )}
+                          <p className="text-xs text-text-muted">{shift.summary}</p>
+                          {shiftExpanded && evidence.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 pt-0.5">
+                              {evidence.map((g) => (
+                                <GameChipButton
+                                  key={g.package_name}
+                                  game={g}
+                                  onSelect={setSelectedGame}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
 
               {(data.competitorActivity?.activeCompetitors || []).length === 0 ? (
                 <EmptyState
                   icon="groups"
                   title="No competitor releases in this window"
-                  description="Try expanding the time window or switching Date Basis to Discovered in Atlas."
+                  description="Try expanding the time window or switching Date Basis in More filters."
                 />
               ) : (
                 <div className="bg-surface-solid border border-border-subtle rounded-xl overflow-hidden">
                   <div className="overflow-x-auto custom-scrollbar">
                     <table className="w-full text-left border-collapse min-w-[820px]">
                       <thead>
-                        <tr className="border-b border-border-subtle bg-input-bg/40 text-xs font-medium text-text-muted">
+                        <tr className="border-b border-border-subtle bg-input-bg/35 text-xs font-medium text-text-muted">
                           <th className="py-2.5 px-4">Competitor</th>
                           <th className="py-2.5 px-3 text-right">Recent Releases</th>
                           <th className="py-2.5 px-3 text-right">Active Accounts</th>
@@ -1443,7 +1734,7 @@ export default function MarketSummaryView({
                                   setExpandedCompetitorKey(isExpanded ? null : comp.key)
                                 }
                                 className={`cursor-pointer transition-colors ${
-                                  isExpanded ? "bg-input-bg/45" : "hover:bg-input-bg/30"
+                                  isExpanded ? "bg-input-bg/40" : "hover:bg-input-bg/25"
                                 }`}
                               >
                                 <td className="py-3 px-4">
@@ -1486,9 +1777,12 @@ export default function MarketSummaryView({
                                 <td className="py-3 px-3">
                                   <div className="flex flex-wrap gap-1">
                                     {(comp.topGenres || []).slice(0, 3).map((tg) => (
-                                      <Badge key={tg.genre} tone="neutral">
+                                      <span
+                                        key={tg.genre}
+                                        className="px-2 py-0.5 rounded-md bg-input-bg/70 border border-border-subtle text-xs text-text-main tabular-nums"
+                                      >
                                         {tg.genre} · {tg.count}
-                                      </Badge>
+                                      </span>
                                     ))}
                                   </div>
                                 </td>
@@ -1540,7 +1834,7 @@ export default function MarketSummaryView({
                   <div className="overflow-x-auto custom-scrollbar">
                     <table className="w-full text-left border-collapse min-w-[780px]">
                       <thead>
-                        <tr className="border-b border-border-subtle bg-input-bg/40 text-xs font-medium text-text-muted">
+                        <tr className="border-b border-border-subtle bg-input-bg/35 text-xs font-medium text-text-muted">
                           <th className="py-2.5 px-4">Title</th>
                           <th className="py-2.5 px-3 whitespace-nowrap">Released</th>
                           <th className="py-2.5 px-3 text-right whitespace-nowrap">
@@ -1573,7 +1867,7 @@ export default function MarketSummaryView({
                               className={`cursor-pointer transition-colors ${
                                 isHighlighted
                                   ? "bg-primary-container/25 hover:bg-primary-container/35"
-                                  : "hover:bg-input-bg/35"
+                                  : "hover:bg-input-bg/30"
                               }`}
                             >
                               <td className="py-3 px-4">
