@@ -280,6 +280,7 @@ function PlayStoreIntelligenceView({
   });
   const [countryBatchScope, setCountryBatchScope] = useState("all"); // 'all' | 'list' | 'publisher'
   const [countryBatchSkipDays, setCountryBatchSkipDays] = useState(7);
+  const [countryBatchReleaseDays, setCountryBatchReleaseDays] = useState(0); // 0 = All | 7 | 14 | 30
 
   // Progressive table & publisher rendering state for instant UI responsiveness
   const [visibleRowCount, setVisibleRowCount] = useState(100);
@@ -1755,6 +1756,86 @@ function PlayStoreIntelligenceView({
     }
   };
 
+  const openCountryBatchModal = useCallback(
+    (preferredScope = null) => {
+      const nextScope =
+        preferredScope ||
+        (selectedPublisherObj ? "publisher" : activeListObj ? "list" : "all");
+      setCountryBatchScope(nextScope);
+      if (dateBasis === "release_date" && durationPreset === "7d") {
+        setCountryBatchReleaseDays(7);
+      } else if (dateBasis === "release_date" && durationPreset === "14d") {
+        setCountryBatchReleaseDays(14);
+      } else if (dateBasis === "release_date" && durationPreset === "30d") {
+        setCountryBatchReleaseDays(30);
+      } else {
+        setCountryBatchReleaseDays(0);
+      }
+      setShowCountryBatchModal(true);
+    },
+    [selectedPublisherObj, activeListObj, dateBasis, durationPreset]
+  );
+
+  const countryBatchPreviewCounts = useMemo(() => {
+    if (!showCountryBatchModal) return null;
+    const days = Number(countryBatchReleaseDays) || 0;
+    let cutoffIso = null;
+    if (days > 0) {
+      const now = new Date();
+      const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      cutoffIso = new Date(todayUtc.getTime() - (days - 1) * 86400000).toISOString().slice(0, 10);
+    }
+
+    const toIso = (val) => {
+      if (!val || val === "Unknown") return null;
+      const str = String(val).trim();
+      if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+      const d = new Date(str);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+    };
+
+    const allSet = new Set();
+    const listSet = new Set();
+    const pubSet = new Set();
+
+    for (const g of overview.games || []) {
+      const pkg = String(g?.package_name || "").trim();
+      if (!pkg) continue;
+      if (g.is_suspended || g.release_status === "SUSPENDED") continue;
+      if (cutoffIso) {
+        const relIso = toIso(g.release_date) || toIso(g.released);
+        if (!relIso || relIso < cutoffIso) continue;
+      }
+      if (pkg.startsWith("com.")) allSet.add(pkg);
+      if (activeListObj && visiblePublisherNames.has(g.publisher_name)) listSet.add(pkg);
+      if (selectedPublisherObj && g.publisher_name === selectedPublisherObj.publisher_name) {
+        pubSet.add(pkg);
+      }
+    }
+
+    const selected =
+      countryBatchScope === "publisher"
+        ? pubSet.size
+        : countryBatchScope === "list"
+        ? listSet.size
+        : allSet.size;
+
+    return {
+      all: allSet.size,
+      list: listSet.size,
+      publisher: pubSet.size,
+      selected
+    };
+  }, [
+    showCountryBatchModal,
+    countryBatchReleaseDays,
+    countryBatchScope,
+    overview.games,
+    activeListObj,
+    visiblePublisherNames,
+    selectedPublisherObj
+  ]);
+
   // Batch Country Scanner Queue Controls
   const handleStartCountryQueue = async (overridePayload = null) => {
     const isSingle = overridePayload?.scope === "single" && overridePayload?.packageName;
@@ -1764,7 +1845,8 @@ function PlayStoreIntelligenceView({
         scope: countryBatchScope,
         listId: countryBatchScope === "list" && activeListObj ? activeListObj.id : undefined,
         publisherId: countryBatchScope === "publisher" && selectedPublisherObj ? selectedPublisherObj.id : undefined,
-        skipDays: countryBatchSkipDays
+        skipDays: countryBatchSkipDays,
+        releasedWithinDays: countryBatchReleaseDays > 0 ? countryBatchReleaseDays : undefined
       };
       setCountryQueueStatus((prev) => ({
         ...prev,
@@ -1783,7 +1865,10 @@ function PlayStoreIntelligenceView({
       if (res.ok) {
         if (data?.status === "nothing_to_scan") {
           setCountryQueueStatus((prev) => ({ ...prev, running: false, state: "idle", totalPackages: 0 }));
-          AtlasFeedback.toast("All games in this scope were recently country-scanned.", { tone: "info" });
+          AtlasFeedback.toast(
+            data?.message || "All games in this scope were recently country-scanned.",
+            { tone: "info" }
+          );
         } else if (data?.totalPackages) {
           setCountryQueueStatus((prev) => ({
             ...prev,
@@ -2225,12 +2310,7 @@ function PlayStoreIntelligenceView({
 
                 <button
                   type="button"
-                  onClick={() => {
-                    if (selectedPublisherObj) setCountryBatchScope("publisher");
-                    else if (activeListObj) setCountryBatchScope("list");
-                    else setCountryBatchScope("all");
-                    setShowCountryBatchModal(true);
-                  }}
+                  onClick={() => openCountryBatchModal()}
                   className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-surface-solid border border-border-subtle text-text-main text-xs font-medium hover:border-border-strong hover:bg-input-bg transition"
                 >
                   <AtlasIcon name="public" size={15} className="text-text-muted" />
@@ -2742,13 +2822,7 @@ function PlayStoreIntelligenceView({
             <button
               type="button"
               disabled={countryQueueStatus.running || !activeListObj.unique_games}
-              onClick={() =>
-                handleStartCountryQueue({
-                  scope: "list",
-                  listId: activeListObj.id,
-                  skipDays: countryBatchSkipDays
-                })
-              }
+              onClick={() => openCountryBatchModal("list")}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg atlas-badge-warning border text-xs font-medium hover:opacity-90 disabled:opacity-50"
             >
               <AtlasIcon name="public" size={13} />
@@ -2797,7 +2871,7 @@ function PlayStoreIntelligenceView({
             value: scopedStats.countryScannedCount.toLocaleString(),
             suffix: `/ ${scopedStats.matchingUnique.toLocaleString()}`,
             note: "Queue batch country scan →",
-            onClick: () => setShowCountryBatchModal(true)
+            onClick: () => openCountryBatchModal()
           }
         ]}
       />
@@ -3155,13 +3229,7 @@ function PlayStoreIntelligenceView({
                   <button
                     type="button"
                     disabled={countryQueueStatus.running}
-                    onClick={() =>
-                      handleStartCountryQueue({
-                        scope: "publisher",
-                        publisherId: selectedPublisherObj.id,
-                        skipDays: countryBatchSkipDays
-                      })
-                    }
+                    onClick={() => openCountryBatchModal("publisher")}
                     className="text-xs text-sem-warning hover:underline inline-flex items-center gap-1 disabled:opacity-50"
                   >
                     <AtlasIcon name="public" size={13} /> Scan Countries
@@ -4452,7 +4520,15 @@ function PlayStoreIntelligenceView({
                     />
                     <div>
                       <div className="font-semibold text-text-main">
-                        All Play Store Games in Atlas ({overview.summary.uniqueGames})
+                        All Play Store Games in Atlas (
+                        {countryBatchPreviewCounts
+                          ? `${countryBatchPreviewCounts.all.toLocaleString()}${
+                              countryBatchReleaseDays > 0
+                                ? ` released in last ${countryBatchReleaseDays}d`
+                                : ""
+                            }`
+                          : overview.summary.uniqueGames}
+                        )
                       </div>
                       <div className="text-[11px] text-text-muted">
                         Ordered by highest installs first
@@ -4469,7 +4545,15 @@ function PlayStoreIntelligenceView({
                         onChange={() => setCountryBatchScope("list")}
                       />
                       <div className="font-semibold text-text-main">
-                        Active Competitor List: &ldquo;{activeListObj.name}&rdquo; ({activeListObj.unique_games} games)
+                        Active Competitor List: &ldquo;{activeListObj.name}&rdquo; (
+                        {countryBatchPreviewCounts
+                          ? `${countryBatchPreviewCounts.list.toLocaleString()}${
+                              countryBatchReleaseDays > 0
+                                ? ` in last ${countryBatchReleaseDays}d`
+                                : " games"
+                            }`
+                          : `${activeListObj.unique_games} games`}
+                        )
                       </div>
                     </label>
                   )}
@@ -4483,10 +4567,53 @@ function PlayStoreIntelligenceView({
                         onChange={() => setCountryBatchScope("publisher")}
                       />
                       <div className="font-semibold text-text-main">
-                        Active Publisher: &ldquo;{getDisplayName(selectedPublisherObj.publisher_name)}&rdquo; ({selectedPublisherObj.total_games} games)
+                        Active Publisher: &ldquo;{getDisplayName(selectedPublisherObj.publisher_name)}&rdquo; (
+                        {countryBatchPreviewCounts
+                          ? `${countryBatchPreviewCounts.publisher.toLocaleString()}${
+                              countryBatchReleaseDays > 0
+                                ? ` in last ${countryBatchReleaseDays}d`
+                                : " games"
+                            }`
+                          : `${selectedPublisherObj.total_games} games`}
+                        )
                       </div>
                     </label>
                   )}
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-text-muted">
+                    Release Date Filter
+                  </label>
+                  <div
+                    role="group"
+                    aria-label="Filter games by Play Store release date"
+                    className="grid grid-cols-4 gap-1 p-0.5 rounded-lg bg-input-bg border border-border-subtle"
+                  >
+                    {[
+                      { value: 0, label: "All games" },
+                      { value: 7, label: "Last 7 days" },
+                      { value: 14, label: "Last 14 days" },
+                      { value: 30, label: "Last 30 days" }
+                    ].map((opt) => {
+                      const active = countryBatchReleaseDays === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => setCountryBatchReleaseDays(opt.value)}
+                          className={`h-8 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap px-2 ${
+                            active
+                              ? "bg-surface-solid text-text-main shadow-sm border border-border-subtle"
+                              : "text-text-muted hover:text-text-main border border-transparent"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -4505,6 +4632,14 @@ function PlayStoreIntelligenceView({
                   </select>
                 </div>
 
+                {countryBatchPreviewCounts &&
+                  countryBatchPreviewCounts.selected === 0 &&
+                  countryBatchReleaseDays > 0 && (
+                    <p className="text-xs text-text-muted">
+                      No games in this scope were released in the last {countryBatchReleaseDays} days.
+                    </p>
+                  )}
+
                 <div className="flex items-center justify-end gap-2 pt-2 border-t border-border-subtle">
                   <button
                     type="button"
@@ -4515,7 +4650,10 @@ function PlayStoreIntelligenceView({
                   </button>
                   <button
                     type="button"
-                    disabled={countryQueueStatus.running}
+                    disabled={
+                      countryQueueStatus.running ||
+                      (countryBatchPreviewCounts !== null && countryBatchPreviewCounts.selected === 0)
+                    }
                     onClick={() => handleStartCountryQueue()}
                     className="h-9 px-4 rounded-lg bg-btn-primary hover:bg-btn-primary-hover text-btn-primary-fg text-xs font-semibold disabled:opacity-50"
                   >

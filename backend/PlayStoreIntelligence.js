@@ -127,6 +127,7 @@ let countryBatchQueue = {
   state: 'idle', // 'idle' | 'running' | 'paused' | 'complete' | 'cancelled' | 'error'
   scopeLabel: '',
   skipDays: 7,
+  releasedWithinDays: 0,
   totalPackages: 0,
   completedPackages: 0,
   skippedPackages: 0,
@@ -302,6 +303,36 @@ function parseReleaseDateIso(value) {
     return fallback.toISOString().slice(0, 10);
   }
   return null;
+}
+
+/**
+ * Filter and deduplicate candidate packages by release date within the last `releasedWithinDays` UTC days.
+ * Passing 0 / falsy returns deduplicated rows without release-date filtering.
+ */
+function filterCandidatesByReleaseWindow(rows = [], releasedWithinDays = 0, now = new Date()) {
+  const deduped = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const pkg = String(row?.package_name || '').trim();
+    if (!pkg || seen.has(pkg)) continue;
+    seen.add(pkg);
+    deduped.push(row);
+  }
+
+  const days = Number(releasedWithinDays);
+  if (!Number.isFinite(days) || days <= 0) {
+    return deduped;
+  }
+
+  const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const cutoffIso = new Date(todayUtc.getTime() - (Math.floor(days) - 1) * 86400000)
+    .toISOString()
+    .slice(0, 10);
+
+  return deduped.filter((row) => {
+    const iso = parseReleaseDateIso(row.release_date) || parseReleaseDateIso(row.released);
+    return Boolean(iso && iso >= cutoffIso);
+  });
 }
 
 /**
@@ -3433,6 +3464,7 @@ function registerPlayStoreRoutes({ app, pool }) {
       state: countryBatchQueue.state,
       scopeLabel: countryBatchQueue.scopeLabel,
       skipDays: countryBatchQueue.skipDays,
+      releasedWithinDays: countryBatchQueue.releasedWithinDays || 0,
       totalPackages: countryBatchQueue.totalPackages,
       completedPackages: countryBatchQueue.completedPackages,
       skippedPackages: countryBatchQueue.skippedPackages,
@@ -3459,26 +3491,37 @@ function registerPlayStoreRoutes({ app, pool }) {
       const scope = req.body?.scope || 'all'; // 'single' | 'publisher' | 'list' | 'all' | 'retry_failed'
       const skipDays = req.body?.skipDays !== undefined ? Math.max(0, Number(req.body.skipDays) || 0) : 7;
 
+      const rawReleased = req.body?.releasedWithinDays;
+      let releasedWithinDays = 0;
+      if (rawReleased !== undefined && rawReleased !== null && rawReleased !== '' && rawReleased !== 'all') {
+        const parsedDays = Number(rawReleased);
+        if (!Number.isInteger(parsedDays) || parsedDays < 0 || parsedDays > 3650) {
+          return res.status(400).json({ error: 'Invalid releasedWithinDays value.' });
+        }
+        releasedWithinDays = parsedDays;
+      }
+
       let candidateRows = [];
-      let scopeLabel = 'All Games in Atlas';
+      let baseScopeLabel = 'All Games in Atlas';
 
       if (scope === 'retry_failed') {
         candidateRows = (countryBatchQueue.failedPackages || []).map((f) => ({
           package_name: f.packageName,
           title: f.title
         }));
-        scopeLabel = `Retry Failed Games (${candidateRows.length})`;
+        baseScopeLabel = `Retry Failed Games (${candidateRows.length})`;
       } else if (scope === 'single' && req.body?.packageName) {
         const pkg = normalizePackageName(req.body.packageName);
         const gRes = await pool.query(`SELECT package_name, title FROM games WHERE package_name = $1 LIMIT 1`, [pkg]);
         candidateRows = gRes.rows.length > 0 ? gRes.rows : [{ package_name: pkg, title: pkg }];
-        scopeLabel = `Game: ${candidateRows[0].title || pkg}`;
+        baseScopeLabel = `Game: ${candidateRows[0].title || pkg}`;
       } else if (scope === 'publisher' && req.body?.publisherId) {
         const pubId = Number(req.body.publisherId);
         const pubRes = await pool.query(`SELECT publisher_name FROM play_publishers WHERE id = $1`, [pubId]);
-        scopeLabel = `Publisher: ${pubRes.rows[0]?.publisher_name || pubId}`;
+        baseScopeLabel = `Publisher: ${pubRes.rows[0]?.publisher_name || pubId}`;
         const gRes = await pool.query(
-          `SELECT DISTINCT g.package_name, g.title, COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
+          `SELECT DISTINCT g.package_name, g.title, g.release_date::text AS release_date, g.released,
+                  COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
            FROM account_games ag
            JOIN games g ON g.id = ag.game_id
            WHERE ag.account_id = $1 AND COALESCE(g.is_suspended, false) = false
@@ -3489,9 +3532,10 @@ function registerPlayStoreRoutes({ app, pool }) {
       } else if (scope === 'list' && req.body?.listId) {
         const listId = Number(req.body.listId);
         const lRes = await pool.query(`SELECT name FROM play_lists WHERE id = $1`, [listId]);
-        scopeLabel = `List: ${lRes.rows[0]?.name || listId}`;
+        baseScopeLabel = `List: ${lRes.rows[0]?.name || listId}`;
         const gRes = await pool.query(
-          `SELECT DISTINCT g.package_name, g.title, COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
+          `SELECT DISTINCT g.package_name, g.title, g.release_date::text AS release_date, g.released,
+                  COALESCE(g.real_installs, g.min_installs, 0) AS sort_installs
            FROM play_list_publishers plp
            JOIN account_games ag ON ag.account_id = plp.publisher_id
            JOIN games g ON g.id = ag.game_id
@@ -3501,9 +3545,10 @@ function registerPlayStoreRoutes({ app, pool }) {
         );
         candidateRows = gRes.rows;
       } else {
-        scopeLabel = 'All Games in Atlas';
+        baseScopeLabel = 'All Games in Atlas';
         const gRes = await pool.query(
-          `SELECT DISTINCT package_name, title, COALESCE(real_installs, min_installs, 0) AS sort_installs
+          `SELECT DISTINCT package_name, title, release_date::text AS release_date, released,
+                  COALESCE(real_installs, min_installs, 0) AS sort_installs
            FROM games
            WHERE COALESCE(is_suspended, false) = false
              AND package_name LIKE 'com.%'
@@ -3511,6 +3556,22 @@ function registerPlayStoreRoutes({ app, pool }) {
         );
         candidateRows = gRes.rows;
       }
+
+      const effectiveReleaseFilter =
+        releasedWithinDays > 0 && scope !== 'single' && scope !== 'retry_failed'
+          ? releasedWithinDays
+          : 0;
+
+      if (effectiveReleaseFilter > 0) {
+        candidateRows = filterCandidatesByReleaseWindow(candidateRows, effectiveReleaseFilter);
+      } else {
+        candidateRows = filterCandidatesByReleaseWindow(candidateRows, 0);
+      }
+
+      const scopeLabel =
+        effectiveReleaseFilter > 0
+          ? `${baseScopeLabel} · Released last ${effectiveReleaseFilter}d`
+          : baseScopeLabel;
 
       // Filter out games already scanned within `skipDays` (unless scope === 'single' or skipDays === 0)
       let skippedCount = 0;
@@ -3543,9 +3604,12 @@ function registerPlayStoreRoutes({ app, pool }) {
         return res.json({
           status: 'nothing_to_scan',
           skippedPackages: skippedCount,
+          releasedWithinDays: effectiveReleaseFilter,
           message:
             skippedCount > 0
               ? `All ${skippedCount} game(s) in "${scopeLabel}" were already scanned within the last ${skipDays} days.`
+              : effectiveReleaseFilter > 0
+              ? `No games released in the last ${effectiveReleaseFilter} days found for "${baseScopeLabel}".`
               : `No games found for "${scopeLabel}".`
         });
       }
@@ -3557,6 +3621,7 @@ function registerPlayStoreRoutes({ app, pool }) {
         state: 'running',
         scopeLabel,
         skipDays,
+        releasedWithinDays: effectiveReleaseFilter,
         totalPackages: queueItems.length,
         completedPackages: 0,
         skippedPackages: skippedCount,
@@ -3577,6 +3642,7 @@ function registerPlayStoreRoutes({ app, pool }) {
       res.json({
         status: 'started',
         scopeLabel,
+        releasedWithinDays: effectiveReleaseFilter,
         totalPackages: queueItems.length,
         skippedPackages: skippedCount
       });
@@ -4034,6 +4100,7 @@ module.exports = {
   validatePlayStoreUrl,
   validatePlayBatch,
   doesAppMatchPublisher,
+  filterCandidatesByReleaseWindow,
   linkGameToCanonicalPublisher,
   scanAndSavePlayPublisher,
   scanAndSavePlayGame,

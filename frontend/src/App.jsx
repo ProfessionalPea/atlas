@@ -13,7 +13,7 @@ const AmazonIntelligenceView = lazy(() => import("./AmazonIntelligenceView.jsx")
 const MarketSummaryView = lazy(() => import("./MarketSummaryView.jsx"));
 
 // Atlas Build Marker: forces new content hash for cache busting
-export const ATLAS_BUILD_REV = "2026.11.20-calm-ui-v1";
+export const ATLAS_BUILD_REV = "2026.11.20-country-release-filter";
 
 // Authentic platform brand marks
 function GooglePlayIcon({ className = "w-5 h-5" }) {

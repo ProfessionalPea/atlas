@@ -9,6 +9,7 @@
     "test:security": "node --test Security.test.js",
     "test:scan": "node --test ScanAccounting.test.js",
     "test:summary": "node --test MarketSummary.test.js",
+    "test:country-batch": "node --test CountryBatchFilter.test.js",
     "solve-captcha": "node solve_google_captcha.js"
   },
   "dependencies": {
